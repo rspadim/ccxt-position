@@ -3,7 +3,13 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 
-CommandType = Literal["send_order", "cancel_order", "close_by"]
+CommandType = Literal[
+    "send_order",
+    "cancel_order",
+    "change_order",
+    "close_by",
+    "close_position",
+]
 
 
 class CommandInput(BaseModel):
@@ -23,4 +29,3 @@ class CommandResult(BaseModel):
 
 class CommandsResponse(BaseModel):
     results: list[CommandResult]
-

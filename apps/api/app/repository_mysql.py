@@ -140,3 +140,38 @@ class MySQLCommandRepository:
                 (account_id, pool_id, command_id),
             )
 
+    async def fetch_open_position(
+        self, conn: Any, account_id: int, position_id: int
+    ) -> tuple[int, str, str, str] | None:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT id, symbol, side, qty
+                FROM position_positions
+                WHERE id = %s AND account_id = %s AND state = 'open'
+                LIMIT 1
+                """,
+                (position_id, account_id),
+            )
+            row = await cur.fetchone()
+        if row is None:
+            return None
+        return int(row[0]), str(row[1]), str(row[2]).lower(), str(row[3])
+
+    async def fetch_order_for_update(
+        self, conn: Any, account_id: int, order_id: int
+    ) -> tuple[int, str, str] | None:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT id, status, order_type
+                FROM position_orders
+                WHERE id = %s AND account_id = %s
+                LIMIT 1
+                """,
+                (order_id, account_id),
+            )
+            row = await cur.fetchone()
+        if row is None:
+            return None
+        return int(row[0]), str(row[1]), str(row[2]).lower()

@@ -38,9 +38,16 @@ Supported command types:
 
 - `send_order`
 - `cancel_order`
+- `change_order`
 - `close_by`
+- `close_position`
 
 Request accepts object or array.
+
+Notes:
+
+- `close_position` is internally transformed into a reduce-only `send_order`.
+- `change_order` validates mutable state and enqueues modification command.
 
 ### Example
 

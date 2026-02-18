@@ -20,7 +20,7 @@ async def _check_permission(
         raise CommandValidationError("permission_denied", "user has no access to account")
 
     can_trade = bool(row[1])
-    if command in {"send_order", "cancel_order", "close_by"} and not can_trade:
+    if command in {"send_order", "cancel_order", "change_order", "close_by", "close_position"} and not can_trade:
         raise CommandValidationError("permission_denied", "trade permission required")
 
 
@@ -109,6 +109,56 @@ async def _insert_pending_order(
     )
 
 
+def _build_close_position_payload(position_row: tuple[int, str, str, str], payload: dict[str, Any]) -> dict[str, Any]:
+    position_id, symbol, current_side, qty = position_row
+    close_side = "sell" if current_side == "buy" else "buy"
+    order_type = str(payload.get("order_type", "market")).lower()
+    if order_type not in {"market", "limit"}:
+        raise CommandValidationError("validation_error", "payload.order_type must be market or limit")
+    price = payload.get("price")
+    if order_type == "limit" and price is None:
+        raise CommandValidationError("validation_error", "payload.price is required for limit close")
+
+    return {
+        "symbol": symbol,
+        "side": close_side,
+        "order_type": order_type,
+        "qty": payload.get("qty", qty),
+        "price": price,
+        "position_id": position_id,
+        "magic_id": payload.get("magic_id", 0),
+        "reason": payload.get("reason", "api"),
+        "reduce_only": True,
+        "origin_command": "close_position",
+        "client_order_id": payload.get("client_order_id"),
+    }
+
+
+async def _validate_change_order_payload(
+    repo: MySQLCommandRepository, conn: Any, account_id: int, payload: dict[str, Any]
+) -> None:
+    order_id = int(payload.get("order_id", 0) or 0)
+    if order_id <= 0:
+        raise CommandValidationError("validation_error", "payload.order_id is required")
+
+    new_price = payload.get("new_price")
+    new_qty = payload.get("new_qty")
+    if new_price is None and new_qty is None:
+        raise CommandValidationError(
+            "validation_error", "payload.new_price or payload.new_qty is required"
+        )
+
+    row = await repo.fetch_order_for_update(conn, account_id, order_id)
+    if row is None:
+        raise CommandValidationError("order_not_found", "order not found for account")
+
+    _, status, order_type = row
+    if status not in {"PENDING_SUBMIT", "SUBMITTED", "PARTIALLY_FILLED"}:
+        raise CommandValidationError("invalid_order_state", "order state does not allow changes")
+    if new_price is not None and order_type != "limit":
+        raise CommandValidationError("validation_error", "new_price allowed only for limit orders")
+
+
 async def process_single_command(
     db: Any,
     repo: MySQLCommandRepository,
@@ -127,17 +177,35 @@ async def process_single_command(
 
             await _check_permission(repo, conn, auth.user_id, account_id, item.command)
 
-            payload = dict(item.payload)
+            original_payload = dict(item.payload)
+            effective_command = item.command
+            payload = original_payload
+
+            if item.command == "close_position":
+                close_position_id = int(original_payload.get("position_id", 0) or 0)
+                if close_position_id <= 0:
+                    raise CommandValidationError(
+                        "validation_error", "payload.position_id is required for close_position"
+                    )
+                position_row = await repo.fetch_open_position(conn, account_id, close_position_id)
+                if position_row is None:
+                    raise CommandValidationError("position_not_found", "open position not found")
+                payload = _build_close_position_payload(position_row, original_payload)
+                effective_command = "send_order"
+
             reason = str(payload.get("reason", "api"))
             magic_id = int(payload.get("magic_id", 0) or 0)
             position_id = int(payload.get("position_id", 0) or 0)
 
+            if item.command == "change_order":
+                await _validate_change_order_payload(repo, conn, account_id, payload)
+
             command_id = await _insert_command(
-                repo, conn, account_id, item.command, item.request_id, payload
+                repo, conn, account_id, effective_command, item.request_id, payload
             )
             order_id: int | None = None
 
-            if item.command == "send_order":
+            if effective_command == "send_order":
                 reduce_only = bool(payload.get("reduce_only", False))
                 await _check_risk_open_permission(
                     repo, conn, account_id, reduce_only=reduce_only
