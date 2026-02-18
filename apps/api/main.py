@@ -3,12 +3,18 @@ import contextlib
 import json
 from typing import Annotated, Any
 
-from fastapi import Depends, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 
 from .app.auth import AuthContext, get_auth_context, validate_api_key
 from .app.ccxt_adapter import CCXTAdapter
 from .app.config import load_settings
 from .app.db_mysql import DatabaseMySQL
+from .app.logging_utils import (
+    http_log_payload,
+    mask_header_value,
+    now,
+    setup_application_logging,
+)
 from .app.repository_mysql import MySQLCommandRepository
 from .app.schemas import (
     CcxtBatchItem,
@@ -25,6 +31,24 @@ app = FastAPI(title="ccxt-position", version="0.1.0")
 app.state.db = None
 app.state.repo = None
 app.state.ccxt = None
+app.state.loggers = {}
+
+
+@app.middleware("http")
+async def request_logging_middleware(request: Request, call_next: Any) -> Any:
+    start = now()
+    response = await call_next(request)
+    api_logger = app.state.loggers.get("api")
+    if settings.app_request_log and api_logger is not None:
+        payload = http_log_payload(
+            method=request.method,
+            path=request.url.path,
+            status_code=response.status_code,
+            elapsed_s=now() - start,
+            account_id=request.headers.get("x-account-id"),
+        )
+        api_logger.info("http_request %s", json.dumps(payload, separators=(",", ":")))
+    return response
 
 
 @app.on_event("startup")
@@ -35,7 +59,8 @@ async def on_startup() -> None:
         )
     app.state.db = DatabaseMySQL(settings)
     app.state.repo = MySQLCommandRepository()
-    app.state.ccxt = CCXTAdapter()
+    app.state.loggers = setup_application_logging(settings.disable_uvicorn_access_log)
+    app.state.ccxt = CCXTAdapter(logger=app.state.loggers.get("ccxt"))
     await app.state.db.connect()
 
 
@@ -279,6 +304,19 @@ async def ws_endpoint(websocket: WebSocket) -> None:
         return
 
     await websocket.accept()
+    api_logger = app.state.loggers.get("api")
+    if api_logger is not None:
+        api_logger.info(
+            "ws_connect %s",
+            json.dumps(
+                {
+                    "account_id": str(account_id),
+                    "x_api_key": mask_header_value("x-api-key", api_key),
+                    "x_after_id": websocket.headers.get("x-after-id", "0"),
+                },
+                separators=(",", ":"),
+            ),
+        )
     subscriptions = {"position", "ccxt"}
     after_id_raw = websocket.headers.get("x-after-id", "0")
     try:
@@ -401,9 +439,19 @@ async def ws_endpoint(websocket: WebSocket) -> None:
                     }
                 )
         except WebSocketDisconnect:
+            if api_logger is not None:
+                api_logger.info(
+                    "ws_disconnect %s",
+                    json.dumps({"account_id": str(account_id)}, separators=(",", ":")),
+                )
             return
         except Exception:
             with contextlib.suppress(Exception):
                 await websocket.send_json(
                     {"id": None, "ok": False, "type": "ws_response", "event": "error", "payload": {"code": "internal_error"}}
+                )
+            if api_logger is not None:
+                api_logger.exception(
+                    "ws_error %s",
+                    json.dumps({"account_id": str(account_id)}, separators=(",", ":")),
                 )

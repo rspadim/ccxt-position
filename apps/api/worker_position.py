@@ -6,6 +6,7 @@ from typing import Any
 from .app.ccxt_adapter import CCXTAdapter
 from .app.config import load_settings
 from .app.db_mysql import DatabaseMySQL
+from .app.logging_utils import setup_application_logging
 from .app.repository_mysql import MySQLCommandRepository
 
 
@@ -469,8 +470,18 @@ async def run_worker() -> None:
 
     db = DatabaseMySQL(settings)
     repo = MySQLCommandRepository()
-    ccxt_adapter = CCXTAdapter()
+    loggers = setup_application_logging(settings.disable_uvicorn_access_log)
+    position_logger = loggers.get("position")
+    ccxt_adapter = CCXTAdapter(logger=loggers.get("ccxt"))
     await db.connect()
+    if position_logger is not None:
+        position_logger.info(
+            "worker_started %s",
+            {
+                "worker_id": settings.worker_id,
+                "pool_id": settings.worker_pool_id,
+            },
+        )
     last_recon_ts = 0.0
 
     try:
@@ -506,6 +517,11 @@ async def run_worker() -> None:
                     await repo.mark_command_failed(conn, command_id)
                     await repo.mark_queue_dead(conn, queue_id)
                     await conn.commit()
+                if position_logger is not None:
+                    position_logger.warning(
+                        "queue_dead %s",
+                        {"queue_id": queue_id, "command_id": command_id, "attempts": attempts},
+                    )
                 continue
             try:
                 await _process_claimed_queue_item(
@@ -513,6 +529,11 @@ async def run_worker() -> None:
                 )
             except Exception:
                 # failure already persisted; continue polling.
+                if position_logger is not None:
+                    position_logger.exception(
+                        "worker_process_error %s",
+                        {"queue_id": queue_id, "command_id": command_id, "account_id": account_id},
+                    )
                 pass
 
             now = asyncio.get_running_loop().time()
@@ -530,6 +551,8 @@ async def run_worker() -> None:
     finally:
         with contextlib.suppress(Exception):
             await db.disconnect()
+        if position_logger is not None:
+            position_logger.info("worker_stopped %s", {"worker_id": settings.worker_id})
 
 
 if __name__ == "__main__":

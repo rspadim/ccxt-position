@@ -35,6 +35,19 @@ Worker behavior in v0:
 - Retries queue items with backoff and max attempt limit
 - Reconciliation poll imports external trades and projects deals/positions
 
+## Logging
+
+Logs are split by domain and process to avoid concurrent writes to the same file:
+
+- `logs/api-<pid>.log`
+- `logs/ccxt-<pid>.log`
+- `logs/position-<pid>.log`
+
+Security defaults:
+
+- `uvicorn.access` can be disabled via config (`disable_uvicorn_access_log=true`)
+- sensitive headers (`x-api-key`, `authorization`, cookies) are masked in app logs
+
 ## Engine Configuration
 
 `v0` is optimized for MySQL with raw SQL repositories.

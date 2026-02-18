@@ -21,6 +21,8 @@ class Settings(BaseSettings):
     worker_poll_interval_ms: int = 1000
     worker_max_attempts: int = 5
     worker_reconciliation_interval_seconds: int = 30
+    disable_uvicorn_access_log: bool = True
+    app_request_log: bool = True
 
     model_config = SettingsConfigDict(env_file=".env", env_prefix="", extra="ignore")
 

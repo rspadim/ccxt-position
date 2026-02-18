@@ -13,5 +13,7 @@
   "worker_pool_id": 0,
   "worker_poll_interval_ms": 1000,
   "worker_max_attempts": 5,
-  "worker_reconciliation_interval_seconds": 30
+  "worker_reconciliation_interval_seconds": 30,
+  "disable_uvicorn_access_log": true,
+  "app_request_log": true
 }

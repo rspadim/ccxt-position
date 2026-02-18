@@ -11,6 +11,9 @@ def _as_plain_secret(value: str | None) -> str | None:
 
 
 class CCXTAdapter:
+    def __init__(self, logger: Any | None = None) -> None:
+        self.logger = logger
+
     async def execute_method(
         self,
         exchange_id: str,
@@ -36,6 +39,11 @@ class CCXTAdapter:
             fn = getattr(exchange, method, None)
             if fn is None:
                 raise RuntimeError(f"unsupported ccxt method: {method}")
+            if self.logger is not None:
+                self.logger.info(
+                    "ccxt_call %s",
+                    {"exchange_id": exchange_id, "method": method},
+                )
             return await fn(*(args or []), **(kwargs or {}))
         finally:
             await exchange.close()
