@@ -175,3 +175,38 @@ class MySQLCommandRepository:
         if row is None:
             return None
         return int(row[0]), str(row[1]), str(row[2]).lower()
+
+    async def cleanup_expired_close_locks(self, conn: Any, position_id: int) -> None:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                DELETE FROM position_close_locks
+                WHERE position_id = %s AND expires_at <= NOW()
+                """,
+                (position_id,),
+            )
+
+    async def acquire_close_position_lock(
+        self,
+        conn: Any,
+        account_id: int,
+        position_id: int,
+        request_id: str | None,
+        lock_ttl_seconds: int = 120,
+    ) -> bool:
+        await self.cleanup_expired_close_locks(conn, position_id)
+        try:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    """
+                    INSERT INTO position_close_locks (
+                        account_id, position_id, request_id, lock_reason, expires_at
+                    ) VALUES (
+                        %s, %s, %s, 'close_position', DATE_ADD(NOW(), INTERVAL %s SECOND)
+                    )
+                    """,
+                    (account_id, position_id, request_id, lock_ttl_seconds),
+                )
+            return True
+        except Exception:
+            return False

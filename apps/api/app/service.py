@@ -190,6 +190,17 @@ async def process_single_command(
                 position_row = await repo.fetch_open_position(conn, account_id, close_position_id)
                 if position_row is None:
                     raise CommandValidationError("position_not_found", "open position not found")
+                lock_ok = await repo.acquire_close_position_lock(
+                    conn=conn,
+                    account_id=account_id,
+                    position_id=close_position_id,
+                    request_id=item.request_id,
+                )
+                if not lock_ok:
+                    raise CommandValidationError(
+                        "position_close_in_progress",
+                        "close_position already in progress for this position",
+                    )
                 payload = _build_close_position_payload(position_row, original_payload)
                 effective_command = "send_order"
 

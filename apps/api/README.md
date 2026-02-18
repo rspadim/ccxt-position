@@ -47,6 +47,7 @@ Request accepts object or array.
 Notes:
 
 - `close_position` is internally transformed into a reduce-only `send_order`.
+- `close_position` acquires a per-position lock, so only one close flow runs at a time.
 - `change_order` validates mutable state and enqueues modification command.
 
 ### Example
