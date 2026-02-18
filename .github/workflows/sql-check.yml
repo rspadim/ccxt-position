@@ -15,3 +15,5 @@ jobs:
           test -f sql/002_indexes.sql
           test -f sql/003_outbox_and_queue.sql
           test -f sql/004_permissions_and_risk.sql
+          test -f sql/005_position_close_lock.sql
+          test -f sql/006_position_orders_command_id.sql

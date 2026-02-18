@@ -14,6 +14,12 @@ pip install -r apps/api/requirements.txt
 uvicorn apps.api.main:app --reload --port 8000
 ```
 
+Run worker in another process:
+
+```bash
+python -m apps.api.worker_position
+```
+
 ## Engine Configuration
 
 `v0` is optimized for MySQL with raw SQL repositories.
@@ -49,6 +55,7 @@ Notes:
 - `close_position` is internally transformed into a reduce-only `send_order`.
 - `close_position` acquires a per-position lock, so only one close flow runs at a time.
 - `change_order` validates mutable state and enqueues modification command.
+- Queue consumption and status progression happen in `worker_position`.
 
 ### Example
 

@@ -89,6 +89,7 @@ class MySQLCommandRepository:
     async def insert_position_order_pending_submit(
         self,
         conn: Any,
+        command_id: int,
         account_id: int,
         symbol: str,
         side: str,
@@ -104,16 +105,17 @@ class MySQLCommandRepository:
             await cur.execute(
                 """
                 INSERT INTO position_orders (
-                    account_id, symbol, side, order_type, status,
+                    command_id, account_id, symbol, side, order_type, status,
                     magic_id, position_id, reason, client_order_id,
                     qty, price
                 ) VALUES (
-                    %s, %s, %s, %s, 'PENDING_SUBMIT',
+                    %s, %s, %s, %s, %s, 'PENDING_SUBMIT',
                     %s, %s, %s, %s,
                     %s, %s
                 )
                 """,
                 (
+                    command_id,
                     account_id,
                     symbol,
                     side,
@@ -210,3 +212,142 @@ class MySQLCommandRepository:
             return True
         except Exception:
             return False
+
+    async def claim_next_queue_item(
+        self, conn: Any, pool_id: int, worker_id: str
+    ) -> tuple[int, int, int] | None:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT id, command_id, account_id
+                FROM command_queue
+                WHERE pool_id = %s
+                  AND status = 'queued'
+                  AND available_at <= NOW()
+                ORDER BY id
+                LIMIT 1
+                FOR UPDATE SKIP LOCKED
+                """,
+                (pool_id,),
+            )
+            row = await cur.fetchone()
+            if row is None:
+                return None
+
+            queue_id = int(row[0])
+            await cur.execute(
+                """
+                UPDATE command_queue
+                SET status = 'processing',
+                    attempts = attempts + 1,
+                    locked_by = %s,
+                    locked_at = NOW()
+                WHERE id = %s
+                """,
+                (worker_id, queue_id),
+            )
+        return int(row[0]), int(row[1]), int(row[2])
+
+    async def fetch_command_for_worker(
+        self, conn: Any, command_id: int
+    ) -> tuple[int, str, dict[str, Any]]:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT account_id, command_type, payload_json
+                FROM position_commands
+                WHERE id = %s
+                LIMIT 1
+                """,
+                (command_id,),
+            )
+            row = await cur.fetchone()
+        if row is None:
+            raise ValueError("command_not_found")
+        payload = row[2] if isinstance(row[2], dict) else {}
+        return int(row[0]), str(row[1]), payload
+
+    async def mark_command_completed(self, conn: Any, command_id: int) -> None:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                UPDATE position_commands
+                SET status = 'completed', updated_at = NOW()
+                WHERE id = %s
+                """,
+                (command_id,),
+            )
+
+    async def mark_command_failed(self, conn: Any, command_id: int) -> None:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                UPDATE position_commands
+                SET status = 'failed', updated_at = NOW()
+                WHERE id = %s
+                """,
+                (command_id,),
+            )
+
+    async def mark_queue_done(self, conn: Any, queue_id: int) -> None:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                UPDATE command_queue
+                SET status = 'done', updated_at = NOW()
+                WHERE id = %s
+                """,
+                (queue_id,),
+            )
+
+    async def mark_queue_failed(self, conn: Any, queue_id: int, delay_seconds: int = 30) -> None:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                UPDATE command_queue
+                SET status = 'queued',
+                    available_at = DATE_ADD(NOW(), INTERVAL %s SECOND),
+                    updated_at = NOW()
+                WHERE id = %s
+                """,
+                (delay_seconds, queue_id),
+            )
+
+    async def fetch_order_id_by_command_id(self, conn: Any, command_id: int) -> int | None:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT id
+                FROM position_orders
+                WHERE command_id = %s
+                LIMIT 1
+                """,
+                (command_id,),
+            )
+            row = await cur.fetchone()
+        if row is None:
+            return None
+        return int(row[0])
+
+    async def mark_order_submitted(self, conn: Any, order_id: int) -> None:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                UPDATE position_orders
+                SET status = 'SUBMITTED', updated_at = NOW()
+                WHERE id = %s
+                """,
+                (order_id,),
+            )
+
+    async def insert_event(
+        self, conn: Any, account_id: int, namespace: str, event_type: str, payload: dict[str, Any]
+    ) -> None:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                INSERT INTO event_outbox (account_id, namespace, event_type, payload_json, delivered)
+                VALUES (%s, %s, %s, %s, FALSE)
+                """,
+                (account_id, namespace, event_type, payload),
+            )

@@ -68,6 +68,7 @@ async def _enqueue_command(
 async def _insert_pending_order(
     repo: MySQLCommandRepository,
     conn: Any,
+    command_id: int,
     account_id: int,
     payload: dict[str, Any],
     magic_id: int,
@@ -96,6 +97,7 @@ async def _insert_pending_order(
     await _validate_position_binding(repo, conn, account_id, position_id, symbol)
     return await repo.insert_position_order_pending_submit(
         conn=conn,
+        command_id=command_id,
         account_id=account_id,
         symbol=symbol,
         side=side,
@@ -224,6 +226,7 @@ async def process_single_command(
                 order_id = await _insert_pending_order(
                     repo=repo,
                     conn=conn,
+                    command_id=command_id,
                     account_id=account_id,
                     payload=payload,
                     magic_id=magic_id,

@@ -67,6 +67,7 @@ CREATE TABLE IF NOT EXISTS position_commands (
 
 CREATE TABLE IF NOT EXISTS position_orders (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  command_id BIGINT NULL,
   account_id BIGINT NOT NULL,
   symbol VARCHAR(64) NOT NULL,
   side VARCHAR(8) NOT NULL,
@@ -84,6 +85,8 @@ CREATE TABLE IF NOT EXISTS position_orders (
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   closed_at TIMESTAMP NULL,
+  KEY idx_position_orders_command_id (command_id),
+  CONSTRAINT fk_pos_order_command FOREIGN KEY (command_id) REFERENCES position_commands(id),
   CONSTRAINT fk_pos_order_account FOREIGN KEY (account_id) REFERENCES accounts(id)
 );
 

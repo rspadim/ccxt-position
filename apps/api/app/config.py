@@ -16,6 +16,9 @@ class Settings(BaseSettings):
     mysql_database: str = "ccxt_position"
     mysql_min_pool_size: int = 1
     mysql_max_pool_size: int = 10
+    worker_id: str = "worker-position-0"
+    worker_pool_id: int = 0
+    worker_poll_interval_ms: int = 1000
 
     model_config = SettingsConfigDict(env_file=".env", env_prefix="", extra="ignore")
 
