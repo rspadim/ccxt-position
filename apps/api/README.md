@@ -78,11 +78,11 @@ Notes:
 
 ## WebSocket
 
-Connect with query params:
+Connect with headers:
 
-- `api_key=<key>`
-- `account_id=<id>`
-- `after_id=<optional event id>`
+- `x-api-key: <plain_api_key>`
+- `x-account-id: <account_id>`
+- `x-after-id: <optional last event id>`
 
 Supported actions:
 

@@ -2,11 +2,11 @@
 
 Endpoint: `WS /ws`
 
-Connection query params:
+Connection headers:
 
-- `api_key`
-- `account_id`
-- optional `after_id`
+- `x-api-key`
+- `x-account-id`
+- optional `x-after-id`
 
 Request envelope:
 

@@ -255,8 +255,8 @@ async def post_position_reassign(
 
 @app.websocket("/ws")
 async def ws_endpoint(websocket: WebSocket) -> None:
-    api_key = websocket.query_params.get("api_key")
-    account_id_raw = websocket.query_params.get("account_id")
+    api_key = websocket.headers.get("x-api-key")
+    account_id_raw = websocket.headers.get("x-account-id")
     if not api_key or not account_id_raw:
         await websocket.close(code=1008)
         return
@@ -280,7 +280,11 @@ async def ws_endpoint(websocket: WebSocket) -> None:
 
     await websocket.accept()
     subscriptions = {"position", "ccxt"}
-    last_event_id = int(websocket.query_params.get("after_id", "0") or 0)
+    after_id_raw = websocket.headers.get("x-after-id", "0")
+    try:
+        last_event_id = int(after_id_raw or "0")
+    except ValueError:
+        last_event_id = 0
     await websocket.send_json(
         {"id": "server-hello", "ok": True, "type": "ws_event", "event": "connected", "payload": {"account_id": account_id}}
     )
