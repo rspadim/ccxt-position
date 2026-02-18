@@ -20,6 +20,13 @@ Run worker in another process:
 python -m apps.api.worker_position
 ```
 
+Worker behavior in v0:
+
+- Executes `send_order`, `cancel_order`, and `change_order` through CCXT
+- Persists exchange raw order payloads into `ccxt_orders_raw`
+- Updates `position_orders` status and `exchange_order_id`
+- Retries queue items with backoff and max attempt limit
+
 ## Engine Configuration
 
 `v0` is optimized for MySQL with raw SQL repositories.
@@ -37,6 +44,9 @@ Use header:
 - `x-api-key: <plain_api_key>`
 
 The API hashes this value with SHA-256 and checks `user_api_keys.api_key_hash`.
+
+Exchange credentials are loaded from `account_credentials_encrypted` columns.
+In v0 compatibility mode, values are treated as already usable secret strings.
 
 ## Position Commands
 

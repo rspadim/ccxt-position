@@ -13,6 +13,7 @@ Specification-first bootstrap with first implementation slice available in `apps
 - API key auth (`x-api-key`, SHA-256 lookup)
 - `POST /position/commands` with batch support
 - MySQL persistence for `position_commands`, `position_orders`, and `command_queue`
+- Worker processing pipeline with CCXT execution and raw exchange sync
 
 ## Core Concepts
 

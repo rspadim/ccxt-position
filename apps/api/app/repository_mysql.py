@@ -1,3 +1,5 @@
+import hashlib
+import json
 from typing import Any
 
 
@@ -215,11 +217,11 @@ class MySQLCommandRepository:
 
     async def claim_next_queue_item(
         self, conn: Any, pool_id: int, worker_id: str
-    ) -> tuple[int, int, int] | None:
+    ) -> tuple[int, int, int, int] | None:
         async with conn.cursor() as cur:
             await cur.execute(
                 """
-                SELECT id, command_id, account_id
+                SELECT id, command_id, account_id, attempts
                 FROM command_queue
                 WHERE pool_id = %s
                   AND status = 'queued'
@@ -246,7 +248,7 @@ class MySQLCommandRepository:
                 """,
                 (worker_id, queue_id),
             )
-        return int(row[0]), int(row[1]), int(row[2])
+        return int(row[0]), int(row[1]), int(row[2]), int(row[3]) + 1
 
     async def fetch_command_for_worker(
         self, conn: Any, command_id: int
@@ -313,6 +315,18 @@ class MySQLCommandRepository:
                 (delay_seconds, queue_id),
             )
 
+    async def mark_queue_dead(self, conn: Any, queue_id: int) -> None:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                UPDATE command_queue
+                SET status = 'failed',
+                    updated_at = NOW()
+                WHERE id = %s
+                """,
+                (queue_id,),
+            )
+
     async def fetch_order_id_by_command_id(self, conn: Any, command_id: int) -> int | None:
         async with conn.cursor() as cur:
             await cur.execute(
@@ -338,6 +352,152 @@ class MySQLCommandRepository:
                 WHERE id = %s
                 """,
                 (order_id,),
+            )
+
+    async def mark_order_submitted_exchange(
+        self, conn: Any, order_id: int, exchange_order_id: str | None
+    ) -> None:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                UPDATE position_orders
+                SET status = 'SUBMITTED',
+                    exchange_order_id = %s,
+                    updated_at = NOW()
+                WHERE id = %s
+                """,
+                (exchange_order_id, order_id),
+            )
+
+    async def mark_order_rejected(self, conn: Any, order_id: int) -> None:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                UPDATE position_orders
+                SET status = 'REJECTED', updated_at = NOW()
+                WHERE id = %s
+                """,
+                (order_id,),
+            )
+
+    async def mark_order_canceled(self, conn: Any, order_id: int) -> None:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                UPDATE position_orders
+                SET status = 'CANCELED', closed_at = NOW(), updated_at = NOW()
+                WHERE id = %s
+                """,
+                (order_id,),
+            )
+
+    async def fetch_account_exchange_credentials(
+        self, conn: Any, account_id: int
+    ) -> tuple[str, str | None, str | None, str | None]:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT a.exchange_id, c.api_key_enc, c.secret_enc, c.passphrase_enc
+                FROM accounts a
+                LEFT JOIN account_credentials_encrypted c ON c.account_id = a.id
+                WHERE a.id = %s
+                LIMIT 1
+                """,
+                (account_id,),
+            )
+            row = await cur.fetchone()
+        if row is None:
+            raise ValueError("account_not_found")
+        return str(row[0]), row[1], row[2], row[3]
+
+    async def fetch_order_by_id(
+        self, conn: Any, account_id: int, order_id: int
+    ) -> dict[str, Any] | None:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT id, symbol, side, order_type, status, qty, price, filled_qty,
+                       magic_id, position_id, reason, client_order_id, exchange_order_id
+                FROM position_orders
+                WHERE id = %s AND account_id = %s
+                LIMIT 1
+                """,
+                (order_id, account_id),
+            )
+            row = await cur.fetchone()
+        if row is None:
+            return None
+        return {
+            "id": int(row[0]),
+            "symbol": str(row[1]),
+            "side": str(row[2]).lower(),
+            "order_type": str(row[3]).lower(),
+            "status": str(row[4]),
+            "qty": row[5],
+            "price": row[6],
+            "filled_qty": row[7],
+            "magic_id": int(row[8]),
+            "position_id": int(row[9]),
+            "reason": str(row[10]),
+            "client_order_id": row[11],
+            "exchange_order_id": row[12],
+        }
+
+    async def fetch_order_for_command_send(self, conn: Any, command_id: int) -> dict[str, Any] | None:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT id, account_id, symbol, side, order_type, qty, price, client_order_id
+                FROM position_orders
+                WHERE command_id = %s
+                LIMIT 1
+                """,
+                (command_id,),
+            )
+            row = await cur.fetchone()
+        if row is None:
+            return None
+        return {
+            "id": int(row[0]),
+            "account_id": int(row[1]),
+            "symbol": str(row[2]),
+            "side": str(row[3]).lower(),
+            "order_type": str(row[4]).lower(),
+            "qty": row[5],
+            "price": row[6],
+            "client_order_id": row[7],
+        }
+
+    async def release_close_position_lock(self, conn: Any, position_id: int) -> None:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                DELETE FROM position_close_locks
+                WHERE position_id = %s
+                """,
+                (position_id,),
+            )
+
+    async def insert_ccxt_order_raw(
+        self,
+        conn: Any,
+        account_id: int,
+        exchange_id: str,
+        exchange_order_id: str | None,
+        client_order_id: str | None,
+        symbol: str | None,
+        raw_json: dict[str, Any],
+    ) -> None:
+        payload = json.dumps(raw_json, sort_keys=True, separators=(",", ":"))
+        fingerprint = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                INSERT INTO ccxt_orders_raw (
+                    account_id, exchange_id, exchange_order_id, client_order_id, symbol, raw_json, fingerprint_hash
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+                """,
+                (account_id, exchange_id, exchange_order_id, client_order_id, symbol, raw_json, fingerprint),
             )
 
     async def insert_event(
