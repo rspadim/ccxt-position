@@ -1,0 +1,11 @@
+# Configuration Reference
+
+Expected environment variables:
+
+- `APP_ENV`
+- `MYSQL_DSN`
+- `ENCRYPTION_MASTER_KEY`
+- `HTTP_WORKERS`
+- `WS_WORKERS`
+- `WORKER_CONCURRENCY`
+- `RECONCILIATION_INTERVAL_SECONDS`

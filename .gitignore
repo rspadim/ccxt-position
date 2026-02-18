@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.venv/
+venv/
+
+# Build/test/cache
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# IDE/editor
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Local env
+.env
+.env.*
+
+# MySQL dumps/temp
+*.sql.tmp
+*.dump

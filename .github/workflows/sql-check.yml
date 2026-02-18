@@ -1,0 +1,17 @@
+name: sql-check
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  sql-files:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify SQL files exist
+        run: |
+          test -f sql/001_init_core.sql
+          test -f sql/002_indexes.sql
+          test -f sql/003_outbox_and_queue.sql
+          test -f sql/004_permissions_and_risk.sql
