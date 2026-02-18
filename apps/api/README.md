@@ -54,7 +54,17 @@ Security defaults:
 
 Create `apps/api/config.json` from `apps/api/config.example.json` and set:
 
-- `db_engine`: `"mysql"` (required in v0)
+- `app.db_engine`: `"mysql"` (required in v0)
+- database settings under `database.*`
+- worker settings under `worker.*`
+- logging settings under `logging.*`
+- security settings under `security.*`
+
+Credential encryption:
+
+- `security.encryption_master_key` enables encrypted values in `account_credentials_encrypted`
+- encrypted format: `enc:v1:<fernet-token>`
+- legacy plaintext values are still accepted for compatibility
 
 Future `v1` can add `postgresql` by implementing a separate raw-SQL repository module.
 

@@ -1,19 +1,36 @@
 {
-  "app_name": "ccxt-position",
-  "app_env": "dev",
-  "db_engine": "mysql",
-  "mysql_host": "127.0.0.1",
-  "mysql_port": 3306,
-  "mysql_user": "root",
-  "mysql_password": "",
-  "mysql_database": "ccxt_position",
-  "mysql_min_pool_size": 1,
-  "mysql_max_pool_size": 10,
-  "worker_id": "worker-position-0",
-  "worker_pool_id": 0,
-  "worker_poll_interval_ms": 1000,
-  "worker_max_attempts": 5,
-  "worker_reconciliation_interval_seconds": 30,
-  "disable_uvicorn_access_log": true,
-  "app_request_log": true
+  "app": {
+    "name": "ccxt-position",
+    "env": "dev",
+    "db_engine": "mysql"
+  },
+  "api": {
+    "disable_uvicorn_access_log": true,
+    "app_request_log": true
+  },
+  "database": {
+    "engine": "mysql",
+    "mysql_host": "127.0.0.1",
+    "mysql_port": 3306,
+    "mysql_user": "root",
+    "mysql_password": "",
+    "mysql_database": "ccxt_position",
+    "mysql_min_pool_size": 1,
+    "mysql_max_pool_size": 10
+  },
+  "worker": {
+    "worker_id": "worker-position-0",
+    "pool_id": 0,
+    "poll_interval_ms": 1000,
+    "max_attempts": 5,
+    "reconciliation_interval_seconds": 30
+  },
+  "logging": {
+    "log_dir": "logs",
+    "disable_uvicorn_access_log": true,
+    "app_request_log": true
+  },
+  "security": {
+    "encryption_master_key": ""
+  }
 }

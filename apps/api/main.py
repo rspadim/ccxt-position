@@ -8,6 +8,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSock
 from .app.auth import AuthContext, get_auth_context, validate_api_key
 from .app.ccxt_adapter import CCXTAdapter
 from .app.config import load_settings
+from .app.credentials_codec import CredentialsCodec
 from .app.db_mysql import DatabaseMySQL
 from .app.logging_utils import (
     http_log_payload,
@@ -32,6 +33,7 @@ app.state.db = None
 app.state.repo = None
 app.state.ccxt = None
 app.state.loggers = {}
+app.state.credentials_codec = None
 
 
 @app.middleware("http")
@@ -59,7 +61,10 @@ async def on_startup() -> None:
         )
     app.state.db = DatabaseMySQL(settings)
     app.state.repo = MySQLCommandRepository()
-    app.state.loggers = setup_application_logging(settings.disable_uvicorn_access_log)
+    app.state.loggers = setup_application_logging(
+        settings.disable_uvicorn_access_log, log_dir=settings.log_dir
+    )
+    app.state.credentials_codec = CredentialsCodec(settings.encryption_master_key)
     app.state.ccxt = CCXTAdapter(logger=app.state.loggers.get("ccxt"))
     await app.state.db.connect()
 
@@ -108,6 +113,20 @@ async def _require_account_permission(user_id: int, account_id: int, require_tra
     return account
 
 
+async def _load_account_credentials(account_id: int) -> tuple[str | None, str | None, str | None]:
+    async with app.state.db.connection() as conn:
+        _, api_key, secret, passphrase = await app.state.repo.fetch_account_exchange_credentials(
+            conn, account_id
+        )
+        await conn.commit()
+    codec: CredentialsCodec = app.state.credentials_codec
+    return (
+        codec.decrypt_maybe(api_key),
+        codec.decrypt_maybe(secret),
+        codec.decrypt_maybe(passphrase),
+    )
+
+
 def _ccxt_requires_trade(func: str) -> bool:
     fn = func.lower()
     trade_prefixes = (
@@ -131,11 +150,7 @@ async def post_ccxt_call(
     account = await _require_account_permission(
         auth.user_id, account_id, require_trade=_ccxt_requires_trade(func)
     )
-    async with app.state.db.connection() as conn:
-        _, api_key, secret, passphrase = await app.state.repo.fetch_account_exchange_credentials(
-            conn, account_id
-        )
-        await conn.commit()
+    api_key, secret, passphrase = await _load_account_credentials(account_id)
     result = await app.state.ccxt.execute_method(
         exchange_id=account["exchange_id"],
         api_key=api_key,
@@ -161,11 +176,7 @@ async def post_ccxt_batch(
                 item.account_id,
                 require_trade=_ccxt_requires_trade(item.func),
             )
-            async with app.state.db.connection() as conn:
-                _, api_key, secret, passphrase = await app.state.repo.fetch_account_exchange_credentials(
-                    conn, item.account_id
-                )
-                await conn.commit()
+            api_key, secret, passphrase = await _load_account_credentials(item.account_id)
             result = await app.state.ccxt.execute_method(
                 exchange_id=account["exchange_id"],
                 api_key=api_key,
@@ -378,11 +389,7 @@ async def ws_endpoint(websocket: WebSocket) -> None:
                     method = str(payload.get("func", "")).strip()
                     args = payload.get("args") if isinstance(payload.get("args"), list) else []
                     kwargs = payload.get("kwargs") if isinstance(payload.get("kwargs"), dict) else {}
-                    async with app.state.db.connection() as conn:
-                        _, api_key_val, secret, passphrase = await app.state.repo.fetch_account_exchange_credentials(
-                            conn, account_id
-                        )
-                        await conn.commit()
+                    api_key_val, secret, passphrase = await _load_account_credentials(account_id)
                     result = await app.state.ccxt.execute_method(
                         exchange_id=account["exchange_id"],
                         api_key=api_key_val,

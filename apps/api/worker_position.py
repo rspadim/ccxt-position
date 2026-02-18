@@ -5,6 +5,7 @@ from typing import Any
 
 from .app.ccxt_adapter import CCXTAdapter
 from .app.config import load_settings
+from .app.credentials_codec import CredentialsCodec
 from .app.db_mysql import DatabaseMySQL
 from .app.logging_utils import setup_application_logging
 from .app.repository_mysql import MySQLCommandRepository
@@ -135,6 +136,7 @@ async def _process_claimed_queue_item(
     queue_id: int,
     command_id: int,
     account_id: int,
+    credentials_codec: CredentialsCodec,
 ) -> None:
     async with db.connection() as conn:
         try:
@@ -144,9 +146,12 @@ async def _process_claimed_queue_item(
             if cmd_account_id != account_id:
                 raise RuntimeError("queue/account mismatch")
 
-            exchange_id, api_key, secret, passphrase = await repo.fetch_account_exchange_credentials(
+            exchange_id, api_key_enc, secret_enc, passphrase_enc = await repo.fetch_account_exchange_credentials(
                 conn, account_id
             )
+            api_key = credentials_codec.decrypt_maybe(api_key_enc)
+            secret = credentials_codec.decrypt_maybe(secret_enc)
+            passphrase = credentials_codec.decrypt_maybe(passphrase_enc)
             position_lock_id = _release_close_position_requested(payload)
 
             if command_type == "send_order":
@@ -391,6 +396,7 @@ async def _run_reconciliation_once(
     repo: MySQLCommandRepository,
     ccxt_adapter: CCXTAdapter,
     pool_id: int,
+    credentials_codec: CredentialsCodec,
 ) -> None:
     async with db.connection() as conn:
         accounts = await repo.list_active_accounts_by_pool(conn, pool_id)
@@ -400,9 +406,12 @@ async def _run_reconciliation_once(
         account_id = int(account["id"])
         async with db.connection() as conn:
             try:
-                exchange_id, api_key, secret, passphrase = await repo.fetch_account_exchange_credentials(
+                exchange_id, api_key_enc, secret_enc, passphrase_enc = await repo.fetch_account_exchange_credentials(
                     conn, account_id
                 )
+                api_key = credentials_codec.decrypt_maybe(api_key_enc)
+                secret = credentials_codec.decrypt_maybe(secret_enc)
+                passphrase = credentials_codec.decrypt_maybe(passphrase_enc)
                 cursor_raw = await repo.fetch_reconciliation_cursor(
                     conn, account_id, "my_trades_since"
                 )
@@ -470,7 +479,10 @@ async def run_worker() -> None:
 
     db = DatabaseMySQL(settings)
     repo = MySQLCommandRepository()
-    loggers = setup_application_logging(settings.disable_uvicorn_access_log)
+    credentials_codec = CredentialsCodec(settings.encryption_master_key)
+    loggers = setup_application_logging(
+        settings.disable_uvicorn_access_log, log_dir=settings.log_dir
+    )
     position_logger = loggers.get("position")
     ccxt_adapter = CCXTAdapter(logger=loggers.get("ccxt"))
     await db.connect()
@@ -507,6 +519,7 @@ async def run_worker() -> None:
                         repo=repo,
                         ccxt_adapter=ccxt_adapter,
                         pool_id=settings.worker_pool_id,
+                        credentials_codec=credentials_codec,
                     )
                     last_recon_ts = now
                 continue
@@ -525,7 +538,7 @@ async def run_worker() -> None:
                 continue
             try:
                 await _process_claimed_queue_item(
-                    db, repo, ccxt_adapter, queue_id, command_id, account_id
+                    db, repo, ccxt_adapter, queue_id, command_id, account_id, credentials_codec
                 )
             except Exception:
                 # failure already persisted; continue polling.
@@ -546,6 +559,7 @@ async def run_worker() -> None:
                     repo=repo,
                     ccxt_adapter=ccxt_adapter,
                     pool_id=settings.worker_pool_id,
+                    credentials_codec=credentials_codec,
                 )
                 last_recon_ts = now
     finally:
