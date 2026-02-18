@@ -26,3 +26,5 @@ Behavior:
 - `GET /position/positions/open`
 - `GET /position/positions/history`
 - `POST /position/reassign`
+
+`/position/reassign` updates `magic_id` and `position_id` for selected deals/orders and marks deals as reconciled.

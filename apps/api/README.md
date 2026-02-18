@@ -4,6 +4,13 @@ First vertical slice implemented:
 
 - `GET /healthz`
 - `POST /position/commands` (single command or batch)
+- `GET /position/orders/open|history`
+- `GET /position/deals`
+- `GET /position/positions/open|history`
+- `POST /position/reassign`
+- `POST /ccxt/{account_id}/{func}`
+- `POST /ccxt/multiple_commands`
+- `WS /ws`
 
 ## Run
 
@@ -26,6 +33,7 @@ Worker behavior in v0:
 - Persists exchange raw order payloads into `ccxt_orders_raw`
 - Updates `position_orders` status and `exchange_order_id`
 - Retries queue items with backoff and max attempt limit
+- Reconciliation poll imports external trades and projects deals/positions
 
 ## Engine Configuration
 
@@ -66,6 +74,22 @@ Notes:
 - `close_position` acquires a per-position lock, so only one close flow runs at a time.
 - `change_order` validates mutable state and enqueues modification command.
 - Queue consumption and status progression happen in `worker_position`.
+- `close_by` is executed internally in the worker and generates internal compensation deals.
+
+## WebSocket
+
+Connect with query params:
+
+- `api_key=<key>`
+- `account_id=<id>`
+- `after_id=<optional event id>`
+
+Supported actions:
+
+- `ping`
+- `subscribe`
+- `namespace=position, action=command`
+- `namespace=ccxt, action=call`
 
 ### Example
 

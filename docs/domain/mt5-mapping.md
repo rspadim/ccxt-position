@@ -6,6 +6,7 @@ Key MT5-like mapping:
 - `magic_id`: strategy identifier
 - `reason`: source classification (`api`, `external`, ...)
 - `close_by`: internal virtual netting operation
+- `close_by` execution generates internal deals and adjusts positions without exchange order
 
 Defaults:
 

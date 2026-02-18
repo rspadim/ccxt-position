@@ -29,3 +29,27 @@ class CommandResult(BaseModel):
 
 class CommandsResponse(BaseModel):
     results: list[CommandResult]
+
+
+class CcxtCallInput(BaseModel):
+    args: list[Any] = Field(default_factory=list)
+    kwargs: dict[str, Any] = Field(default_factory=dict)
+
+
+class CcxtBatchItem(BaseModel):
+    account_id: int = Field(gt=0)
+    func: str
+    args: list[Any] = Field(default_factory=list)
+    kwargs: dict[str, Any] = Field(default_factory=dict)
+
+
+class CcxtBatchResponse(BaseModel):
+    results: list[dict[str, Any]]
+
+
+class ReassignInput(BaseModel):
+    account_id: int = Field(gt=0)
+    deal_ids: list[int] = Field(default_factory=list)
+    order_ids: list[int] = Field(default_factory=list)
+    target_magic_id: int = 0
+    target_position_id: int = 0

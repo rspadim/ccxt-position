@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     worker_pool_id: int = 0
     worker_poll_interval_ms: int = 1000
     worker_max_attempts: int = 5
+    worker_reconciliation_interval_seconds: int = 30
 
     model_config = SettingsConfigDict(env_file=".env", env_prefix="", extra="ignore")
 

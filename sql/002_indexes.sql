@@ -4,6 +4,9 @@ CREATE INDEX idx_position_orders_account_status_created
 CREATE INDEX idx_position_deals_account_position_executed
   ON position_deals (account_id, position_id, executed_at);
 
+CREATE UNIQUE INDEX uq_position_deals_exchange_trade
+  ON position_deals (account_id, exchange_trade_id);
+
 CREATE INDEX idx_position_positions_account_symbol_state
   ON position_positions (account_id, symbol, state);
 

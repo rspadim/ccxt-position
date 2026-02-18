@@ -12,5 +12,6 @@
   "worker_id": "worker-position-0",
   "worker_pool_id": 0,
   "worker_poll_interval_ms": 1000,
-  "worker_max_attempts": 5
+  "worker_max_attempts": 5,
+  "worker_reconciliation_interval_seconds": 30
 }

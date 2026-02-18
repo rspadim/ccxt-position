@@ -12,7 +12,9 @@ Specification-first bootstrap with first implementation slice available in `apps
 - FastAPI app startup/shutdown
 - API key auth (`x-api-key`, SHA-256 lookup)
 - `POST /position/commands` with batch support
-- MySQL persistence for `position_commands`, `position_orders`, and `command_queue`
+- Position query/reassign endpoints and CCXT gateway endpoints
+- WebSocket (`/ws`) with command/call and outbox event streaming
+- MySQL persistence for commands/orders/deals/positions, raw sync, and queue
 - Worker processing pipeline with CCXT execution and raw exchange sync
 
 ## Core Concepts

@@ -11,6 +11,35 @@ def _as_plain_secret(value: str | None) -> str | None:
 
 
 class CCXTAdapter:
+    async def execute_method(
+        self,
+        exchange_id: str,
+        api_key: str | None,
+        secret: str | None,
+        passphrase: str | None,
+        method: str,
+        args: list[Any] | None = None,
+        kwargs: dict[str, Any] | None = None,
+    ) -> Any:
+        exchange_cls = getattr(ccxt_async, exchange_id, None)
+        if exchange_cls is None:
+            raise RuntimeError(f"unsupported exchange_id: {exchange_id}")
+        exchange = exchange_cls(
+            {
+                "apiKey": _as_plain_secret(api_key),
+                "secret": _as_plain_secret(secret),
+                "password": _as_plain_secret(passphrase),
+                "enableRateLimit": True,
+            }
+        )
+        try:
+            fn = getattr(exchange, method, None)
+            if fn is None:
+                raise RuntimeError(f"unsupported ccxt method: {method}")
+            return await fn(*(args or []), **(kwargs or {}))
+        finally:
+            await exchange.close()
+
     async def create_order(
         self,
         exchange_id: str,
@@ -129,3 +158,25 @@ class CCXTAdapter:
         finally:
             await exchange.close()
 
+    async def fetch_my_trades(
+        self,
+        exchange_id: str,
+        api_key: str | None,
+        secret: str | None,
+        passphrase: str | None,
+        symbol: str | None = None,
+        since: int | None = None,
+        limit: int | None = 200,
+        params: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        out = await self.execute_method(
+            exchange_id=exchange_id,
+            api_key=api_key,
+            secret=secret,
+            passphrase=passphrase,
+            method="fetch_my_trades",
+            args=[symbol, since, limit, params or {}],
+        )
+        if isinstance(out, list):
+            return out
+        return []

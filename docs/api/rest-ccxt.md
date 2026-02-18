@@ -12,3 +12,4 @@ Notes:
 
 - Domain is independent from position OMS tables.
 - Raw exchange events are persisted before OMS projection.
+- Trade-like methods require account `trade` permission.

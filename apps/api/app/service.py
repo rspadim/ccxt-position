@@ -111,8 +111,8 @@ async def _insert_pending_order(
     )
 
 
-def _build_close_position_payload(position_row: tuple[int, str, str, str], payload: dict[str, Any]) -> dict[str, Any]:
-    position_id, symbol, current_side, qty = position_row
+def _build_close_position_payload(position_row: tuple[int, str, str, str, str], payload: dict[str, Any]) -> dict[str, Any]:
+    position_id, symbol, current_side, qty, _avg_price = position_row
     close_side = "sell" if current_side == "buy" else "buy"
     order_type = str(payload.get("order_type", "market")).lower()
     if order_type not in {"market", "limit"}:
