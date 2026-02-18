@@ -21,6 +21,12 @@ pip install -r apps/api/requirements.txt
 uvicorn apps.api.main:app --reload --port 8000
 ```
 
+Optional local MySQL with Docker:
+
+```bash
+docker compose -f apps/api/docker-compose.mysql.yml up -d
+```
+
 Run worker in another process:
 
 ```bash
@@ -133,4 +139,11 @@ Supported actions:
     }
   }
 ]
+```
+
+## Tests
+
+```bash
+pip install -r apps/api/requirements-dev.txt
+pytest -q apps/api/tests
 ```
