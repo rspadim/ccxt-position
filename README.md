@@ -7,7 +7,12 @@
 
 ## Project Status
 
-Specification-first bootstrap. Code implementation is intentionally minimal in this phase.
+Specification-first bootstrap with first implementation slice available in `apps/api`:
+
+- FastAPI app startup/shutdown
+- API key auth (`x-api-key`, SHA-256 lookup)
+- `POST /position/commands` with batch support
+- MySQL persistence for `position_commands`, `position_orders`, and `command_queue`
 
 ## Core Concepts
 

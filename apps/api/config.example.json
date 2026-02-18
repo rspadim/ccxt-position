@@ -1,0 +1,12 @@
+{
+  "app_name": "ccxt-position",
+  "app_env": "dev",
+  "db_engine": "mysql",
+  "mysql_host": "127.0.0.1",
+  "mysql_port": 3306,
+  "mysql_user": "root",
+  "mysql_password": "",
+  "mysql_database": "ccxt_position",
+  "mysql_min_pool_size": 1,
+  "mysql_max_pool_size": 10
+}
