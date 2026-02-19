@@ -67,7 +67,7 @@ Create `apps/api/config.json` from `apps/api/config.example.json` and set:
 
 - `app.db_engine`: `"mysql"` (required in v0)
 - database settings under `database.*`
-: `database.mysql_driver` supports `"asyncmy"` or `"aiomysql"`
+- `database.mysql_driver` supports `"asyncmy"` or `"aiomysql"`
 - worker settings under `worker.*`
 - logging settings under `logging.*`
 - security settings under `security.*`
@@ -168,6 +168,7 @@ Security commands:
 python -m apps.api.cli generate-master-key
 python -m apps.api.cli encrypt --value "my-secret"
 python -m apps.api.cli upsert-account-credentials --account-id 1 --api-key "..." --secret "..." --encrypt-input
+python -m apps.api.cli set-account-testnet --account-id 1 --enabled
 ```
 
 Trading/position commands:

@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS user_api_keys (
 CREATE TABLE IF NOT EXISTS accounts (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
   exchange_id VARCHAR(64) NOT NULL,
+  is_testnet BOOLEAN NOT NULL DEFAULT FALSE,
   label VARCHAR(128) NOT NULL,
   position_mode VARCHAR(16) NOT NULL DEFAULT 'hedge',
   raw_storage_mode VARCHAR(16) NOT NULL DEFAULT 'shared',

@@ -14,15 +14,13 @@ class CCXTAdapter:
     def __init__(self, logger: Any | None = None) -> None:
         self.logger = logger
 
-    async def execute_method(
+    def _build_exchange(
         self,
         exchange_id: str,
+        use_testnet: bool,
         api_key: str | None,
         secret: str | None,
         passphrase: str | None,
-        method: str,
-        args: list[Any] | None = None,
-        kwargs: dict[str, Any] | None = None,
     ) -> Any:
         exchange_cls = getattr(ccxt_async, exchange_id, None)
         if exchange_cls is None:
@@ -34,6 +32,30 @@ class CCXTAdapter:
                 "password": _as_plain_secret(passphrase),
                 "enableRateLimit": True,
             }
+        )
+        if use_testnet:
+            setter = getattr(exchange, "set_sandbox_mode", None)
+            if callable(setter):
+                setter(True)
+        return exchange
+
+    async def execute_method(
+        self,
+        exchange_id: str,
+        use_testnet: bool,
+        api_key: str | None,
+        secret: str | None,
+        passphrase: str | None,
+        method: str,
+        args: list[Any] | None = None,
+        kwargs: dict[str, Any] | None = None,
+    ) -> Any:
+        exchange = self._build_exchange(
+            exchange_id=exchange_id,
+            use_testnet=use_testnet,
+            api_key=api_key,
+            secret=secret,
+            passphrase=passphrase,
         )
         try:
             fn = getattr(exchange, method, None)
@@ -51,6 +73,7 @@ class CCXTAdapter:
     async def create_order(
         self,
         exchange_id: str,
+        use_testnet: bool,
         api_key: str | None,
         secret: str | None,
         passphrase: str | None,
@@ -61,17 +84,12 @@ class CCXTAdapter:
         price: Any,
         params: dict[str, Any],
     ) -> dict[str, Any]:
-        exchange_cls = getattr(ccxt_async, exchange_id, None)
-        if exchange_cls is None:
-            raise RuntimeError(f"unsupported exchange_id: {exchange_id}")
-
-        exchange = exchange_cls(
-            {
-                "apiKey": _as_plain_secret(api_key),
-                "secret": _as_plain_secret(secret),
-                "password": _as_plain_secret(passphrase),
-                "enableRateLimit": True,
-            }
+        exchange = self._build_exchange(
+            exchange_id=exchange_id,
+            use_testnet=use_testnet,
+            api_key=api_key,
+            secret=secret,
+            passphrase=passphrase,
         )
         try:
             return await exchange.create_order(
@@ -88,6 +106,7 @@ class CCXTAdapter:
     async def cancel_order(
         self,
         exchange_id: str,
+        use_testnet: bool,
         api_key: str | None,
         secret: str | None,
         passphrase: str | None,
@@ -95,16 +114,12 @@ class CCXTAdapter:
         symbol: str,
         params: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        exchange_cls = getattr(ccxt_async, exchange_id, None)
-        if exchange_cls is None:
-            raise RuntimeError(f"unsupported exchange_id: {exchange_id}")
-        exchange = exchange_cls(
-            {
-                "apiKey": _as_plain_secret(api_key),
-                "secret": _as_plain_secret(secret),
-                "password": _as_plain_secret(passphrase),
-                "enableRateLimit": True,
-            }
+        exchange = self._build_exchange(
+            exchange_id=exchange_id,
+            use_testnet=use_testnet,
+            api_key=api_key,
+            secret=secret,
+            passphrase=passphrase,
         )
         try:
             return await exchange.cancel_order(
@@ -118,6 +133,7 @@ class CCXTAdapter:
     async def edit_or_replace_order(
         self,
         exchange_id: str,
+        use_testnet: bool,
         api_key: str | None,
         secret: str | None,
         passphrase: str | None,
@@ -129,16 +145,12 @@ class CCXTAdapter:
         price: Any,
         params: dict[str, Any],
     ) -> dict[str, Any]:
-        exchange_cls = getattr(ccxt_async, exchange_id, None)
-        if exchange_cls is None:
-            raise RuntimeError(f"unsupported exchange_id: {exchange_id}")
-        exchange = exchange_cls(
-            {
-                "apiKey": _as_plain_secret(api_key),
-                "secret": _as_plain_secret(secret),
-                "password": _as_plain_secret(passphrase),
-                "enableRateLimit": True,
-            }
+        exchange = self._build_exchange(
+            exchange_id=exchange_id,
+            use_testnet=use_testnet,
+            api_key=api_key,
+            secret=secret,
+            passphrase=passphrase,
         )
         try:
             await exchange.load_markets()
@@ -169,6 +181,7 @@ class CCXTAdapter:
     async def fetch_my_trades(
         self,
         exchange_id: str,
+        use_testnet: bool,
         api_key: str | None,
         secret: str | None,
         passphrase: str | None,
@@ -179,6 +192,7 @@ class CCXTAdapter:
     ) -> list[dict[str, Any]]:
         out = await self.execute_method(
             exchange_id=exchange_id,
+            use_testnet=use_testnet,
             api_key=api_key,
             secret=secret,
             passphrase=passphrase,

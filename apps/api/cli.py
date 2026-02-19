@@ -100,6 +100,28 @@ async def _upsert_account_credentials(
     )
 
 
+async def _set_account_testnet(account_id: int, is_testnet: bool) -> None:
+    settings = load_settings()
+    db = DatabaseMySQL(settings)
+    await db.connect()
+    try:
+        async with db.connection() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    """
+                    UPDATE accounts
+                    SET is_testnet = %s
+                    WHERE id = %s
+                    """,
+                    (is_testnet, account_id),
+                )
+                changed = int(cur.rowcount or 0)
+            await conn.commit()
+    finally:
+        await db.disconnect()
+    _print_json({"ok": True, "account_id": account_id, "is_testnet": is_testnet, "rows": changed})
+
+
 def cmd_generate_master_key(_args: argparse.Namespace) -> None:
     key = Fernet.generate_key().decode("utf-8")
     _print_json({"encryption_master_key": key})
@@ -125,6 +147,16 @@ def cmd_upsert_account_credentials(args: argparse.Namespace) -> None:
             encrypt_input=args.encrypt_input,
         )
     )
+
+
+def cmd_set_account_testnet(args: argparse.Namespace) -> None:
+    enabled: bool
+    if args.enabled and args.disabled:
+        raise SystemExit("use only one flag: --enabled or --disabled")
+    if not args.enabled and not args.disabled:
+        raise SystemExit("one flag is required: --enabled or --disabled")
+    enabled = bool(args.enabled and not args.disabled)
+    asyncio.run(_set_account_testnet(args.account_id, enabled))
 
 
 def _post_position_command(
@@ -229,6 +261,15 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p_upsert.set_defaults(func=cmd_upsert_account_credentials)
 
+    p_testnet = sub.add_parser(
+        "set-account-testnet",
+        help="Enable/disable account testnet mode in accounts table",
+    )
+    p_testnet.add_argument("--account-id", type=int, required=True)
+    p_testnet.add_argument("--enabled", action="store_true")
+    p_testnet.add_argument("--disabled", action="store_true")
+    p_testnet.set_defaults(func=cmd_set_account_testnet)
+
     # Trading / position commands through REST API
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--base-url", default="http://127.0.0.1:8000")
@@ -286,4 +327,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

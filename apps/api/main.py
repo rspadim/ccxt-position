@@ -116,14 +116,15 @@ async def _require_account_permission(user_id: int, account_id: int, require_tra
     return account
 
 
-async def _load_account_credentials(account_id: int) -> tuple[str | None, str | None, str | None]:
+async def _load_account_credentials(account_id: int) -> tuple[bool, str | None, str | None, str | None]:
     async with app.state.db.connection() as conn:
-        _, api_key, secret, passphrase = await app.state.repo.fetch_account_exchange_credentials(
+        _, is_testnet, api_key, secret, passphrase = await app.state.repo.fetch_account_exchange_credentials(
             conn, account_id
         )
         await conn.commit()
     codec: CredentialsCodec = app.state.credentials_codec
     return (
+        is_testnet,
         codec.decrypt_maybe(api_key),
         codec.decrypt_maybe(secret),
         codec.decrypt_maybe(passphrase),
@@ -153,9 +154,10 @@ async def post_ccxt_call(
     account = await _require_account_permission(
         auth.user_id, account_id, require_trade=_ccxt_requires_trade(func)
     )
-    api_key, secret, passphrase = await _load_account_credentials(account_id)
+    is_testnet, api_key, secret, passphrase = await _load_account_credentials(account_id)
     result = await app.state.ccxt.execute_method(
         exchange_id=account["exchange_id"],
+        use_testnet=is_testnet,
         api_key=api_key,
         secret=secret,
         passphrase=passphrase,
@@ -179,9 +181,10 @@ async def post_ccxt_batch(
                 item.account_id,
                 require_trade=_ccxt_requires_trade(item.func),
             )
-            api_key, secret, passphrase = await _load_account_credentials(item.account_id)
+            is_testnet, api_key, secret, passphrase = await _load_account_credentials(item.account_id)
             result = await app.state.ccxt.execute_method(
                 exchange_id=account["exchange_id"],
+                use_testnet=is_testnet,
                 api_key=api_key,
                 secret=secret,
                 passphrase=passphrase,
@@ -392,9 +395,10 @@ async def ws_endpoint(websocket: WebSocket) -> None:
                     method = str(payload.get("func", "")).strip()
                     args = payload.get("args") if isinstance(payload.get("args"), list) else []
                     kwargs = payload.get("kwargs") if isinstance(payload.get("kwargs"), dict) else {}
-                    api_key_val, secret, passphrase = await _load_account_credentials(account_id)
+                    is_testnet, api_key_val, secret, passphrase = await _load_account_credentials(account_id)
                     result = await app.state.ccxt.execute_method(
                         exchange_id=account["exchange_id"],
+                        use_testnet=is_testnet,
                         api_key=api_key_val,
                         secret=secret,
                         passphrase=passphrase,

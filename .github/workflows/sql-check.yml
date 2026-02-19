@@ -19,3 +19,4 @@ jobs:
           test -f sql/006_position_orders_command_id.sql
           test -f sql/007_position_positions_updated_at.sql
           test -f sql/008_position_deals_unique_exchange_trade.sql
+          test -f sql/009_accounts_is_testnet.sql

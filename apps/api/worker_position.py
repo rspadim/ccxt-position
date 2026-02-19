@@ -224,7 +224,7 @@ async def _process_claimed_queue_item(
             if cmd_account_id != account_id:
                 raise RuntimeError("queue/account mismatch")
 
-            exchange_id, api_key_enc, secret_enc, passphrase_enc = await repo.fetch_account_exchange_credentials(
+            exchange_id, is_testnet, api_key_enc, secret_enc, passphrase_enc = await repo.fetch_account_exchange_credentials(
                 conn, account_id
             )
             api_key = credentials_codec.decrypt_maybe(api_key_enc)
@@ -245,6 +245,7 @@ async def _process_claimed_queue_item(
 
                 created = await ccxt_adapter.create_order(
                     exchange_id=exchange_id,
+                    use_testnet=is_testnet,
                     api_key=api_key,
                     secret=secret,
                     passphrase=passphrase,
@@ -289,6 +290,7 @@ async def _process_claimed_queue_item(
                     raise PermanentCommandError("order has no exchange_order_id to cancel")
                 canceled = await ccxt_adapter.cancel_order(
                     exchange_id=exchange_id,
+                    use_testnet=is_testnet,
                     api_key=api_key,
                     secret=secret,
                     passphrase=passphrase,
@@ -327,6 +329,7 @@ async def _process_claimed_queue_item(
                 new_qty = payload.get("new_qty", order["qty"])
                 edited = await ccxt_adapter.edit_or_replace_order(
                     exchange_id=exchange_id,
+                    use_testnet=is_testnet,
                     api_key=api_key,
                     secret=secret,
                     passphrase=passphrase,
@@ -484,7 +487,7 @@ async def _run_reconciliation_once(
         account_id = int(account["id"])
         async with db.connection() as conn:
             try:
-                exchange_id, api_key_enc, secret_enc, passphrase_enc = await repo.fetch_account_exchange_credentials(
+                exchange_id, is_testnet, api_key_enc, secret_enc, passphrase_enc = await repo.fetch_account_exchange_credentials(
                     conn, account_id
                 )
                 api_key = credentials_codec.decrypt_maybe(api_key_enc)
@@ -496,6 +499,7 @@ async def _run_reconciliation_once(
                 since = int(cursor_raw) if cursor_raw and cursor_raw.isdigit() else None
                 trades = await ccxt_adapter.fetch_my_trades(
                     exchange_id=exchange_id,
+                    use_testnet=is_testnet,
                     api_key=api_key,
                     secret=secret,
                     passphrase=passphrase,

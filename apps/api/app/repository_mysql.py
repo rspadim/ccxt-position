@@ -42,7 +42,7 @@ class MySQLCommandRepository:
         async with conn.cursor() as cur:
             await cur.execute(
                 """
-                SELECT id, exchange_id, pool_id, status
+                SELECT id, exchange_id, is_testnet, pool_id, status
                 FROM accounts
                 WHERE id = %s
                 LIMIT 1
@@ -55,8 +55,9 @@ class MySQLCommandRepository:
         return {
             "id": int(row[0]),
             "exchange_id": str(row[1]),
-            "pool_id": int(row[2]),
-            "status": str(row[3]),
+            "is_testnet": bool(row[2]),
+            "pool_id": int(row[3]),
+            "status": str(row[4]),
         }
 
     async def fetch_account_position_mode(self, conn: Any, account_id: int) -> str:
@@ -82,7 +83,7 @@ class MySQLCommandRepository:
         async with conn.cursor() as cur:
             await cur.execute(
                 """
-                SELECT id, exchange_id
+                SELECT id, exchange_id, is_testnet
                 FROM accounts
                 WHERE status = 'active' AND pool_id = %s
                 ORDER BY id
@@ -90,7 +91,7 @@ class MySQLCommandRepository:
                 (pool_id,),
             )
             rows = await cur.fetchall()
-        return [{"id": int(r[0]), "exchange_id": str(r[1])} for r in rows]
+        return [{"id": int(r[0]), "exchange_id": str(r[1]), "is_testnet": bool(r[2])} for r in rows]
 
     async def fetch_allow_new_positions(self, conn: Any, account_id: int) -> bool:
         async with conn.cursor() as cur:
@@ -447,11 +448,11 @@ class MySQLCommandRepository:
 
     async def fetch_account_exchange_credentials(
         self, conn: Any, account_id: int
-    ) -> tuple[str, str | None, str | None, str | None]:
+    ) -> tuple[str, bool, str | None, str | None, str | None]:
         async with conn.cursor() as cur:
             await cur.execute(
                 """
-                SELECT a.exchange_id, c.api_key_enc, c.secret_enc, c.passphrase_enc
+                SELECT a.exchange_id, a.is_testnet, c.api_key_enc, c.secret_enc, c.passphrase_enc
                 FROM accounts a
                 LEFT JOIN account_credentials_encrypted c ON c.account_id = a.id
                 WHERE a.id = %s
@@ -462,7 +463,19 @@ class MySQLCommandRepository:
             row = await cur.fetchone()
         if row is None:
             raise ValueError("account_not_found")
-        return str(row[0]), row[1], row[2], row[3]
+        return str(row[0]), bool(row[1]), row[2], row[3], row[4]
+
+    async def set_account_testnet(self, conn: Any, account_id: int, is_testnet: bool) -> int:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                UPDATE accounts
+                SET is_testnet = %s
+                WHERE id = %s
+                """,
+                (is_testnet, account_id),
+            )
+            return int(cur.rowcount or 0)
 
     async def fetch_order_by_id(
         self, conn: Any, account_id: int, order_id: int

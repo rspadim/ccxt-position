@@ -1,0 +1,3 @@
+ALTER TABLE accounts
+  ADD COLUMN is_testnet BOOLEAN NOT NULL DEFAULT FALSE
+  AFTER exchange_id;
