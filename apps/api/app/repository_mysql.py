@@ -59,6 +59,25 @@ class MySQLCommandRepository:
             "status": str(row[3]),
         }
 
+    async def fetch_account_position_mode(self, conn: Any, account_id: int) -> str:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT position_mode
+                FROM accounts
+                WHERE id = %s
+                LIMIT 1
+                """,
+                (account_id,),
+            )
+            row = await cur.fetchone()
+        if row is None:
+            return "hedge"
+        mode = str(row[0]).lower().strip()
+        if mode not in {"hedge", "netting"}:
+            return "hedge"
+        return mode
+
     async def list_active_accounts_by_pool(self, conn: Any, pool_id: int) -> list[dict[str, Any]]:
         async with conn.cursor() as cur:
             await cur.execute(
@@ -570,6 +589,25 @@ class MySQLCommandRepository:
                 LIMIT 1
                 """,
                 (account_id, symbol, side),
+            )
+            row = await cur.fetchone()
+        if row is None:
+            return None
+        return {"id": int(row[0]), "qty": row[1], "avg_price": row[2], "side": str(row[3]).lower()}
+
+    async def fetch_open_net_position_by_symbol(
+        self, conn: Any, account_id: int, symbol: str
+    ) -> dict[str, Any] | None:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT id, qty, avg_price, side
+                FROM position_positions
+                WHERE account_id = %s AND symbol = %s AND state = 'open'
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (account_id, symbol),
             )
             row = await cur.fetchone()
         if row is None:

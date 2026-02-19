@@ -73,9 +73,67 @@ async def _project_trade_to_position(
     price = exchange_trade["price"]
     symbol = exchange_trade["symbol"]
     side = exchange_trade["side"]
+    mode = await repo.fetch_account_position_mode(conn, account_id)
 
-    if position_id <= 0:
-        existing = await repo.fetch_open_position_for_symbol(conn, account_id, symbol, side)
+    if mode == "hedge":
+        if position_id > 0:
+            explicit = await repo.fetch_open_position(conn, account_id, position_id)
+            if explicit is not None and explicit[1] == symbol and explicit[2] == side:
+                old_qty = _dec(explicit[3])
+                old_avg = _dec(explicit[4])
+                new_qty = old_qty + qty
+                if new_qty <= 0:
+                    await repo.close_position(conn, position_id)
+                else:
+                    new_avg = ((old_qty * old_avg) + (qty * price)) / new_qty
+                    await repo.update_position_open_qty_price(conn, position_id, new_qty, new_avg)
+            else:
+                existing = await repo.fetch_open_position_for_symbol(conn, account_id, symbol, side)
+                if existing is None:
+                    position_id = await repo.create_position_open(
+                        conn=conn,
+                        account_id=account_id,
+                        symbol=symbol,
+                        side=side,
+                        qty=qty,
+                        avg_price=price,
+                        reason=reason,
+                    )
+                else:
+                    position_id = int(existing["id"])
+                    old_qty = _dec(existing["qty"])
+                    old_avg = _dec(existing["avg_price"])
+                    new_qty = old_qty + qty
+                    if new_qty <= 0:
+                        await repo.close_position(conn, position_id)
+                    else:
+                        new_avg = ((old_qty * old_avg) + (qty * price)) / new_qty
+                        await repo.update_position_open_qty_price(conn, position_id, new_qty, new_avg)
+        else:
+            existing = await repo.fetch_open_position_for_symbol(conn, account_id, symbol, side)
+            if existing is None:
+                position_id = await repo.create_position_open(
+                    conn=conn,
+                    account_id=account_id,
+                    symbol=symbol,
+                    side=side,
+                    qty=qty,
+                    avg_price=price,
+                    reason=reason,
+                )
+            else:
+                position_id = int(existing["id"])
+                old_qty = _dec(existing["qty"])
+                old_avg = _dec(existing["avg_price"])
+                new_qty = old_qty + qty
+                if new_qty <= 0:
+                    await repo.close_position(conn, position_id)
+                else:
+                    new_avg = ((old_qty * old_avg) + (qty * price)) / new_qty
+                    await repo.update_position_open_qty_price(conn, position_id, new_qty, new_avg)
+    else:
+        # netting: single live position per symbol. Opposite trades reduce/close/reverse.
+        existing = await repo.fetch_open_net_position_by_symbol(conn, account_id, symbol)
         if existing is None:
             position_id = await repo.create_position_open(
                 conn=conn,
@@ -87,15 +145,35 @@ async def _project_trade_to_position(
                 reason=reason,
             )
         else:
-            position_id = int(existing["id"])
+            existing_id = int(existing["id"])
+            existing_side = str(existing["side"]).lower()
             old_qty = _dec(existing["qty"])
             old_avg = _dec(existing["avg_price"])
-            new_qty = old_qty + qty
-            if new_qty <= 0:
-                await repo.close_position(conn, position_id)
-            else:
+            if existing_side == side:
+                new_qty = old_qty + qty
                 new_avg = ((old_qty * old_avg) + (qty * price)) / new_qty
-                await repo.update_position_open_qty_price(conn, position_id, new_qty, new_avg)
+                await repo.update_position_open_qty_price(conn, existing_id, new_qty, new_avg)
+                position_id = existing_id
+            else:
+                if old_qty > qty:
+                    remain = old_qty - qty
+                    await repo.update_position_open_qty_price(conn, existing_id, remain, old_avg)
+                    position_id = existing_id
+                elif old_qty == qty:
+                    await repo.close_position(conn, existing_id)
+                    position_id = existing_id
+                else:
+                    reverse_qty = qty - old_qty
+                    await repo.close_position(conn, existing_id)
+                    position_id = await repo.create_position_open(
+                        conn=conn,
+                        account_id=account_id,
+                        symbol=symbol,
+                        side=side,
+                        qty=reverse_qty,
+                        avg_price=price,
+                        reason=reason,
+                    )
 
     await repo.insert_position_deal(
         conn=conn,

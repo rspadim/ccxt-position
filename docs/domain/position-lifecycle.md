@@ -9,3 +9,8 @@
 
 - `hedge`
 - `netting`
+
+Netting behavior:
+
+- opposite-side trades reduce/close current symbol position
+- if opposite trade size exceeds open qty, system closes old position and opens a new reversed `position_id`
