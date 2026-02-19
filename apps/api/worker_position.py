@@ -479,7 +479,10 @@ async def run_worker() -> None:
 
     db = DatabaseMySQL(settings)
     repo = MySQLCommandRepository()
-    credentials_codec = CredentialsCodec(settings.encryption_master_key)
+    credentials_codec = CredentialsCodec(
+        settings.encryption_master_key,
+        require_encrypted=settings.require_encrypted_credentials,
+    )
     loggers = setup_application_logging(
         settings.disable_uvicorn_access_log, log_dir=settings.log_dir
     )

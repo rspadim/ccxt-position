@@ -13,6 +13,15 @@ def test_codec_encrypt_decrypt_roundtrip() -> None:
 
 
 def test_codec_plaintext_compatibility() -> None:
-    codec = CredentialsCodec("")
+    codec = CredentialsCodec("", require_encrypted=False)
     assert codec.decrypt_maybe("plain-secret") == "plain-secret"
 
+
+def test_codec_rejects_plaintext_when_required() -> None:
+    codec = CredentialsCodec("", require_encrypted=True)
+    try:
+        codec.decrypt_maybe("plain-secret")
+    except RuntimeError as exc:
+        assert "plaintext credential not allowed" in str(exc)
+        return
+    assert False, "expected RuntimeError for plaintext credential"

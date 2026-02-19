@@ -45,9 +45,14 @@ Worker behavior in v0:
 
 Logs are split by domain and process to avoid concurrent writes to the same file:
 
-- `logs/api-<pid>.log`
-- `logs/ccxt-<pid>.log`
-- `logs/position-<pid>.log`
+- `logs/api.log`
+- `logs/ccxt.log`
+- `logs/position.log`
+
+Rotation:
+
+- daily rotation at midnight
+- retention of 10 backup files
 
 Security defaults:
 
@@ -62,6 +67,7 @@ Create `apps/api/config.json` from `apps/api/config.example.json` and set:
 
 - `app.db_engine`: `"mysql"` (required in v0)
 - database settings under `database.*`
+: `database.mysql_driver` supports `"asyncmy"` or `"aiomysql"`
 - worker settings under `worker.*`
 - logging settings under `logging.*`
 - security settings under `security.*`
@@ -70,7 +76,7 @@ Credential encryption:
 
 - `security.encryption_master_key` enables encrypted values in `account_credentials_encrypted`
 - encrypted format: `enc:v1:<fernet-token>`
-- legacy plaintext values are still accepted for compatibility
+- plaintext credentials are rejected when `security.require_encrypted_credentials=true`
 
 Future `v1` can add `postgresql` by implementing a separate raw-SQL repository module.
 
@@ -83,7 +89,7 @@ Use header:
 The API hashes this value with SHA-256 and checks `user_api_keys.api_key_hash`.
 
 Exchange credentials are loaded from `account_credentials_encrypted` columns.
-In v0 compatibility mode, values are treated as already usable secret strings.
+Provide encrypted credentials (`enc:v1:*`) for production operation.
 
 ## Position Commands
 

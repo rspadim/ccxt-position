@@ -64,7 +64,10 @@ async def on_startup() -> None:
     app.state.loggers = setup_application_logging(
         settings.disable_uvicorn_access_log, log_dir=settings.log_dir
     )
-    app.state.credentials_codec = CredentialsCodec(settings.encryption_master_key)
+    app.state.credentials_codec = CredentialsCodec(
+        settings.encryption_master_key,
+        require_encrypted=settings.require_encrypted_credentials,
+    )
     app.state.ccxt = CCXTAdapter(logger=app.state.loggers.get("ccxt"))
     await app.state.db.connect()
 

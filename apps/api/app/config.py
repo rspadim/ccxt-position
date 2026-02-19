@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     app_name: str = "ccxt-position"
     app_env: str = "dev"
     db_engine: str = "mysql"
+    mysql_driver: str = "asyncmy"
     mysql_host: str = "127.0.0.1"
     mysql_port: int = 3306
     mysql_user: str = "root"
@@ -25,6 +26,7 @@ class Settings(BaseSettings):
     disable_uvicorn_access_log: bool = True
     app_request_log: bool = True
     encryption_master_key: str = ""
+    require_encrypted_credentials: bool = True
     log_dir: str = "logs"
 
     model_config = SettingsConfigDict(env_file=".env", env_prefix="", extra="ignore")
@@ -52,6 +54,8 @@ def _flatten_sectioned_config(data: dict[str, Any]) -> dict[str, Any]:
     if isinstance(database, dict):
         if "engine" in database:
             out["db_engine"] = database["engine"]
+        if "mysql_driver" in database:
+            out["mysql_driver"] = database["mysql_driver"]
         if "mysql_host" in database:
             out["mysql_host"] = database["mysql_host"]
         if "mysql_port" in database:
@@ -98,6 +102,8 @@ def _flatten_sectioned_config(data: dict[str, Any]) -> dict[str, Any]:
     if isinstance(security, dict):
         if "encryption_master_key" in security:
             out["encryption_master_key"] = security["encryption_master_key"]
+        if "require_encrypted_credentials" in security:
+            out["require_encrypted_credentials"] = security["require_encrypted_credentials"]
 
     return out
 

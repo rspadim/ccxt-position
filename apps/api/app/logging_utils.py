@@ -1,6 +1,6 @@
 import logging
-import os
 import time
+from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
 from typing import Any
 
@@ -30,7 +30,13 @@ def _build_logger(name: str, file_path: Path) -> logging.Logger:
     stream_handler.setFormatter(formatter)
     logger.addHandler(stream_handler)
 
-    file_handler = logging.FileHandler(file_path, encoding="utf-8")
+    file_handler = TimedRotatingFileHandler(
+        filename=file_path,
+        when="midnight",
+        interval=1,
+        backupCount=10,
+        encoding="utf-8",
+    )
     file_handler.setFormatter(formatter)
     logger.addHandler(file_handler)
     return logger
@@ -41,12 +47,11 @@ def setup_application_logging(
 ) -> dict[str, logging.Logger]:
     base = Path(log_dir)
     base.mkdir(parents=True, exist_ok=True)
-    pid = os.getpid()
 
     loggers = {
-        "api": _build_logger("ccxt_position.api", base / f"api-{pid}.log"),
-        "ccxt": _build_logger("ccxt_position.ccxt", base / f"ccxt-{pid}.log"),
-        "position": _build_logger("ccxt_position.position", base / f"position-{pid}.log"),
+        "api": _build_logger("ccxt_position.api", base / "api.log"),
+        "ccxt": _build_logger("ccxt_position.ccxt", base / "ccxt.log"),
+        "position": _build_logger("ccxt_position.position", base / "position.log"),
     }
 
     if disable_uvicorn_access_log:
