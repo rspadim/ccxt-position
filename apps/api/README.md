@@ -153,3 +153,30 @@ Supported actions:
 pip install -r apps/api/requirements-dev.txt
 pytest -q apps/api/tests
 ```
+
+## CLI
+
+Run:
+
+```bash
+python -m apps.api.cli --help
+```
+
+Security commands:
+
+```bash
+python -m apps.api.cli generate-master-key
+python -m apps.api.cli encrypt --value "my-secret"
+python -m apps.api.cli upsert-account-credentials --account-id 1 --api-key "..." --secret "..." --encrypt-input
+```
+
+Trading/position commands:
+
+```bash
+python -m apps.api.cli send-order --api-key "$KEY" --account-id 1 --symbol BTC/USDT --side buy --order-type limit --qty 0.01 --price 50000
+python -m apps.api.cli change-order --api-key "$KEY" --account-id 1 --order-id 123 --new-price 50100
+python -m apps.api.cli cancel-order --api-key "$KEY" --account-id 1 --order-id 123
+python -m apps.api.cli close-position --api-key "$KEY" --account-id 1 --position-id 77
+python -m apps.api.cli close-by --api-key "$KEY" --account-id 1 --position-id-a 77 --position-id-b 88
+python -m apps.api.cli reassign-position --api-key "$KEY" --account-id 1 --deal-ids 1 2 3 --target-magic-id 42 --target-position-id 77
+```
