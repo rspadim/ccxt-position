@@ -70,6 +70,46 @@ class CCXTAdapter:
         finally:
             await exchange.close()
 
+    @staticmethod
+    def _supports_capability(has_map: Any, capability: str) -> bool:
+        if not isinstance(has_map, dict):
+            return False
+        value = has_map.get(capability)
+        return value is True or value == "emulated"
+
+    async def execute_unified_with_capability(
+        self,
+        exchange_id: str,
+        use_testnet: bool,
+        api_key: str | None,
+        secret: str | None,
+        passphrase: str | None,
+        method: str,
+        capabilities: list[str],
+        args: list[Any] | None = None,
+        kwargs: dict[str, Any] | None = None,
+    ) -> Any:
+        exchange = self._build_exchange(
+            exchange_id=exchange_id,
+            use_testnet=use_testnet,
+            api_key=api_key,
+            secret=secret,
+            passphrase=passphrase,
+        )
+        try:
+            if capabilities and not any(
+                self._supports_capability(exchange.has, capability) for capability in capabilities
+            ):
+                raise RuntimeError(
+                    f"exchange {exchange_id} does not support required capability for {method}: {capabilities}"
+                )
+            fn = getattr(exchange, method, None)
+            if fn is None:
+                raise RuntimeError(f"unsupported ccxt method: {method}")
+            return await fn(*(args or []), **(kwargs or {}))
+        finally:
+            await exchange.close()
+
     async def create_order(
         self,
         exchange_id: str,

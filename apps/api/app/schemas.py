@@ -144,6 +144,52 @@ class CcxtCallInput(BaseModel):
     kwargs: dict[str, Any] = Field(default_factory=dict)
 
 
+class CcxtCoreCreateOrderInput(BaseModel):
+    symbol: str = Field(min_length=1)
+    side: Literal["buy", "sell"]
+    order_type: Literal["market", "limit"] = Field(
+        validation_alias=AliasChoices("order_type", "type"),
+        serialization_alias="order_type",
+    )
+    amount: Decimal = Field(gt=Decimal("0"))
+    price: Decimal | None = None
+    params: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_limit_price(self) -> "CcxtCoreCreateOrderInput":
+        if self.order_type == "limit" and self.price is None:
+            raise ValueError("price is required for limit orders")
+        return self
+
+
+class CcxtCoreCancelOrderInput(BaseModel):
+    id: str = Field(min_length=1)
+    symbol: str | None = None
+    params: dict[str, Any] = Field(default_factory=dict)
+
+
+class CcxtCoreFetchOrderInput(BaseModel):
+    id: str = Field(min_length=1)
+    symbol: str | None = None
+    params: dict[str, Any] = Field(default_factory=dict)
+
+
+class CcxtCoreFetchOpenOrdersInput(BaseModel):
+    symbol: str | None = None
+    since: int | None = Field(default=None, ge=0)
+    limit: int | None = Field(default=200, ge=1, le=1000)
+    params: dict[str, Any] = Field(default_factory=dict)
+
+
+class CcxtCoreFetchBalanceInput(BaseModel):
+    params: dict[str, Any] = Field(default_factory=dict)
+
+
+class CcxtResponse(BaseModel):
+    ok: bool = True
+    result: Any
+
+
 class CcxtBatchItem(BaseModel):
     account_id: int = Field(gt=0)
     func: str

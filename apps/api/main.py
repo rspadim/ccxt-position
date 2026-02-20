@@ -18,6 +18,12 @@ from .app.logging_utils import (
 )
 from .app.repository_mysql import MySQLCommandRepository
 from .app.schemas import (
+    CcxtCoreCancelOrderInput,
+    CcxtCoreCreateOrderInput,
+    CcxtCoreFetchBalanceInput,
+    CcxtCoreFetchOpenOrdersInput,
+    CcxtCoreFetchOrderInput,
+    CcxtResponse,
     CcxtBatchItem,
     CcxtBatchResponse,
     CcxtCallInput,
@@ -148,6 +154,10 @@ def _ccxt_requires_trade(func: str) -> bool:
     return fn.startswith(trade_prefixes)
 
 
+def _ccxt_raise_400(exc: Exception) -> HTTPException:
+    return HTTPException(status_code=400, detail={"code": "ccxt_error", "message": str(exc)})
+
+
 @app.post("/ccxt/{account_id}/{func}")
 async def post_ccxt_call(
     account_id: int,
@@ -170,6 +180,138 @@ async def post_ccxt_call(
         kwargs=request.kwargs,
     )
     return {"ok": True, "result": result}
+
+
+@app.post("/ccxt/core/{account_id}/create_order", response_model=CcxtResponse)
+async def post_ccxt_core_create_order(
+    account_id: int,
+    request: CcxtCoreCreateOrderInput,
+    auth: Annotated[AuthContext, Depends(get_auth_context)],
+) -> CcxtResponse:
+    account = await _require_account_permission(auth.user_id, account_id, require_trade=True)
+    is_testnet, api_key, secret, passphrase = await _load_account_credentials(account_id)
+    try:
+        result = await app.state.ccxt.execute_unified_with_capability(
+            exchange_id=account["exchange_id"],
+            use_testnet=is_testnet,
+            api_key=api_key,
+            secret=secret,
+            passphrase=passphrase,
+            method="create_order",
+            capabilities=["createOrder"],
+            kwargs={
+                "symbol": request.symbol,
+                "type": request.order_type,
+                "side": request.side,
+                "amount": request.amount,
+                "price": request.price,
+                "params": request.params,
+            },
+        )
+    except Exception as exc:
+        raise _ccxt_raise_400(exc) from exc
+    return CcxtResponse(result=result)
+
+
+@app.post("/ccxt/core/{account_id}/cancel_order", response_model=CcxtResponse)
+async def post_ccxt_core_cancel_order(
+    account_id: int,
+    request: CcxtCoreCancelOrderInput,
+    auth: Annotated[AuthContext, Depends(get_auth_context)],
+) -> CcxtResponse:
+    account = await _require_account_permission(auth.user_id, account_id, require_trade=True)
+    is_testnet, api_key, secret, passphrase = await _load_account_credentials(account_id)
+    try:
+        result = await app.state.ccxt.execute_unified_with_capability(
+            exchange_id=account["exchange_id"],
+            use_testnet=is_testnet,
+            api_key=api_key,
+            secret=secret,
+            passphrase=passphrase,
+            method="cancel_order",
+            capabilities=["cancelOrder"],
+            kwargs={"id": request.id, "symbol": request.symbol, "params": request.params},
+        )
+    except Exception as exc:
+        raise _ccxt_raise_400(exc) from exc
+    return CcxtResponse(result=result)
+
+
+@app.post("/ccxt/core/{account_id}/fetch_order", response_model=CcxtResponse)
+async def post_ccxt_core_fetch_order(
+    account_id: int,
+    request: CcxtCoreFetchOrderInput,
+    auth: Annotated[AuthContext, Depends(get_auth_context)],
+) -> CcxtResponse:
+    account = await _require_account_permission(auth.user_id, account_id, require_trade=False)
+    is_testnet, api_key, secret, passphrase = await _load_account_credentials(account_id)
+    try:
+        result = await app.state.ccxt.execute_unified_with_capability(
+            exchange_id=account["exchange_id"],
+            use_testnet=is_testnet,
+            api_key=api_key,
+            secret=secret,
+            passphrase=passphrase,
+            method="fetch_order",
+            capabilities=["fetchOrder"],
+            kwargs={"id": request.id, "symbol": request.symbol, "params": request.params},
+        )
+    except Exception as exc:
+        raise _ccxt_raise_400(exc) from exc
+    return CcxtResponse(result=result)
+
+
+@app.post("/ccxt/core/{account_id}/fetch_open_orders", response_model=CcxtResponse)
+async def post_ccxt_core_fetch_open_orders(
+    account_id: int,
+    request: CcxtCoreFetchOpenOrdersInput,
+    auth: Annotated[AuthContext, Depends(get_auth_context)],
+) -> CcxtResponse:
+    account = await _require_account_permission(auth.user_id, account_id, require_trade=False)
+    is_testnet, api_key, secret, passphrase = await _load_account_credentials(account_id)
+    try:
+        result = await app.state.ccxt.execute_unified_with_capability(
+            exchange_id=account["exchange_id"],
+            use_testnet=is_testnet,
+            api_key=api_key,
+            secret=secret,
+            passphrase=passphrase,
+            method="fetch_open_orders",
+            capabilities=["fetchOpenOrders"],
+            kwargs={
+                "symbol": request.symbol,
+                "since": request.since,
+                "limit": request.limit,
+                "params": request.params,
+            },
+        )
+    except Exception as exc:
+        raise _ccxt_raise_400(exc) from exc
+    return CcxtResponse(result=result)
+
+
+@app.post("/ccxt/core/{account_id}/fetch_balance", response_model=CcxtResponse)
+async def post_ccxt_core_fetch_balance(
+    account_id: int,
+    request: CcxtCoreFetchBalanceInput,
+    auth: Annotated[AuthContext, Depends(get_auth_context)],
+) -> CcxtResponse:
+    account = await _require_account_permission(auth.user_id, account_id, require_trade=False)
+    is_testnet, api_key, secret, passphrase = await _load_account_credentials(account_id)
+    try:
+        result = await app.state.ccxt.execute_unified_with_capability(
+            exchange_id=account["exchange_id"],
+            use_testnet=is_testnet,
+            api_key=api_key,
+            secret=secret,
+            passphrase=passphrase,
+            method="fetch_balance",
+            capabilities=["fetchBalance"],
+            kwargs={"params": request.params},
+        )
+    except Exception as exc:
+        raise _ccxt_raise_400(exc) from exc
+    return CcxtResponse(result=result)
 
 
 @app.post("/ccxt/multiple_commands", response_model=CcxtBatchResponse)
