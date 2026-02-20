@@ -140,11 +140,20 @@ def wait_min_deals(base_url: str, headers: dict[str, str], account_id: int, min_
     return wait_until(_check, timeout_s=240, sleep_s=3.0)
 
 
+def collect_exchange_trade_ids(deals: list[dict]) -> set[str]:
+    out: set[str] = set()
+    for d in deals:
+        trade_id = d.get("exchange_trade_id")
+        if trade_id:
+            out.add(str(trade_id))
+    return out
+
+
 def main() -> int:
     root = Path(__file__).resolve().parents[2]
-    context_path = root / "environments/testnet/runtime/context.json"
+    context_path = root / "test/testnet/runtime/context.json"
     if not context_path.exists():
-        raise RuntimeError("missing context.json. run: py -3.13 environments/testnet/run.py")
+        raise RuntimeError("missing context.json. run: py -3.13 test/testnet/run.py")
     context = json.loads(context_path.read_text(encoding="utf-8"))
 
     base_url = context["base_url"]
@@ -153,7 +162,7 @@ def main() -> int:
     symbol = str(context.get("symbol", "BTC/USDT"))
     headers = {"x-api-key": internal_api_key}
 
-    env_path = root / "environments/testnet/.env.testnet"
+    env_path = root / "test/testnet/.env.testnet"
     if not env_path.exists():
         raise RuntimeError("missing .env.testnet")
     env_map: dict[str, str] = {}
@@ -212,6 +221,41 @@ def main() -> int:
         "GET", f"{base_url}/position/positions/history?account_id={netting_account}", headers
     ).get("items", [])
 
+    # Mirror scenario: two account_ids sharing exact same exchange credentials.
+    mirror_a = create_account_for_mode(
+        compose=compose,
+        user_id=user_id,
+        mode="hedge",
+        label=f"{symbol.replace('/', '-')}-mirror-a",
+        api_key=api_key,
+        secret_key=secret_key,
+    )
+    mirror_b = create_account_for_mode(
+        compose=compose,
+        user_id=user_id,
+        mode="hedge",
+        label=f"{symbol.replace('/', '-')}-mirror-b",
+        api_key=api_key,
+        secret_key=secret_key,
+    )
+    mirror_order = send_market(base_url, headers, mirror_a, symbol, "buy", "0.001", 404)
+    wait_order_terminal(base_url, headers, mirror_a, mirror_order)
+
+    # Reconciliation runs periodically; wait until mirrored trade appears in both accounts.
+    def _mirror_check():
+        deals_a = http_json("GET", f"{base_url}/position/deals?account_id={mirror_a}", headers).get("items", [])
+        deals_b = http_json("GET", f"{base_url}/position/deals?account_id={mirror_b}", headers).get("items", [])
+        ids_a = collect_exchange_trade_ids(deals_a)
+        ids_b = collect_exchange_trade_ids(deals_b)
+        common = sorted(ids_a.intersection(ids_b))
+        if common:
+            return {"common_trade_ids": common, "deals_a": deals_a, "deals_b": deals_b}
+        return None
+
+    mirror = wait_until(_mirror_check, timeout_s=240, sleep_s=3.0)
+    if not mirror:
+        raise RuntimeError("mirror reconciliation failed: no shared exchange_trade_id between mirror accounts")
+
     summary = {
         "hedge": {
             "account_id": hedge_account,
@@ -228,9 +272,17 @@ def main() -> int:
             "open_positions_sides": sorted({str(p["side"]) for p in net_open}),
             "history_positions": len(net_hist),
         },
+        "mirror_reconciliation": {
+            "account_a": mirror_a,
+            "account_b": mirror_b,
+            "order_from_a": mirror_order,
+            "shared_trade_ids": mirror["common_trade_ids"],
+            "deal_count_a": len(mirror["deals_a"]),
+            "deal_count_b": len(mirror["deals_b"]),
+        },
     }
 
-    out_path = root / "environments/testnet/runtime/scenarios.json"
+    out_path = root / "test/testnet/runtime/scenarios.json"
     out_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
     print(json.dumps(summary, indent=2))
     print(f"saved: {out_path}")

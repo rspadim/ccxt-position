@@ -13,10 +13,10 @@ This folder provides an isolated Python flow to bootstrap and smoke-test Binance
 1. Copy template:
 
 ```bash
-cp environments/testnet/.env.testnet.example environments/testnet/.env.testnet
+cp test/testnet/.env.testnet.example test/testnet/.env.testnet
 ```
 
-2. Edit `environments/testnet/.env.testnet` and fill:
+2. Edit `test/testnet/.env.testnet` and fill:
 
 - `BINANCE_TESTNET_API_KEY`
 - `BINANCE_TESTNET_SECRET_KEY`
@@ -26,7 +26,7 @@ cp environments/testnet/.env.testnet.example environments/testnet/.env.testnet
 3. Run bootstrap:
 
 ```bash
-python environments/testnet/run.py
+python test/testnet/run.py
 ```
 
 What it does:
@@ -36,16 +36,16 @@ What it does:
 - creates user + internal API key + account
 - stores encrypted Binance testnet credentials
 - runs a smoke `send_order` via `/position/commands`
-- saves runtime context in `environments/testnet/runtime/context.json`
+- saves runtime context in `test/testnet/runtime/context.json`
 
 ## Multi-Scenario Validation
 
 Run hedge/netting live scenarios with multiple `magic_id` and position reduce/reverse:
 
 ```bash
-python environments/testnet/scenarios.py
+python test/testnet/scenarios.py
 ```
 
 Output is saved to:
 
-- `environments/testnet/runtime/scenarios.json`
+- `test/testnet/runtime/scenarios.json`

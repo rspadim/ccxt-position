@@ -29,9 +29,9 @@ logs/
 .env
 .env.*
 !.env.example
-!environments/testnet/.env.testnet.example
-environments/testnet/.env.testnet
-environments/testnet/runtime/
+!test/testnet/.env.testnet.example
+test/testnet/.env.testnet
+test/testnet/runtime/
 
 # MySQL dumps/temp
 *.sql.tmp
