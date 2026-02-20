@@ -20,3 +20,4 @@ jobs:
           test -f sql/007_position_positions_updated_at.sql
           test -f sql/008_position_deals_unique_exchange_trade.sql
           test -f sql/009_accounts_is_testnet.sql
+          test -f sql/010_drop_position_foreign_keys.sql

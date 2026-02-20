@@ -841,6 +841,7 @@ class MySQLCommandRepository:
             out.append(
                 {
                     "id": int(r[0]),
+                    "account_id": account_id,
                     "symbol": r[1],
                     "side": r[2],
                     "order_type": r[3],
@@ -880,6 +881,7 @@ class MySQLCommandRepository:
             out.append(
                 {
                     "id": int(r[0]),
+                    "account_id": account_id,
                     "order_id": None if r[1] is None else int(r[1]),
                     "position_id": int(r[2]),
                     "symbol": r[3],
@@ -918,6 +920,7 @@ class MySQLCommandRepository:
             out.append(
                 {
                     "id": int(r[0]),
+                    "account_id": account_id,
                     "symbol": r[1],
                     "side": r[2],
                     "qty": str(r[3]),

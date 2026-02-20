@@ -86,9 +86,7 @@ CREATE TABLE IF NOT EXISTS position_orders (
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   closed_at TIMESTAMP NULL,
-  KEY idx_position_orders_command_id (command_id),
-  CONSTRAINT fk_pos_order_command FOREIGN KEY (command_id) REFERENCES position_commands(id),
-  CONSTRAINT fk_pos_order_account FOREIGN KEY (account_id) REFERENCES accounts(id)
+  KEY idx_position_orders_command_id (command_id)
 );
 
 CREATE TABLE IF NOT EXISTS position_deals (
@@ -108,9 +106,7 @@ CREATE TABLE IF NOT EXISTS position_deals (
   reconciled BOOLEAN NOT NULL DEFAULT TRUE,
   exchange_trade_id VARCHAR(128) NULL,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  executed_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  CONSTRAINT fk_pos_deal_account FOREIGN KEY (account_id) REFERENCES accounts(id),
-  CONSTRAINT fk_pos_deal_order FOREIGN KEY (order_id) REFERENCES position_orders(id)
+  executed_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS position_positions (
@@ -124,8 +120,7 @@ CREATE TABLE IF NOT EXISTS position_positions (
   reason VARCHAR(32) NOT NULL DEFAULT 'api',
   opened_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  closed_at TIMESTAMP NULL,
-  CONSTRAINT fk_pos_position_account FOREIGN KEY (account_id) REFERENCES accounts(id)
+  closed_at TIMESTAMP NULL
 );
 
 CREATE TABLE IF NOT EXISTS reconciliation_cursor (
