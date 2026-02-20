@@ -206,6 +206,26 @@ pip install -r apps/api/requirements-dev.txt
 pytest -q apps/api/tests
 ```
 
+Live integration test (against running API + worker + exchange testnet):
+
+```bash
+RUN_LIVE_INTEGRATION=1 \
+INTEGRATION_BASE_URL=http://127.0.0.1:8000 \
+INTEGRATION_API_KEY=<internal_api_key_plain> \
+INTEGRATION_ACCOUNT_ID=1 \
+python -m pytest -q apps/api/tests/test_integration_position_flow.py
+```
+
+On PowerShell:
+
+```powershell
+$env:RUN_LIVE_INTEGRATION="1"
+$env:INTEGRATION_BASE_URL="http://127.0.0.1:8000"
+$env:INTEGRATION_API_KEY="<internal_api_key_plain>"
+$env:INTEGRATION_ACCOUNT_ID="1"
+python -m pytest -q apps/api/tests/test_integration_position_flow.py
+```
+
 ## CLI
 
 Run:

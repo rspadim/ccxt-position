@@ -28,6 +28,8 @@ logs/
 # Local env
 .env
 .env.*
+environments/testnet/.env.testnet
+environments/testnet/runtime/
 
 # MySQL dumps/temp
 *.sql.tmp
