@@ -62,6 +62,11 @@ cp apps/api/config.docker.example.json apps/api/config.docker.json
 docker compose -f apps/api/docker-compose.stack.yml up -d --build
 ```
 
+Note:
+
+- Docker image uses `aiomysql` by default to avoid native compilation issues.
+- If you explicitly need `asyncmy`, use `apps/api/requirements-asyncmy.txt` outside Docker.
+
 3. Run installer (creates schema, internal user, internal API key, and one account):
 
 ```bash

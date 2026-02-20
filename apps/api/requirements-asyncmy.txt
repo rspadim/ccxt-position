@@ -1,0 +1,2 @@
+-r requirements.txt
+asyncmy==0.2.10

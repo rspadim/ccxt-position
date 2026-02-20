@@ -21,6 +21,12 @@ pip install -r apps/api/requirements.txt
 uvicorn apps.api.main:app --reload --port 8000
 ```
 
+Optional (advanced): install `asyncmy` driver too:
+
+```bash
+pip install -r apps/api/requirements-asyncmy.txt
+```
+
 Optional local MySQL with Docker:
 
 ```bash
@@ -109,7 +115,7 @@ Create `apps/api/config.json` from `apps/api/config.example.json` and set:
 
 - `app.db_engine`: `"mysql"` (required in v0)
 - database settings under `database.*`
-- `database.mysql_driver` supports `"asyncmy"` or `"aiomysql"`
+- `database.mysql_driver` supports `"aiomysql"` (default) or `"asyncmy"`
 - worker settings under `worker.*`
 - logging settings under `logging.*` (canonical section)
 - security settings under `security.*`

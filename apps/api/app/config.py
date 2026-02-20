@@ -10,7 +10,7 @@ class Settings(BaseSettings):
     app_name: str = "ccxt-position"
     app_env: str = "dev"
     db_engine: str = "mysql"
-    mysql_driver: str = "asyncmy"
+    mysql_driver: str = "aiomysql"
     mysql_host: str = "127.0.0.1"
     mysql_port: int = 3306
     mysql_user: str = "root"
