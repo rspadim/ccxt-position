@@ -3,6 +3,26 @@ import json
 from typing import Any
 
 
+def _json_param(value: dict[str, Any]) -> str:
+    return json.dumps(value, separators=(",", ":"), sort_keys=True)
+
+
+def _json_column(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, (bytes, bytearray)):
+        try:
+            return json.loads(value.decode("utf-8"))
+        except Exception:
+            return {}
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except Exception:
+            return {}
+    return {}
+
+
 class MySQLCommandRepository:
     async def fetch_account(self, conn: Any, account_id: int) -> tuple[int, int]:
         async with conn.cursor() as cur:
@@ -133,13 +153,14 @@ class MySQLCommandRepository:
         request_id: str | None,
         payload: dict[str, Any],
     ) -> int:
+        payload_json = _json_param(payload)
         async with conn.cursor() as cur:
             await cur.execute(
                 """
                 INSERT INTO position_commands (account_id, command_type, request_id, payload_json, status)
                 VALUES (%s, %s, %s, %s, 'accepted')
                 """,
-                (account_id, command_type, request_id, payload),
+                (account_id, command_type, request_id, payload_json),
             )
             return int(cur.lastrowid)
 
@@ -321,7 +342,7 @@ class MySQLCommandRepository:
             row = await cur.fetchone()
         if row is None:
             raise ValueError("command_not_found")
-        payload = row[2] if isinstance(row[2], dict) else {}
+        payload = _json_column(row[2])
         return int(row[0]), str(row[1]), payload
 
     async def mark_command_completed(self, conn: Any, command_id: int) -> None:
@@ -555,7 +576,7 @@ class MySQLCommandRepository:
         symbol: str | None,
         raw_json: dict[str, Any],
     ) -> None:
-        payload = json.dumps(raw_json, sort_keys=True, separators=(",", ":"))
+        payload = _json_param(raw_json)
         fingerprint = hashlib.sha256(payload.encode("utf-8")).hexdigest()
         async with conn.cursor() as cur:
             await cur.execute(
@@ -564,7 +585,7 @@ class MySQLCommandRepository:
                     account_id, exchange_id, exchange_order_id, client_order_id, symbol, raw_json, fingerprint_hash
                 ) VALUES (%s, %s, %s, %s, %s, %s, %s)
                 """,
-                (account_id, exchange_id, exchange_order_id, client_order_id, symbol, raw_json, fingerprint),
+                (account_id, exchange_id, exchange_order_id, client_order_id, symbol, payload, fingerprint),
             )
 
     async def insert_ccxt_trade_raw(
@@ -577,7 +598,7 @@ class MySQLCommandRepository:
         symbol: str | None,
         raw_json: dict[str, Any],
     ) -> None:
-        payload = json.dumps(raw_json, sort_keys=True, separators=(",", ":"))
+        payload = _json_param(raw_json)
         fingerprint = hashlib.sha256(payload.encode("utf-8")).hexdigest()
         async with conn.cursor() as cur:
             await cur.execute(
@@ -586,7 +607,7 @@ class MySQLCommandRepository:
                     account_id, exchange_id, exchange_trade_id, exchange_order_id, symbol, raw_json, fingerprint_hash
                 ) VALUES (%s, %s, %s, %s, %s, %s, %s)
                 """,
-                (account_id, exchange_id, exchange_trade_id, exchange_order_id, symbol, raw_json, fingerprint),
+                (account_id, exchange_id, exchange_trade_id, exchange_order_id, symbol, payload, fingerprint),
             )
 
     async def fetch_open_position_for_symbol(
@@ -777,7 +798,7 @@ class MySQLCommandRepository:
             rows = await cur.fetchall()
         out: list[dict[str, Any]] = []
         for row in rows:
-            payload = row[3] if isinstance(row[3], dict) else {}
+            payload = _json_column(row[3])
             out.append(
                 {
                     "id": int(row[0]),
@@ -988,11 +1009,12 @@ class MySQLCommandRepository:
     async def insert_event(
         self, conn: Any, account_id: int, namespace: str, event_type: str, payload: dict[str, Any]
     ) -> None:
+        payload_json = _json_param(payload)
         async with conn.cursor() as cur:
             await cur.execute(
                 """
                 INSERT INTO event_outbox (account_id, namespace, event_type, payload_json, delivered)
                 VALUES (%s, %s, %s, %s, FALSE)
                 """,
-                (account_id, namespace, event_type, payload),
+                (account_id, namespace, event_type, payload_json),
             )
