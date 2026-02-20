@@ -45,3 +45,66 @@ Specification-first bootstrap with first implementation slice available in `apps
 - Security model: `docs/security/authentication.md`
 - Operations: `docs/ops/deployment-single-host.md`
 - Roadmap: `docs/roadmap/mvp-scope.md`
+
+## Beginner Install (Docker)
+
+This is the fastest way to run everything from zero.
+
+1. Copy Docker config:
+
+```bash
+cp apps/api/config.docker.example.json apps/api/config.docker.json
+```
+
+2. Start stack (`mysql + api + worker`):
+
+```bash
+docker compose -f apps/api/docker-compose.stack.yml up -d --build
+```
+
+3. Run installer (creates schema, internal user, internal API key, and one account):
+
+```bash
+docker compose -f apps/api/docker-compose.stack.yml exec api \
+  python -m apps.api.cli install --with-account --exchange-id binance --label binance-testnet --testnet
+```
+
+Save values returned by installer:
+
+- `api_key.plain` (internal API key for `x-api-key`)
+- `account.id` (account to bind Binance credentials)
+
+4. Store Binance Testnet credentials on created account:
+
+```bash
+docker compose -f apps/api/docker-compose.stack.yml exec api \
+  python -m apps.api.cli upsert-account-credentials \
+  --account-id <ACCOUNT_ID> \
+  --api-key "<BINANCE_TESTNET_API_KEY>" \
+  --secret "<BINANCE_TESTNET_SECRET_KEY>" \
+  --encrypt-input
+```
+
+5. Validate API is running:
+
+```bash
+curl http://127.0.0.1:8000/healthz
+```
+
+6. Validate CCXT connectivity (`fetch_balance`):
+
+```bash
+curl -X POST "http://127.0.0.1:8000/ccxt/core/<ACCOUNT_ID>/fetch_balance" \
+  -H "x-api-key: <INTERNAL_API_KEY_PLAIN>" \
+  -H "Content-Type: application/json" \
+  -d "{\"params\":{}}"
+```
+
+7. Optional test order (limit):
+
+```bash
+curl -X POST "http://127.0.0.1:8000/ccxt/core/<ACCOUNT_ID>/create_order" \
+  -H "x-api-key: <INTERNAL_API_KEY_PLAIN>" \
+  -H "Content-Type: application/json" \
+  -d "{\"symbol\":\"BTC/USDT\",\"side\":\"buy\",\"order_type\":\"limit\",\"amount\":\"0.001\",\"price\":\"10000\",\"params\":{}}"
+```
