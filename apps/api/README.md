@@ -27,6 +27,48 @@ Optional local MySQL with Docker:
 docker compose -f apps/api/docker-compose.mysql.yml up -d
 ```
 
+## Quick Start (Beginner, Docker)
+
+This is the easiest way to start from zero (MySQL + API + worker).
+
+1. Copy Docker config:
+
+```bash
+cp apps/api/config.docker.example.json apps/api/config.docker.json
+```
+
+2. (Optional but recommended) set `security.encryption_master_key` in `apps/api/config.docker.json`.
+
+3. Start full stack:
+
+```bash
+docker compose -f apps/api/docker-compose.stack.yml up -d --build
+```
+
+4. Check health:
+
+```bash
+curl http://127.0.0.1:8000/healthz
+```
+
+5. Read logs if needed:
+
+```bash
+docker compose -f apps/api/docker-compose.stack.yml logs -f api
+docker compose -f apps/api/docker-compose.stack.yml logs -f worker
+```
+
+6. Stop stack:
+
+```bash
+docker compose -f apps/api/docker-compose.stack.yml down
+```
+
+Notes:
+
+- MySQL schema is auto-applied from `sql/*.sql` on first startup.
+- If you need a clean reset, run `down -v` to remove volumes and recreate.
+
 Run worker in another process:
 
 ```bash
@@ -69,8 +111,13 @@ Create `apps/api/config.json` from `apps/api/config.example.json` and set:
 - database settings under `database.*`
 - `database.mysql_driver` supports `"asyncmy"` or `"aiomysql"`
 - worker settings under `worker.*`
-- logging settings under `logging.*`
+- logging settings under `logging.*` (canonical section)
 - security settings under `security.*`
+
+Backward compatibility:
+
+- `api.disable_uvicorn_access_log` and `api.app_request_log` are still accepted for old configs.
+- Prefer `logging.disable_uvicorn_access_log` and `logging.app_request_log`.
 
 Credential encryption:
 

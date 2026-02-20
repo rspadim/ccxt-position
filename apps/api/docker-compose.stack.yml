@@ -1,0 +1,60 @@
+services:
+  mysql:
+    image: mysql:8.4
+    container_name: ccxt-position-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: ccxt_position
+    ports:
+      - "3306:3306"
+    command:
+      - "--default-authentication-plugin=mysql_native_password"
+      - "--character-set-server=utf8mb4"
+      - "--collation-server=utf8mb4_unicode_ci"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ../../sql:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -proot"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  api:
+    build:
+      context: ../..
+      dockerfile: apps/api/Dockerfile
+    container_name: ccxt-position-api
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+    command: ["uvicorn", "apps.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    environment:
+      CONFIG_JSON_PATH: /app/apps/api/config.docker.json
+    volumes:
+      - ../..:/app
+      - logs_data:/app/logs
+    ports:
+      - "8000:8000"
+
+  worker:
+    build:
+      context: ../..
+      dockerfile: apps/api/Dockerfile
+    container_name: ccxt-position-worker
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+    command: ["python", "-m", "apps.api.worker_position"]
+    environment:
+      CONFIG_JSON_PATH: /app/apps/api/config.docker.json
+    volumes:
+      - ../..:/app
+      - logs_data:/app/logs
+
+volumes:
+  mysql_data:
+  logs_data:

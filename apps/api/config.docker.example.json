@@ -1,16 +1,16 @@
 {
   "app": {
     "name": "ccxt-position",
-    "env": "dev",
+    "env": "docker",
     "db_engine": "mysql"
   },
   "database": {
     "engine": "mysql",
-    "mysql_driver": "asyncmy",
-    "mysql_host": "127.0.0.1",
+    "mysql_driver": "aiomysql",
+    "mysql_host": "mysql",
     "mysql_port": 3306,
     "mysql_user": "root",
-    "mysql_password": "",
+    "mysql_password": "root",
     "mysql_database": "ccxt_position",
     "mysql_min_pool_size": 1,
     "mysql_max_pool_size": 10
@@ -29,6 +29,6 @@
   },
   "security": {
     "encryption_master_key": "",
-    "require_encrypted_credentials": true
+    "require_encrypted_credentials": false
   }
 }

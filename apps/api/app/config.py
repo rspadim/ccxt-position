@@ -37,6 +37,7 @@ def _flatten_sectioned_config(data: dict[str, Any]) -> dict[str, Any]:
     out = dict(data)
 
     app = data.get("app", {})
+    # `api.*` is legacy. Keep parsing for backward compatibility.
     api = data.get("api", {})
     database = data.get("database", {})
     worker = data.get("worker", {})
