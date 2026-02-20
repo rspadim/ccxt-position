@@ -2,6 +2,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from decimal import Decimal
 from pathlib import Path
 from urllib import request as urllib_request
@@ -44,6 +45,21 @@ def http_json(method: str, url: str, headers: dict[str, str], payload: dict | No
         return json.loads(raw) if raw else {}
 
 
+def wait_http_ok(url: str, timeout_s: int = 120, sleep_s: float = 2.0) -> None:
+    start = time.time()
+    last_error = ""
+    while time.time() - start < timeout_s:
+        try:
+            req = urllib_request.Request(url=url, method="GET")
+            with urllib_request.urlopen(req, timeout=10) as resp:
+                if resp.status == 200:
+                    return
+        except Exception as exc:
+            last_error = str(exc)
+        time.sleep(sleep_s)
+    raise RuntimeError(f"timeout waiting for {url}: {last_error}")
+
+
 def main() -> int:
     root = Path(__file__).resolve().parents[2]
     env_file = Path(__file__).resolve().parent / ".env.testnet"
@@ -76,6 +92,7 @@ def main() -> int:
 
     compose = ["docker", "compose", "-f", "apps/api/docker-compose.stack.yml"]
     run_cmd(compose + ["up", "-d", "--build"])
+    wait_http_ok("http://127.0.0.1:8000/healthz", timeout_s=180, sleep_s=2.0)
 
     user = run_json(compose + ["exec", "-T", "api", "python", "-m", "apps.api.cli", "create-user", "--name", user_name])
     user_id = int(user["user_id"])

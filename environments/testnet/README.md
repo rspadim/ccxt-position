@@ -37,3 +37,15 @@ What it does:
 - stores encrypted Binance testnet credentials
 - runs a smoke `send_order` via `/position/commands`
 - saves runtime context in `environments/testnet/runtime/context.json`
+
+## Multi-Scenario Validation
+
+Run hedge/netting live scenarios with multiple `magic_id` and position reduce/reverse:
+
+```bash
+python environments/testnet/scenarios.py
+```
+
+Output is saved to:
+
+- `environments/testnet/runtime/scenarios.json`

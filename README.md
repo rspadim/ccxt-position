@@ -46,6 +46,7 @@ Specification-first bootstrap with first implementation slice available in `apps
 - Operations: `docs/ops/deployment-single-host.md`
 - Roadmap: `docs/roadmap/mvp-scope.md`
 - Testnet bootstrap: `environments/testnet/README.md`
+  - Includes `run.py` (bootstrap) and `scenarios.py` (hedge/netting + multi-magic live validation)
 
 ## Beginner Install (Docker)
 
