@@ -29,6 +29,13 @@ cp test/testnet/.env.testnet.example test/testnet/.env.testnet
 python test/testnet/run.py
 ```
 
+By default, bootstrap resets stack and volumes (`docker compose down -v`) to avoid API-key/user collisions across reruns.
+To keep existing data, set:
+
+```bash
+TESTNET_RESET_STACK=0 python test/testnet/run.py
+```
+
 What it does:
 
 - prepares `apps/api/config.docker.json`

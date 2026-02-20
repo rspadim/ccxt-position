@@ -82,6 +82,7 @@ def main() -> int:
     account_label = os.environ.get("TESTNET_ACCOUNT_LABEL", "binance-testnet")
     symbol = os.environ.get("TESTNET_SYMBOL", "BTC/USDT")
     internal_api_key = os.environ["INTERNAL_API_KEY"]
+    reset_stack = os.environ.get("TESTNET_RESET_STACK", "1").strip().lower() in {"1", "true", "yes"}
 
     cfg_example = root / "apps/api/config.docker.example.json"
     cfg_file = root / "apps/api/config.docker.json"
@@ -91,6 +92,8 @@ def main() -> int:
     cfg_file.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
 
     compose = ["docker", "compose", "-f", "apps/api/docker-compose.stack.yml"]
+    if reset_stack:
+        run_cmd(compose + ["down", "-v"])
     run_cmd(compose + ["up", "-d", "--build"])
     wait_http_ok("http://127.0.0.1:8000/healthz", timeout_s=180, sleep_s=2.0)
 
