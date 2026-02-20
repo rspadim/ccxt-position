@@ -179,7 +179,11 @@ async def process_single_command(
 
             await _check_permission(repo, conn, auth.user_id, account_id, item.command)
 
-            original_payload = dict(item.payload)
+            original_payload = item.payload.model_dump(
+                by_alias=True,
+                exclude_none=True,
+                mode="json",
+            )
             effective_command = item.command
             payload = original_payload
 

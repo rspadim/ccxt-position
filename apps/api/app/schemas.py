@@ -1,22 +1,130 @@
-from typing import Any, Literal
+from datetime import datetime
+from decimal import Decimal
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
 
 
-CommandType = Literal[
-    "send_order",
-    "cancel_order",
-    "change_order",
-    "close_by",
-    "close_position",
+CommandType = Literal["send_order", "cancel_order", "change_order", "close_by", "close_position"]
+OrderSide = Literal["buy", "sell"]
+OrderType = Literal["market", "limit"]
+OrderStatus = Literal[
+    "PENDING_SUBMIT",
+    "SUBMITTED",
+    "PARTIALLY_FILLED",
+    "FILLED",
+    "CANCELED",
+    "REJECTED",
 ]
+PositionState = Literal["open", "closed"]
 
 
-class CommandInput(BaseModel):
+class StrictModel(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+
+class SendOrderPayload(StrictModel):
+    symbol: str = Field(min_length=1)
+    side: OrderSide
+    order_type: OrderType = Field(
+        validation_alias=AliasChoices("order_type", "type"),
+        serialization_alias="order_type",
+    )
+    qty: Decimal = Field(
+        gt=Decimal("0"),
+        validation_alias=AliasChoices("qty", "amount"),
+        serialization_alias="qty",
+    )
+    price: Decimal | None = None
+    magic_id: int = 0
+    position_id: int = 0
+    reason: str = "api"
+    reduce_only: bool = False
+    client_order_id: str | None = None
+
+    @model_validator(mode="after")
+    def validate_limit_price(self) -> "SendOrderPayload":
+        if self.order_type == "limit" and self.price is None:
+            raise ValueError("price is required for limit orders")
+        return self
+
+
+class CancelOrderPayload(StrictModel):
+    order_id: int = Field(gt=0)
+
+
+class ChangeOrderPayload(StrictModel):
+    order_id: int = Field(gt=0)
+    new_price: Decimal | None = None
+    new_qty: Decimal | None = Field(default=None, gt=Decimal("0"))
+
+    @model_validator(mode="after")
+    def validate_change_fields(self) -> "ChangeOrderPayload":
+        if self.new_price is None and self.new_qty is None:
+            raise ValueError("new_price or new_qty is required")
+        return self
+
+
+class CloseByPayload(StrictModel):
+    position_id_a: int = Field(gt=0)
+    position_id_b: int = Field(gt=0)
+    magic_id: int = 0
+
+
+class ClosePositionPayload(StrictModel):
+    position_id: int = Field(gt=0)
+    order_type: OrderType = "market"
+    price: Decimal | None = None
+    qty: Decimal | None = Field(default=None, gt=Decimal("0"))
+    magic_id: int = 0
+    reason: str = "api"
+    client_order_id: str | None = None
+
+    @model_validator(mode="after")
+    def validate_limit_price(self) -> "ClosePositionPayload":
+        if self.order_type == "limit" and self.price is None:
+            raise ValueError("price is required for limit close")
+        return self
+
+
+class BaseCommand(StrictModel):
     account_id: int = Field(gt=0)
-    command: CommandType
-    payload: dict[str, Any] = Field(default_factory=dict)
     request_id: str | None = None
+
+
+class SendOrderCommand(BaseCommand):
+    command: Literal["send_order"]
+    payload: SendOrderPayload
+
+
+class CancelOrderCommand(BaseCommand):
+    command: Literal["cancel_order"]
+    payload: CancelOrderPayload
+
+
+class ChangeOrderCommand(BaseCommand):
+    command: Literal["change_order"]
+    payload: ChangeOrderPayload
+
+
+class CloseByCommand(BaseCommand):
+    command: Literal["close_by"]
+    payload: CloseByPayload
+
+
+class ClosePositionCommand(BaseCommand):
+    command: Literal["close_position"]
+    payload: ClosePositionPayload
+
+
+CommandInput = Annotated[
+    SendOrderCommand
+    | CancelOrderCommand
+    | ChangeOrderCommand
+    | CloseByCommand
+    | ClosePositionCommand,
+    Field(discriminator="command"),
+]
 
 
 class CommandResult(BaseModel):
@@ -59,21 +167,21 @@ class PositionOrderModel(BaseModel):
     id: int
     account_id: int
     symbol: str
-    side: str
-    order_type: str
-    status: str
+    side: OrderSide
+    order_type: OrderType
+    status: OrderStatus
     magic_id: int
     position_id: int
     reason: str
     client_order_id: str | None = None
     exchange_order_id: str | None = None
-    qty: str
-    price: str | None = None
-    filled_qty: str
-    avg_fill_price: str | None = None
-    created_at: str
-    updated_at: str
-    closed_at: str | None = None
+    qty: Decimal
+    price: Decimal | None = None
+    filled_qty: Decimal
+    avg_fill_price: Decimal | None = None
+    created_at: datetime
+    updated_at: datetime
+    closed_at: datetime | None = None
 
 
 class PositionDealModel(BaseModel):
@@ -82,29 +190,47 @@ class PositionDealModel(BaseModel):
     order_id: int | None = None
     position_id: int
     symbol: str
-    side: str
-    qty: str
-    price: str
-    fee: str | None = None
+    side: OrderSide
+    qty: Decimal
+    price: Decimal
+    fee: Decimal | None = None
     fee_currency: str | None = None
-    pnl: str | None = None
+    pnl: Decimal | None = None
     magic_id: int
     reason: str
     reconciled: bool
     exchange_trade_id: str | None = None
-    created_at: str
-    executed_at: str
+    created_at: datetime
+    executed_at: datetime
 
 
 class PositionModel(BaseModel):
     id: int
     account_id: int
     symbol: str
-    side: str
-    qty: str
-    avg_price: str
-    state: str
+    side: OrderSide
+    qty: Decimal
+    avg_price: Decimal
+    state: PositionState
     reason: str
-    opened_at: str
-    updated_at: str
-    closed_at: str | None = None
+    opened_at: datetime
+    updated_at: datetime
+    closed_at: datetime | None = None
+
+
+class PositionOrdersResponse(BaseModel):
+    items: list[PositionOrderModel]
+
+
+class PositionDealsResponse(BaseModel):
+    items: list[PositionDealModel]
+
+
+class PositionsResponse(BaseModel):
+    items: list[PositionModel]
+
+
+class ReassignResponse(BaseModel):
+    ok: bool
+    deals_updated: int
+    orders_updated: int

@@ -23,6 +23,10 @@ from .app.schemas import (
     CcxtCallInput,
     CommandInput,
     CommandsResponse,
+    PositionDealsResponse,
+    PositionOrdersResponse,
+    PositionsResponse,
+    ReassignResponse,
     ReassignInput,
 )
 from .app.service import process_single_command
@@ -198,71 +202,71 @@ async def post_ccxt_batch(
     return CcxtBatchResponse(results=results)
 
 
-@app.get("/position/orders/open")
+@app.get("/position/orders/open", response_model=PositionOrdersResponse)
 async def get_position_orders_open(
     account_id: int,
     auth: Annotated[AuthContext, Depends(get_auth_context)],
-) -> dict[str, Any]:
+) -> PositionOrdersResponse:
     await _require_account_permission(auth.user_id, account_id, require_trade=False)
     async with app.state.db.connection() as conn:
         rows = await app.state.repo.list_orders(conn, account_id, open_only=True)
         await conn.commit()
-    return {"items": rows}
+    return PositionOrdersResponse(items=rows)
 
 
-@app.get("/position/orders/history")
+@app.get("/position/orders/history", response_model=PositionOrdersResponse)
 async def get_position_orders_history(
     account_id: int,
     auth: Annotated[AuthContext, Depends(get_auth_context)],
-) -> dict[str, Any]:
+) -> PositionOrdersResponse:
     await _require_account_permission(auth.user_id, account_id, require_trade=False)
     async with app.state.db.connection() as conn:
         rows = await app.state.repo.list_orders(conn, account_id, open_only=False)
         await conn.commit()
-    return {"items": rows}
+    return PositionOrdersResponse(items=rows)
 
 
-@app.get("/position/deals")
+@app.get("/position/deals", response_model=PositionDealsResponse)
 async def get_position_deals(
     account_id: int,
     auth: Annotated[AuthContext, Depends(get_auth_context)],
-) -> dict[str, Any]:
+) -> PositionDealsResponse:
     await _require_account_permission(auth.user_id, account_id, require_trade=False)
     async with app.state.db.connection() as conn:
         rows = await app.state.repo.list_deals(conn, account_id)
         await conn.commit()
-    return {"items": rows}
+    return PositionDealsResponse(items=rows)
 
 
-@app.get("/position/positions/open")
+@app.get("/position/positions/open", response_model=PositionsResponse)
 async def get_position_positions_open(
     account_id: int,
     auth: Annotated[AuthContext, Depends(get_auth_context)],
-) -> dict[str, Any]:
+) -> PositionsResponse:
     await _require_account_permission(auth.user_id, account_id, require_trade=False)
     async with app.state.db.connection() as conn:
         rows = await app.state.repo.list_positions(conn, account_id, open_only=True)
         await conn.commit()
-    return {"items": rows}
+    return PositionsResponse(items=rows)
 
 
-@app.get("/position/positions/history")
+@app.get("/position/positions/history", response_model=PositionsResponse)
 async def get_position_positions_history(
     account_id: int,
     auth: Annotated[AuthContext, Depends(get_auth_context)],
-) -> dict[str, Any]:
+) -> PositionsResponse:
     await _require_account_permission(auth.user_id, account_id, require_trade=False)
     async with app.state.db.connection() as conn:
         rows = await app.state.repo.list_positions(conn, account_id, open_only=False)
         await conn.commit()
-    return {"items": rows}
+    return PositionsResponse(items=rows)
 
 
-@app.post("/position/reassign")
+@app.post("/position/reassign", response_model=ReassignResponse)
 async def post_position_reassign(
     req: ReassignInput,
     auth: Annotated[AuthContext, Depends(get_auth_context)],
-) -> dict[str, Any]:
+) -> ReassignResponse:
     await _require_account_permission(auth.user_id, req.account_id, require_trade=True)
     async with app.state.db.connection() as conn:
         deals_count = await app.state.repo.reassign_deals(
@@ -292,7 +296,7 @@ async def post_position_reassign(
             },
         )
         await conn.commit()
-    return {"ok": True, "deals_updated": deals_count, "orders_updated": orders_count}
+    return ReassignResponse(ok=True, deals_updated=deals_count, orders_updated=orders_count)
 
 
 @app.websocket("/ws")
