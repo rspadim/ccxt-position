@@ -74,6 +74,13 @@ docker compose -f apps/api/docker-compose.stack.yml exec api \
   python -m apps.api.cli install --with-account --exchange-id binance --label binance-testnet --testnet
 ```
 
+If schema was already initialized by MySQL entrypoint, use:
+
+```bash
+docker compose -f apps/api/docker-compose.stack.yml exec api \
+  python -m apps.api.cli install --skip-schema --with-account --exchange-id binance --label binance-testnet --testnet
+```
+
 Save values returned by installer:
 
 - `api_key.plain` (internal API key for `x-api-key`)

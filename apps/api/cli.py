@@ -8,6 +8,7 @@ from typing import Any
 from urllib import request as urllib_request
 
 from cryptography.fernet import Fernet
+from pymysql.err import OperationalError
 
 from .app.config import load_settings
 from .app.credentials_codec import CredentialsCodec
@@ -79,7 +80,13 @@ async def _apply_schema(sql_dir: Path) -> list[str]:
                 for sql_file in files:
                     content = sql_file.read_text(encoding="utf-8")
                     for stmt in _split_sql_statements(content):
-                        await cur.execute(stmt)
+                        try:
+                            await cur.execute(stmt)
+                        except OperationalError as exc:
+                            code = int(exc.args[0]) if exc.args else 0
+                            # Idempotent bootstrap: ignore "already exists"-style DDL errors.
+                            if code not in {1050, 1060, 1061, 1091}:
+                                raise
                     executed_files.append(sql_file.name)
             await conn.commit()
     finally:
