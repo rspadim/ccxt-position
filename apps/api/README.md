@@ -116,8 +116,7 @@ Create `apps/api/config.json` from `apps/api/config.example.json` and set:
 
 Backward compatibility:
 
-- `api.disable_uvicorn_access_log` and `api.app_request_log` are still accepted for old configs.
-- Prefer `logging.disable_uvicorn_access_log` and `logging.app_request_log`.
+- Use `logging.disable_uvicorn_access_log` and `logging.app_request_log`.
 
 Credential encryption:
 
@@ -212,6 +211,10 @@ python -m apps.api.cli --help
 Security commands:
 
 ```bash
+python -m apps.api.cli install --with-account --exchange-id binance --label binance-testnet --testnet
+python -m apps.api.cli create-user --name trader-bot
+python -m apps.api.cli create-api-key --user-id 1
+python -m apps.api.cli add-account --user-id 1 --exchange-id binance --label main --testnet
 python -m apps.api.cli generate-master-key
 python -m apps.api.cli encrypt --value "my-secret"
 python -m apps.api.cli upsert-account-credentials --account-id 1 --api-key "..." --secret "..." --encrypt-input

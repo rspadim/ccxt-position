@@ -32,3 +32,12 @@ def test_flatten_sectioned_config_maps_sections() -> None:
     assert out["log_dir"] == "logs-dev"
     assert out["encryption_master_key"] == "abc"
 
+
+def test_flatten_config_ignores_api_legacy_section() -> None:
+    raw = {
+        "api": {"disable_uvicorn_access_log": False, "app_request_log": False},
+        "logging": {"log_dir": "logs-dev", "disable_uvicorn_access_log": True, "app_request_log": True},
+    }
+    out = _flatten_sectioned_config(raw)
+    assert out["disable_uvicorn_access_log"] is True
+    assert out["app_request_log"] is True

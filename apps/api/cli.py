@@ -1,6 +1,8 @@
 import argparse
 import asyncio
+import hashlib
 import json
+import secrets
 from pathlib import Path
 from typing import Any
 from urllib import request as urllib_request
@@ -37,6 +39,143 @@ def _http_json(
 
 def _default_headers(api_key: str) -> dict[str, str]:
     return {"x-api-key": api_key}
+
+
+def _sha256_hex(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _split_sql_statements(sql_text: str) -> list[str]:
+    statements: list[str] = []
+    current: list[str] = []
+    for raw_line in sql_text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("--"):
+            continue
+        current.append(raw_line)
+        if line.endswith(";"):
+            stmt = "\n".join(current).strip()
+            if stmt:
+                statements.append(stmt)
+            current = []
+    tail = "\n".join(current).strip()
+    if tail:
+        statements.append(tail)
+    return statements
+
+
+async def _apply_schema(sql_dir: Path) -> list[str]:
+    files = sorted([p for p in sql_dir.glob("*.sql") if p.is_file()])
+    if not files:
+        raise SystemExit(f"no sql files found in {sql_dir}")
+
+    settings = load_settings()
+    db = DatabaseMySQL(settings)
+    await db.connect()
+    executed_files: list[str] = []
+    try:
+        async with db.connection() as conn:
+            async with conn.cursor() as cur:
+                for sql_file in files:
+                    content = sql_file.read_text(encoding="utf-8")
+                    for stmt in _split_sql_statements(content):
+                        await cur.execute(stmt)
+                    executed_files.append(sql_file.name)
+            await conn.commit()
+    finally:
+        await db.disconnect()
+
+    return executed_files
+
+
+async def _create_user(name: str) -> int:
+    settings = load_settings()
+    db = DatabaseMySQL(settings)
+    await db.connect()
+    try:
+        async with db.connection() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    """
+                    INSERT INTO users (name, status)
+                    VALUES (%s, 'active')
+                    """,
+                    (name,),
+                )
+                user_id = int(cur.lastrowid)
+            await conn.commit()
+    finally:
+        await db.disconnect()
+    return user_id
+
+
+async def _create_api_key_for_user(user_id: int, api_key_plain: str | None) -> tuple[int, str]:
+    key_plain = api_key_plain or secrets.token_urlsafe(32)
+    key_hash = _sha256_hex(key_plain)
+
+    settings = load_settings()
+    db = DatabaseMySQL(settings)
+    await db.connect()
+    try:
+        async with db.connection() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    """
+                    INSERT INTO user_api_keys (user_id, api_key_hash, status)
+                    VALUES (%s, %s, 'active')
+                    """,
+                    (user_id, key_hash),
+                )
+                key_id = int(cur.lastrowid)
+            await conn.commit()
+    finally:
+        await db.disconnect()
+
+    return key_id, key_plain
+
+
+async def _create_account_and_permission(
+    user_id: int,
+    exchange_id: str,
+    label: str,
+    position_mode: str,
+    pool_id: int,
+    is_testnet: bool,
+    can_read: bool,
+    can_trade: bool,
+    can_risk_manage: bool,
+) -> int:
+    settings = load_settings()
+    db = DatabaseMySQL(settings)
+    await db.connect()
+    try:
+        async with db.connection() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    """
+                    INSERT INTO accounts (
+                        exchange_id, is_testnet, label, position_mode, pool_id, status
+                    ) VALUES (%s, %s, %s, %s, %s, 'active')
+                    """,
+                    (exchange_id, is_testnet, label, position_mode, pool_id),
+                )
+                account_id = int(cur.lastrowid)
+                await cur.execute(
+                    """
+                    INSERT INTO user_account_permissions (
+                        user_id, account_id, can_read, can_trade, can_risk_manage
+                    ) VALUES (%s, %s, %s, %s, %s)
+                    ON DUPLICATE KEY UPDATE
+                        can_read = VALUES(can_read),
+                        can_trade = VALUES(can_trade),
+                        can_risk_manage = VALUES(can_risk_manage)
+                    """,
+                    (user_id, account_id, can_read, can_trade, can_risk_manage),
+                )
+            await conn.commit()
+    finally:
+        await db.disconnect()
+    return account_id
 
 
 async def _upsert_account_credentials(
@@ -159,6 +298,79 @@ def cmd_set_account_testnet(args: argparse.Namespace) -> None:
     asyncio.run(_set_account_testnet(args.account_id, enabled))
 
 
+def cmd_install(args: argparse.Namespace) -> None:
+    async def _run() -> dict[str, Any]:
+        out: dict[str, Any] = {"ok": True}
+
+        if not args.skip_schema:
+            executed = await _apply_schema(Path(args.sql_dir))
+            out["schema_files"] = executed
+
+        user_id = await _create_user(args.admin_name)
+        key_id, plain_key = await _create_api_key_for_user(user_id, args.api_key)
+        out["user"] = {"id": user_id, "name": args.admin_name}
+        out["api_key"] = {"id": key_id, "plain": plain_key}
+
+        if args.with_account:
+            account_id = await _create_account_and_permission(
+                user_id=user_id,
+                exchange_id=args.exchange_id,
+                label=args.label,
+                position_mode=args.position_mode,
+                pool_id=args.pool_id,
+                is_testnet=args.testnet,
+                can_read=True,
+                can_trade=True,
+                can_risk_manage=True,
+            )
+            out["account"] = {
+                "id": account_id,
+                "exchange_id": args.exchange_id,
+                "label": args.label,
+                "position_mode": args.position_mode,
+                "is_testnet": args.testnet,
+            }
+
+        return out
+
+    _print_json(asyncio.run(_run()))
+
+
+def cmd_create_user(args: argparse.Namespace) -> None:
+    user_id = asyncio.run(_create_user(args.name))
+    _print_json({"ok": True, "user_id": user_id, "name": args.name})
+
+
+def cmd_create_api_key(args: argparse.Namespace) -> None:
+    key_id, plain_key = asyncio.run(_create_api_key_for_user(args.user_id, args.api_key))
+    _print_json({"ok": True, "user_id": args.user_id, "api_key_id": key_id, "api_key": plain_key})
+
+
+def cmd_add_account(args: argparse.Namespace) -> None:
+    account_id = asyncio.run(
+        _create_account_and_permission(
+            user_id=args.user_id,
+            exchange_id=args.exchange_id,
+            label=args.label,
+            position_mode=args.position_mode,
+            pool_id=args.pool_id,
+            is_testnet=args.testnet,
+            can_read=not args.no_read,
+            can_trade=not args.read_only,
+            can_risk_manage=args.can_risk_manage,
+        )
+    )
+    _print_json(
+        {
+            "ok": True,
+            "account_id": account_id,
+            "user_id": args.user_id,
+            "exchange_id": args.exchange_id,
+            "label": args.label,
+        }
+    )
+
+
 def _post_position_command(
     base_url: str,
     api_key: str,
@@ -239,8 +451,45 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="ccxt-position-cli")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
-    p_key = sub.add_parser("generate-master-key", help="Generate Fernet master key")
-    p_key.set_defaults(func=cmd_generate_master_key)
+    p_install = sub.add_parser(
+        "install",
+        help="Beginner setup: apply schema, create admin user, create internal API key",
+    )
+    p_install.add_argument("--sql-dir", default="sql")
+    p_install.add_argument("--skip-schema", action="store_true")
+    p_install.add_argument("--admin-name", default="admin")
+    p_install.add_argument("--api-key", help="Optional fixed internal API key; generated if omitted")
+    p_install.add_argument("--with-account", action="store_true")
+    p_install.add_argument("--exchange-id", default="binance")
+    p_install.add_argument("--label", default="binance-main")
+    p_install.add_argument("--position-mode", choices=["hedge", "netting"], default="hedge")
+    p_install.add_argument("--pool-id", type=int, default=0)
+    p_install.add_argument("--testnet", action="store_true")
+    p_install.set_defaults(func=cmd_install)
+
+    p_user = sub.add_parser("create-user", help="Create internal API user")
+    p_user.add_argument("--name", required=True)
+    p_user.set_defaults(func=cmd_create_user)
+
+    p_key = sub.add_parser("create-api-key", help="Create internal API key for existing user")
+    p_key.add_argument("--user-id", type=int, required=True)
+    p_key.add_argument("--api-key", help="Optional fixed key; generated if omitted")
+    p_key.set_defaults(func=cmd_create_api_key)
+
+    p_account = sub.add_parser("add-account", help="Create account and grant permission to user")
+    p_account.add_argument("--user-id", type=int, required=True)
+    p_account.add_argument("--exchange-id", required=True)
+    p_account.add_argument("--label", required=True)
+    p_account.add_argument("--position-mode", choices=["hedge", "netting"], default="hedge")
+    p_account.add_argument("--pool-id", type=int, default=0)
+    p_account.add_argument("--testnet", action="store_true")
+    p_account.add_argument("--no-read", action="store_true")
+    p_account.add_argument("--read-only", action="store_true")
+    p_account.add_argument("--can-risk-manage", action="store_true")
+    p_account.set_defaults(func=cmd_add_account)
+
+    p_gen = sub.add_parser("generate-master-key", help="Generate Fernet master key")
+    p_gen.set_defaults(func=cmd_generate_master_key)
 
     p_enc = sub.add_parser("encrypt", help="Encrypt one credential value")
     p_enc.add_argument("--value", required=True)

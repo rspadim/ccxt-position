@@ -37,8 +37,6 @@ def _flatten_sectioned_config(data: dict[str, Any]) -> dict[str, Any]:
     out = dict(data)
 
     app = data.get("app", {})
-    # `api.*` is legacy. Keep parsing for backward compatibility.
-    api = data.get("api", {})
     database = data.get("database", {})
     worker = data.get("worker", {})
     logging_cfg = data.get("logging", {})
@@ -71,12 +69,6 @@ def _flatten_sectioned_config(data: dict[str, Any]) -> dict[str, Any]:
             out["mysql_min_pool_size"] = database["mysql_min_pool_size"]
         if "mysql_max_pool_size" in database:
             out["mysql_max_pool_size"] = database["mysql_max_pool_size"]
-
-    if isinstance(api, dict):
-        if "disable_uvicorn_access_log" in api:
-            out["disable_uvicorn_access_log"] = api["disable_uvicorn_access_log"]
-        if "app_request_log" in api:
-            out["app_request_log"] = api["app_request_log"]
 
     if isinstance(worker, dict):
         if "worker_id" in worker:
