@@ -51,8 +51,11 @@ Run hedge/netting live scenarios with multiple `magic_id`, position reduce/rever
 
 ```bash
 python test/testnet/scenarios.py
+python test/testnet/scenarios.py --verbose
 ```
 
 Output is saved to:
 
 - `test/testnet/runtime/scenarios.json`
+- `test/testnet/runtime/scenarios.log`
+- `test/testnet/runtime/scenarios-diagnostics.json` (on failures)

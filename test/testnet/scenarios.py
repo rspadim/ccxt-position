@@ -1,4 +1,5 @@
 import json
+import argparse
 import os
 import subprocess
 import sys
@@ -6,6 +7,31 @@ import time
 from decimal import Decimal
 from pathlib import Path
 from urllib import request as urllib_request
+
+
+class Logger:
+    def __init__(self, runtime_dir: Path, verbose: bool) -> None:
+        self.verbose = verbose
+        self.log_path = runtime_dir / "scenarios.log"
+        runtime_dir.mkdir(parents=True, exist_ok=True)
+        self.log_path.write_text("", encoding="utf-8")
+
+    def _line(self, level: str, message: str) -> str:
+        ts = time.strftime("%Y-%m-%d %H:%M:%S")
+        return f"[{ts}] [{level}] {message}"
+
+    def info(self, message: str) -> None:
+        line = self._line("INFO", message)
+        if self.verbose:
+            print(line)
+        with self.log_path.open("a", encoding="utf-8") as fh:
+            fh.write(line + "\n")
+
+    def warn(self, message: str) -> None:
+        line = self._line("WARN", message)
+        print(line, file=sys.stderr)
+        with self.log_path.open("a", encoding="utf-8") as fh:
+            fh.write(line + "\n")
 
 
 def run_cmd(args: list[str]) -> str:
@@ -51,7 +77,9 @@ def create_account_for_mode(
     label: str,
     api_key: str,
     secret_key: str,
+    logger: Logger,
 ) -> int:
+    logger.info(f"creating account mode={mode} label={label}")
     created = run_json_cmd(
         compose
         + [
@@ -74,6 +102,7 @@ def create_account_for_mode(
         ]
     )
     account_id = int(created["account_id"])
+    logger.info(f"account created id={account_id}; storing credentials")
     run_cmd(
         compose
         + [
@@ -93,10 +122,23 @@ def create_account_for_mode(
             "--encrypt-input",
         ]
     )
+    logger.info(f"credentials stored for account_id={account_id}")
     return account_id
 
 
-def send_market(base_url: str, headers: dict[str, str], account_id: int, symbol: str, side: str, qty: str, magic_id: int) -> int:
+def send_market(
+    base_url: str,
+    headers: dict[str, str],
+    account_id: int,
+    symbol: str,
+    side: str,
+    qty: str,
+    magic_id: int,
+    logger: Logger,
+) -> int:
+    logger.info(
+        f"sending market order account_id={account_id} symbol={symbol} side={side} qty={qty} magic_id={magic_id}"
+    )
     out = http_json(
         "POST",
         f"{base_url}/position/commands",
@@ -117,6 +159,9 @@ def send_market(base_url: str, headers: dict[str, str], account_id: int, symbol:
     first = out["results"][0]
     if not first.get("ok"):
         raise RuntimeError(f"send_market failed: {json.dumps(first)}")
+    logger.info(
+        f"order accepted account_id={account_id} order_id={first['order_id']} command_id={first['command_id']}"
+    )
     return int(first["order_id"])
 
 
@@ -184,8 +229,15 @@ def collect_exchange_trade_ids(deals: list[dict]) -> set[str]:
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(description="Run live testnet scenarios")
+    parser.add_argument("--verbose", action="store_true")
+    args = parser.parse_args()
+
     root = Path(__file__).resolve().parents[2]
-    context_path = root / "test/testnet/runtime/context.json"
+    runtime_dir = root / "test/testnet/runtime"
+    logger = Logger(runtime_dir=runtime_dir, verbose=args.verbose)
+
+    context_path = runtime_dir / "context.json"
     if not context_path.exists():
         raise RuntimeError("missing context.json. run: py -3.13 test/testnet/run.py")
     context = json.loads(context_path.read_text(encoding="utf-8"))
@@ -212,7 +264,10 @@ def main() -> int:
         raise RuntimeError("BINANCE_TESTNET_API_KEY and BINANCE_TESTNET_SECRET_KEY are required in .env.testnet")
 
     compose = ["docker", "compose", "-f", "apps/api/docker-compose.stack.yml"]
+    logger.info("starting scenarios execution")
+    logger.info(f"base_url={base_url} symbol={symbol} user_id={user_id}")
     qty = choose_buy_qty(base_url, headers, int(context["account_id"]), symbol)
+    logger.info(f"calculated qty={qty} from live balance/ticker")
 
     hedge_account = create_account_for_mode(
         compose=compose,
@@ -221,6 +276,7 @@ def main() -> int:
         label=f"{symbol.replace('/', '-')}-hedge",
         api_key=api_key,
         secret_key=secret_key,
+        logger=logger,
     )
     netting_account = create_account_for_mode(
         compose=compose,
@@ -229,13 +285,16 @@ def main() -> int:
         label=f"{symbol.replace('/', '-')}-netting",
         api_key=api_key,
         secret_key=secret_key,
+        logger=logger,
     )
 
     # Hedge scenario: buy with magic 101, sell with magic 202 -> both sides can coexist.
-    hedge_order_1 = send_market(base_url, headers, hedge_account, symbol, "buy", qty, 101)
-    hedge_order_2 = send_market(base_url, headers, hedge_account, symbol, "sell", qty, 202)
+    logger.info("running hedge scenario")
+    hedge_order_1 = send_market(base_url, headers, hedge_account, symbol, "buy", qty, 101, logger)
+    hedge_order_2 = send_market(base_url, headers, hedge_account, symbol, "sell", qty, 202, logger)
     h1 = wait_order_terminal(base_url, headers, hedge_account, hedge_order_1)
     h2 = wait_order_terminal(base_url, headers, hedge_account, hedge_order_2)
+    logger.info(f"hedge terminal statuses: {h1.get('status') if h1 else None}, {h2.get('status') if h2 else None}")
     if not h1 or h1.get("status") != "FILLED" or not h2 or h2.get("status") != "FILLED":
         raise RuntimeError(f"hedge scenario requires FILLED orders, got: {h1} / {h2}")
     hedge_deals = wait_min_deals(base_url, headers, hedge_account, 2) or []
@@ -247,12 +306,16 @@ def main() -> int:
     qty_dec = Decimal(qty)
     qty_half = format((qty_dec / Decimal("2")).quantize(Decimal("0.000001")), "f")
     qty_reverse = format((qty_dec * Decimal("1.5")).quantize(Decimal("0.000001")), "f")
-    net_order_1 = send_market(base_url, headers, netting_account, symbol, "buy", qty, 301)
-    net_order_2 = send_market(base_url, headers, netting_account, symbol, "sell", qty_half, 302)
-    net_order_3 = send_market(base_url, headers, netting_account, symbol, "sell", qty_reverse, 303)
+    logger.info("running netting scenario")
+    net_order_1 = send_market(base_url, headers, netting_account, symbol, "buy", qty, 301, logger)
+    net_order_2 = send_market(base_url, headers, netting_account, symbol, "sell", qty_half, 302, logger)
+    net_order_3 = send_market(base_url, headers, netting_account, symbol, "sell", qty_reverse, 303, logger)
     n1 = wait_order_terminal(base_url, headers, netting_account, net_order_1)
     n2 = wait_order_terminal(base_url, headers, netting_account, net_order_2)
     n3 = wait_order_terminal(base_url, headers, netting_account, net_order_3)
+    logger.info(
+        f"netting terminal statuses: {n1.get('status') if n1 else None}, {n2.get('status') if n2 else None}, {n3.get('status') if n3 else None}"
+    )
     if not n1 or n1.get("status") != "FILLED" or not n2 or n2.get("status") != "FILLED" or not n3 or n3.get("status") != "FILLED":
         raise RuntimeError(f"netting scenario requires FILLED orders, got: {n1} / {n2} / {n3}")
     net_deals = wait_min_deals(base_url, headers, netting_account, 3) or []
@@ -264,6 +327,7 @@ def main() -> int:
     ).get("items", [])
 
     # Mirror scenario: two account_ids sharing exact same exchange credentials.
+    logger.info("running mirror reconciliation scenario")
     mirror_a = create_account_for_mode(
         compose=compose,
         user_id=user_id,
@@ -271,6 +335,7 @@ def main() -> int:
         label=f"{symbol.replace('/', '-')}-mirror-a",
         api_key=api_key,
         secret_key=secret_key,
+        logger=logger,
     )
     mirror_b = create_account_for_mode(
         compose=compose,
@@ -279,9 +344,11 @@ def main() -> int:
         label=f"{symbol.replace('/', '-')}-mirror-b",
         api_key=api_key,
         secret_key=secret_key,
+        logger=logger,
     )
-    mirror_order = send_market(base_url, headers, mirror_a, symbol, "buy", qty, 404)
+    mirror_order = send_market(base_url, headers, mirror_a, symbol, "buy", qty, 404, logger)
     m = wait_order_terminal(base_url, headers, mirror_a, mirror_order)
+    logger.info(f"mirror source order status: {m.get('status') if m else None}")
     if not m or m.get("status") != "FILLED":
         raise RuntimeError(f"mirror source order must be FILLED, got: {m}")
 
@@ -292,12 +359,25 @@ def main() -> int:
         ids_a = collect_exchange_trade_ids(deals_a)
         ids_b = collect_exchange_trade_ids(deals_b)
         common = sorted(ids_a.intersection(ids_b))
+        logger.info(
+            f"mirror poll: account_a_deals={len(deals_a)} account_b_deals={len(deals_b)} common_trade_ids={len(common)}"
+        )
         if common:
             return {"common_trade_ids": common, "deals_a": deals_a, "deals_b": deals_b}
         return None
 
     mirror = wait_until(_mirror_check, timeout_s=240, sleep_s=3.0)
     if not mirror:
+        logger.warn("mirror reconciliation failed; collecting diagnostics")
+        diag = {
+            "orders_a": http_json("GET", f"{base_url}/position/orders/history?account_id={mirror_a}", headers).get("items", []),
+            "orders_b": http_json("GET", f"{base_url}/position/orders/history?account_id={mirror_b}", headers).get("items", []),
+            "deals_a": http_json("GET", f"{base_url}/position/deals?account_id={mirror_a}", headers).get("items", []),
+            "deals_b": http_json("GET", f"{base_url}/position/deals?account_id={mirror_b}", headers).get("items", []),
+        }
+        diag_path = runtime_dir / "scenarios-diagnostics.json"
+        diag_path.write_text(json.dumps(diag, indent=2), encoding="utf-8")
+        logger.warn(f"diagnostics saved: {diag_path}")
         raise RuntimeError("mirror reconciliation failed: no shared exchange_trade_id between mirror accounts")
 
     summary = {
@@ -328,10 +408,12 @@ def main() -> int:
         },
     }
 
-    out_path = root / "test/testnet/runtime/scenarios.json"
+    out_path = runtime_dir / "scenarios.json"
     out_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    logger.info(f"scenario summary saved: {out_path}")
     print(json.dumps(summary, indent=2))
     print(f"saved: {out_path}")
+    print(f"log: {logger.log_path}")
     return 0
 
 
