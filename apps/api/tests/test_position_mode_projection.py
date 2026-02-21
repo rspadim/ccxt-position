@@ -15,7 +15,15 @@ class FakeRepo:
     async def deal_exists_by_exchange_trade_id(self, _conn: Any, _account_id: int, _trade_id: str | None) -> bool:
         return False
 
-    async def fetch_open_order_by_exchange_order_id(self, _conn: Any, _account_id: int, _exchange_order_id: str | None) -> dict[str, Any] | None:
+    async def fetch_open_order_link(
+        self,
+        _conn: Any,
+        _account_id: int,
+        exchange_order_id: str | None,
+        client_order_id: str | None,
+    ) -> dict[str, Any] | None:
+        _ = exchange_order_id
+        _ = client_order_id
         return None
 
     async def fetch_account_position_mode(self, _conn: Any, _account_id: int) -> str:
@@ -25,7 +33,7 @@ class FakeRepo:
         p = self.positions.get(position_id)
         if p is None or p["state"] != "open":
             return None
-        return (p["id"], p["symbol"], p["side"], str(p["qty"]), str(p["avg_price"]))
+        return (p["id"], p["symbol"], 0, p["side"], str(p["qty"]), str(p["avg_price"]))
 
     async def fetch_open_position_for_symbol(
         self, _conn: Any, account_id: int, symbol: str, side: str
@@ -58,12 +66,17 @@ class FakeRepo:
         conn: Any,
         account_id: int,
         symbol: str,
+        strategy_id: int,
         side: str,
         qty: Any,
         avg_price: Any,
+        stop_loss: Any = None,
+        stop_gain: Any = None,
+        comment: str | None = None,
         reason: str = "api",
     ) -> int:
         _ = conn
+        _ = strategy_id
         pid = self.next_position_id
         self.next_position_id += 1
         self.positions[pid] = {
@@ -73,6 +86,9 @@ class FakeRepo:
             "side": side,
             "qty": Decimal(str(qty)),
             "avg_price": Decimal(str(avg_price)),
+            "stop_loss": None if stop_loss is None else Decimal(str(stop_loss)),
+            "stop_gain": None if stop_gain is None else Decimal(str(stop_gain)),
+            "comment": comment,
             "state": "open",
             "reason": reason,
         }

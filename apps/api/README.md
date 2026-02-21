@@ -1,4 +1,4 @@
-# API
+﻿# API
 
 First vertical slice implemented:
 
@@ -9,7 +9,7 @@ First vertical slice implemented:
 - `GET /position/positions/open|history`
 - `POST /position/reassign`
 - `POST /ccxt/{account_id}/{func}`
-- `POST /ccxt/multiple_commands`
+- `POST /ccxt/commands`
 - `WS /ws`
 
 ## Run
@@ -35,7 +35,7 @@ docker compose -f apps/api/docker-compose.mysql.yml up -d
 
 ## Quick Start (Beginner, Docker)
 
-This is the easiest way to start from zero (MySQL + API + worker).
+This is the easiest way to start from zero (MySQL + API + dispatcher).
 
 1. Copy Docker config:
 
@@ -61,7 +61,7 @@ curl http://127.0.0.1:8000/healthz
 
 ```bash
 docker compose -f apps/api/docker-compose.stack.yml logs -f api
-docker compose -f apps/api/docker-compose.stack.yml logs -f worker
+docker compose -f apps/api/docker-compose.stack.yml logs -f dispatcher
 ```
 
 6. Stop stack:
@@ -75,19 +75,12 @@ Notes:
 - MySQL schema is auto-applied from `sql/*.sql` on first startup.
 - If you need a clean reset, run `down -v` to remove volumes and recreate.
 
-Run worker in another process:
+Dispatcher behavior in v0:
 
-```bash
-python -m apps.api.worker_position
-```
-
-Worker behavior in v0:
-
-- Executes `send_order`, `cancel_order`, and `change_order` through CCXT
+- Executes `send_order`, `cancel_order`, and `change_order` through CCXT in per-account workers
 - Persists exchange raw order payloads into `ccxt_orders_raw`
 - Updates `position_orders` status and `exchange_order_id`
-- Retries queue items with backoff and max attempt limit
-- Reconciliation poll imports external trades and projects deals/positions
+- Runs reconciliation (manual and scheduled policies) and projects deals/positions
 
 ## Logging
 
@@ -159,9 +152,8 @@ Notes:
 
 - `close_position` is internally transformed into a reduce-only `send_order`.
 - `close_position` acquires a per-position lock, so only one close flow runs at a time.
-- `change_order` validates mutable state and enqueues modification command.
-- Queue consumption and status progression happen in `worker_position`.
-- `close_by` is executed internally in the worker and generates internal compensation deals.
+- `change_order` validates mutable state before exchange execution.
+- `close_by` is executed internally in the account worker and generates internal compensation deals.
 
 ## WebSocket
 
@@ -169,7 +161,6 @@ Connect with headers:
 
 - `x-api-key: <plain_api_key>`
 - `x-account-id: <account_id>`
-- `x-after-id: <optional last event id>`
 
 Supported actions:
 
@@ -192,7 +183,7 @@ Supported actions:
       "order_type": "limit",
       "qty": "0.01",
       "price": "50000",
-      "magic_id": 0,
+      "strategy_id": 0,
       "position_id": 0
     }
   }
@@ -206,7 +197,7 @@ pip install -r apps/api/requirements-dev.txt
 pytest -q apps/api/tests
 ```
 
-Live integration test (against running API + worker + exchange testnet):
+Live integration test (against running API + dispatcher + exchange testnet):
 
 ```bash
 RUN_LIVE_INTEGRATION=1 \
@@ -255,5 +246,6 @@ python -m apps.api.cli change-order --api-key "$KEY" --account-id 1 --order-id 1
 python -m apps.api.cli cancel-order --api-key "$KEY" --account-id 1 --order-id 123
 python -m apps.api.cli close-position --api-key "$KEY" --account-id 1 --position-id 77
 python -m apps.api.cli close-by --api-key "$KEY" --account-id 1 --position-id-a 77 --position-id-b 88
-python -m apps.api.cli reassign-position --api-key "$KEY" --account-id 1 --deal-ids 1 2 3 --target-magic-id 42 --target-position-id 77
+python -m apps.api.cli reassign-position --api-key "$KEY" --account-id 1 --deal-ids 1 2 3 --target-strategy-id 42 --target-position-id 77
 ```
+

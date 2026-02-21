@@ -82,16 +82,17 @@ def test_ccxt_adapter_capability_check_blocks_unsupported() -> None:
     try:
         adapter = CCXTAdapter()
         result = asyncio.run(
-            adapter.execute_unified_with_capability(
-                exchange_id="fakeex",
-                use_testnet=False,
-                api_key=None,
-                secret=None,
-                passphrase=None,
-                method="fetch_balance",
-                capabilities=["fetchBalance"],
-                kwargs={"params": {}},
-            )
+                adapter.execute_unified_with_capability(
+                    exchange_id="fakeex",
+                    use_testnet=False,
+                    api_key=None,
+                    secret=None,
+                    passphrase=None,
+                    extra_config={},
+                    method="fetch_balance",
+                    capabilities=["fetchBalance"],
+                    kwargs={"params": {}},
+                )
         )
         assert result["ok"] is True
 
@@ -103,6 +104,7 @@ def test_ccxt_adapter_capability_check_blocks_unsupported() -> None:
                     api_key=None,
                     secret=None,
                     passphrase=None,
+                    extra_config={},
                     method="fetch_open_orders",
                     capabilities=["fetchOpenOrders"],
                     kwargs={"symbol": "BTC/USDT", "since": None, "limit": 10, "params": {}},
@@ -110,4 +112,3 @@ def test_ccxt_adapter_capability_check_blocks_unsupported() -> None:
             )
     finally:
         ccxt_adapter_module.ccxt_async = original
-

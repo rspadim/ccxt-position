@@ -30,27 +30,31 @@ services:
     depends_on:
       mysql:
         condition: service_healthy
+      dispatcher:
+        condition: service_started
     command: ["uvicorn", "apps.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
     environment:
       CONFIG_JSON_PATH: /app/apps/api/config.docker.json
+      DISPATCHER_HOST: dispatcher
     volumes:
       - ../..:/app
       - logs_data:/app/logs
     ports:
       - "8000:8000"
 
-  worker:
+  dispatcher:
     build:
       context: ../..
       dockerfile: apps/api/Dockerfile
-    container_name: ccxt-position-worker
+    container_name: ccxt-position-dispatcher
     restart: unless-stopped
     depends_on:
       mysql:
         condition: service_healthy
-    command: ["python", "-m", "apps.api.worker_position"]
+    command: ["python", "-m", "apps.api.dispatcher_server"]
     environment:
       CONFIG_JSON_PATH: /app/apps/api/config.docker.json
+      DISPATCHER_HOST: 0.0.0.0
     volumes:
       - ../..:/app
       - logs_data:/app/logs

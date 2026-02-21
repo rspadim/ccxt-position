@@ -14,7 +14,6 @@ Core tables:
 - `position_positions`
 - `reconciliation_cursor`
 - `audit_log`
-- `command_queue`
 - `event_outbox`
 
 Raw tables:

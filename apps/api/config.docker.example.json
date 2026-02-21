@@ -20,7 +20,20 @@
     "pool_id": 0,
     "poll_interval_ms": 1000,
     "max_attempts": 5,
-    "reconciliation_interval_seconds": 30
+    "auto_reconcile_enabled": true,
+    "reconcile_short_interval_seconds": 60,
+    "reconcile_short_lookback_minutes": 10,
+    "reconcile_hourly_interval_seconds": 3600,
+    "reconcile_hourly_lookback_minutes": 60,
+    "reconcile_long_interval_seconds": 86400,
+    "reconcile_long_lookback_days": 10,
+    "reconcile_batch_limit": 200
+  },
+  "dispatcher": {
+    "host": "127.0.0.1",
+    "port": 9100,
+    "request_timeout_seconds": 30,
+    "pool_size": 8
   },
   "logging": {
     "log_dir": "logs",

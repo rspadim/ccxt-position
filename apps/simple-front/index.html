@@ -1,0 +1,390 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>CCXT Position</title>
+    <link rel="stylesheet" href="https://unpkg.com/tabulator-tables@6.3.0/dist/css/tabulator.min.css" />
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <div id="app">
+      <header class="topbar">
+        <h1>CCXT Position</h1>
+        <div id="status" class="status">disconnected</div>
+      </header>
+      <div class="tabs">
+        <button id="tabLoginBtn" class="tab" type="button">Login</button>
+        <button id="tabTradeBtn" class="tab active" type="button">Trade</button>
+        <button id="tabRiskBtn" class="tab" type="button">Risk</button>
+        <button id="tabAdminBtn" class="tab" type="button">Admin</button>
+      </div>
+
+      <section class="card forms is-hidden" id="loginPanel">
+        <h2>Login</h2>
+        <div class="grid cols-2">
+          <form id="loginForm">
+            <label>Base URL<input id="baseUrl" list="baseUrlHistory" placeholder="http://127.0.0.1:8000" /></label>
+            <datalist id="baseUrlHistory"></datalist>
+            <label>Idioma
+              <select id="loginLanguage" name="language">
+                <option value="pt-BR">Português (Brasil)</option>
+                <option value="en-US">English (US)</option>
+                <option value="es">Español</option>
+              </select>
+            </label>
+            <label>Mode
+              <select id="loginMode" name="mode">
+                <option value="api_key">api_key</option>
+                <option value="user_password">usuario + senha</option>
+              </select>
+            </label>
+            <div id="loginApiKeyFields">
+              <label>API Key
+                <div class="inline-input">
+                  <input id="apiKey" list="apiKeyHistory" type="password" placeholder="x-api-key ou tok_*" />
+                  <button id="toggleApiKeyBtn" type="button" class="ghost inline-btn">mostrar</button>
+                </div>
+              </label>
+              <datalist id="apiKeyHistory"></datalist>
+            </div>
+            <div id="loginUserPassFields" class="is-hidden">
+              <label>User Name<input id="loginUserName" placeholder="trader-bot-01" /></label>
+              <label>Password<input id="loginPassword" type="password" placeholder="senha" /></label>
+              <label>API Key ID (opcional)<input id="loginApiKeyId" type="number" min="1" /></label>
+            </div>
+            <button type="submit">Authenticate</button>
+          </form>
+        </div>
+      </section>
+
+      <div id="tradePanel">
+      <section class="card connection">
+        <h2>Connection</h2>
+        <div class="grid cols-4">
+          <label>View Accounts
+            <select id="viewAccountsSelect" multiple size="5"></select>
+          </label>
+          <div class="mini-actions">
+            <button id="selectAllAccountsBtn" type="button" class="ghost">Selecionar Todas</button>
+            <button id="clearAccountsBtn" type="button" class="ghost">Limpar</button>
+          </div>
+          <datalist id="accountHistory"></datalist>
+          <datalist id="strategyHistory"></datalist>
+        </div>
+        <div class="actions">
+          <button id="connectBtn">Connect WS</button>
+          <button id="disconnectBtn" class="ghost">Disconnect</button>
+          <button id="refreshBtn" class="ghost">Refresh Tables</button>
+          <button id="accountsBtn" class="ghost">Load Accounts</button>
+        </div>
+      </section>
+
+      <section class="card forms">
+        <h2>Commands</h2>
+        <div class="grid cols-2">
+          <form id="sendOrderForm">
+            <h3>Send Order</h3>
+            <label>Account ID<input id="sendAccountId" list="accountHistory" placeholder="9 ou 9 - binance-testnet" /></label>
+            <label>Strategy
+              <div class="inline-input">
+                <select id="sendStrategyId"></select>
+                <input id="sendNewStrategyName" placeholder="novo nome (opcional)" />
+                <button id="createSendStrategyBtn" type="button" class="ghost inline-btn">Criar</button>
+              </div>
+            </label>
+            <label>Symbol
+              <div class="inline-input">
+                <input id="sendSymbol" name="symbol" list="symbolHistory" value="BTC/USDT" />
+                <button id="loadSymbolsBtn" type="button" class="ghost inline-btn">Load Symbols</button>
+              </div>
+            </label>
+            <datalist id="symbolHistory"></datalist>
+            <label>Side
+              <select name="side">
+                <option value="buy">buy</option>
+                <option value="sell">sell</option>
+              </select>
+            </label>
+            <label>Type
+              <select name="order_type">
+                <option value="market">market</option>
+                <option value="limit">limit</option>
+              </select>
+            </label>
+            <label>Qty<input name="qty" value="0.001" /></label>
+            <label>Price<input name="price" placeholder="required for limit" /></label>
+            <label>Stop Loss<input name="stop_loss" placeholder="opcional" /></label>
+            <label>Stop Gain<input name="stop_gain" placeholder="opcional" /></label>
+            <label>Comment<input name="comment" placeholder="opcional" /></label>
+            <label class="inline"><input name="reduce_only" type="checkbox" /> reduce_only</label>
+            <button type="submit">Send</button>
+          </form>
+
+          <form id="cancelOrderForm">
+            <h3>Cancel Order</h3>
+            <label>Order IDs (1 ou CSV)<input name="order_ids_csv" placeholder="123 ou 123,124,125" /></label>
+            <label>Account ID (Cancel All)<input id="cancelAllAccountId" list="accountHistory" placeholder="obrigatorio para cancel all" /></label>
+            <label>Strategy IDs CSV (Cancel All, opcional)<input id="cancelAllStrategyIdsCsv" placeholder="vazio = todas (ex: 1,2,3)" /></label>
+            <div class="actions">
+              <button id="cancelByIdsBtn" type="submit">Cancel IDs</button>
+              <button id="cancelAllBtn" type="button" class="ghost">Cancel All Open</button>
+            </div>
+          </form>
+
+          <form id="changeOrderForm">
+            <h3>Change Order</h3>
+            <label>Order ID<input name="order_id" type="number" min="1" /></label>
+            <label>New Qty<input name="new_qty" /></label>
+            <label>New Price<input name="new_price" /></label>
+            <button type="submit">Change</button>
+          </form>
+
+          <form id="positionChangeForm">
+            <h3>Position Change</h3>
+            <label>Position ID<input name="position_id" type="number" min="1" /></label>
+            <label class="inline"><input id="positionChangeUseStopLoss" type="checkbox" /> Alterar Stop Loss</label>
+            <label>Stop Loss<input name="stop_loss" placeholder="valor ou null" /></label>
+            <label class="inline"><input id="positionChangeUseStopGain" type="checkbox" /> Alterar Stop Gain</label>
+            <label>Stop Gain<input name="stop_gain" placeholder="valor ou null" /></label>
+            <label class="inline"><input id="positionChangeUseComment" type="checkbox" /> Alterar Comment</label>
+            <label>Comment<input name="comment" placeholder="texto ou null" /></label>
+            <button type="submit">Apply</button>
+          </form>
+
+          <form id="ccxtCallForm">
+            <h3>Direct CCXT Call</h3>
+            <label>Account ID<input id="ccxtAccountId" list="accountHistory" placeholder="9 ou 9 - binance-testnet" /></label>
+            <label>Strategy ID<input id="ccxtStrategyId" list="strategyHistory" type="number" min="0" value="0" /></label>
+            <label>Mode
+              <select id="ccxtMode">
+                <option value="generic">generic</option>
+                <option value="core">core comuns</option>
+              </select>
+            </label>
+            <div id="ccxtGenericFields">
+              <label>Func<input name="func" value="fetch_ticker" /></label>
+              <label>Args JSON<textarea name="args">["BTC/USDT"]</textarea></label>
+              <label>Kwargs JSON<textarea name="kwargs">{}</textarea></label>
+            </div>
+            <div id="ccxtCoreFields" class="is-hidden">
+              <label>Core Func
+                <select id="ccxtCoreFunc" name="core_func">
+                  <option value="fetch_balance">fetch_balance</option>
+                  <option value="fetch_open_orders">fetch_open_orders</option>
+                  <option value="fetch_order">fetch_order</option>
+                  <option value="cancel_order">cancel_order</option>
+                  <option value="create_order">create_order</option>
+                </select>
+              </label>
+              <label>Body JSON<textarea id="ccxtCoreBody" name="core_body">{}</textarea></label>
+            </div>
+            <button type="submit">Run CCXT</button>
+          </form>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>Strategies</h2>
+        <div class="grid cols-2">
+          <form id="tradeCreateStrategyForm">
+            <h3>Create Strategy</h3>
+            <label>Name<input name="name" placeholder="alpha-user-strategy" /></label>
+            <label>Accounts
+              <select id="tradeStrategyAccountIds" multiple size="6"></select>
+            </label>
+            <div class="mini-actions">
+              <button id="tradeStrategyAccountsAllBtn" type="button" class="ghost">Selecionar Todas</button>
+              <button id="tradeStrategyAccountsClearBtn" type="button" class="ghost">Limpar</button>
+            </div>
+            <button type="submit">Create Strategy</button>
+          </form>
+          <div class="card">
+            <h3>My Strategies</h3>
+            <div class="actions">
+              <button id="loadTradeStrategiesBtn" type="button" class="ghost">Load Strategies</button>
+            </div>
+            <div id="tradeStrategiesTable"></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="tables">
+        <div class="card">
+          <h2>Open Positions</h2>
+          <div class="actions"><button id="clearOpenPositionsBtn" type="button" class="ghost">Clear</button></div>
+          <div id="openPositionsTable"></div>
+        </div>
+        <div class="card">
+          <h2>Open Orders</h2>
+          <div class="actions"><button id="clearOpenOrdersBtn" type="button" class="ghost">Clear</button></div>
+          <div id="openOrdersTable"></div>
+        </div>
+        <div class="card">
+          <h2>History Positions</h2>
+          <div class="actions"><button id="clearHistoryPositionsBtn" type="button" class="ghost">Clear</button></div>
+          <div id="historyPositionsTable"></div>
+        </div>
+        <div class="card">
+          <h2>History Orders</h2>
+          <div class="actions"><button id="clearHistoryOrdersBtn" type="button" class="ghost">Clear</button></div>
+          <div id="historyOrdersTable"></div>
+        </div>
+        <div class="card">
+          <h2>Deals</h2>
+          <div class="actions"><button id="clearDealsBtn" type="button" class="ghost">Clear</button></div>
+          <div id="dealsTable"></div>
+        </div>
+        <div class="card">
+          <h2>CCXT Trades</h2>
+          <div class="actions"><button id="clearCcxtTradesBtn" type="button" class="ghost">Clear</button></div>
+          <div id="ccxtTradesTable"></div>
+        </div>
+        <div class="card">
+          <h2>CCXT Orders</h2>
+          <div class="actions"><button id="clearCcxtOrdersBtn" type="button" class="ghost">Clear</button></div>
+          <div id="ccxtOrdersTable"></div>
+        </div>
+        <div class="card">
+          <h2>WS Events</h2>
+          <div class="actions"><button id="clearEventsBtn" type="button" class="ghost">Clear</button></div>
+          <div id="eventsTable"></div>
+        </div>
+      </section>
+      </div>
+
+      <section class="card forms is-hidden" id="adminPanel">
+        <h2>Admin</h2>
+        <div class="grid cols-2">
+          <form id="adminCreateAccountForm">
+            <h3>Create Account</h3>
+            <label>Exchange ID
+              <div class="inline-input">
+                <select id="adminExchangeIdSelect" name="exchange_id"></select>
+                <button id="loadCcxtExchangesBtn" type="button" class="ghost inline-btn">Load</button>
+              </div>
+            </label>
+            <label>Label<input name="label" placeholder="binance-testnet-01" /></label>
+            <label>Position Mode
+              <select name="position_mode">
+                <option value="hedge">hedge</option>
+                <option value="netting">netting</option>
+                <option value="strategy_netting">strategy_netting</option>
+              </select>
+            </label>
+            <label>Is Testnet<input name="is_testnet" type="checkbox" checked /></label>
+            <label>Extra Config JSON<textarea name="extra_config_json">{}</textarea></label>
+            <button type="submit">Create Account</button>
+          </form>
+
+          <form id="adminCreateUserApiKeyForm">
+            <h3>Create User + API Key</h3>
+            <label>User Name<input name="user_name" placeholder="trader-bot-01" /></label>
+            <label>Role
+              <select name="role">
+                <option value="trade">trade</option>
+                <option value="admin">admin</option>
+              </select>
+            </label>
+            <label>Password (opcional)<input name="password" type="password" placeholder="senha para login user+senha" /></label>
+            <label>Permissions JSON<textarea name="permissions">[{"account_id":1,"can_read":true,"can_trade":true,"can_close_position":true,"can_risk_manage":false,"can_block_new_positions":false,"can_block_account":false,"restrict_to_strategies":false,"strategy_ids":[]}]</textarea></label>
+            <button type="submit">Create User + Key</button>
+          </form>
+
+          <form id="adminCreateStrategyForm">
+            <h3>Create Strategy</h3>
+            <label>Name<input name="name" placeholder="alpha-mean-reversion" /></label>
+            <label>Accounts
+              <select id="strategyAccountIds" multiple size="6"></select>
+            </label>
+            <div class="mini-actions">
+              <button id="strategyAccountsAllBtn" type="button" class="ghost">Selecionar Todas</button>
+              <button id="strategyAccountsClearBtn" type="button" class="ghost">Limpar</button>
+            </div>
+            <button type="submit">Create Strategy</button>
+          </form>
+        </div>
+        <div class="card">
+          <h3>Accounts</h3>
+          <div class="actions">
+            <button id="loadAdminAccountsBtn" type="button" class="ghost">Load Accounts</button>
+          </div>
+          <div id="adminAccountsTable"></div>
+        </div>
+        <div class="card">
+          <h3>Users</h3>
+          <div class="actions">
+            <button id="loadAdminUsersBtn" type="button" class="ghost">Load Users</button>
+          </div>
+          <div id="adminUsersTable"></div>
+        </div>
+        <div class="card">
+          <h3>Users / API Keys</h3>
+          <div class="actions">
+            <button id="loadAdminUsersKeysBtn" type="button" class="ghost">Load Users+Keys</button>
+          </div>
+          <div id="adminUsersKeysTable"></div>
+        </div>
+        <div class="card">
+          <h3>Strategies</h3>
+          <div class="actions">
+            <button id="loadStrategiesBtn" type="button" class="ghost">Load Strategies</button>
+          </div>
+          <div id="adminStrategiesTable"></div>
+        </div>
+      </section>
+
+      <section class="card forms is-hidden" id="riskPanel">
+        <h2>Risk</h2>
+        <div class="grid cols-2">
+          <form id="riskAccountForm">
+            <h3>Account Risk Controls</h3>
+            <label>Account ID<input id="riskAccountId" list="accountHistory" /></label>
+            <div class="actions">
+              <button id="riskAllowNewPositionsBtn" type="button">Allow New Positions</button>
+              <button id="riskBlockNewPositionsBtn" type="button" class="ghost">Block New Positions</button>
+            </div>
+            <div class="actions">
+              <button id="riskSetAccountActiveBtn" type="button">Set Active</button>
+              <button id="riskSetAccountBlockedBtn" type="button" class="ghost">Block Account</button>
+            </div>
+          </form>
+
+          <form id="riskStrategyForm">
+            <h3>Strategy Risk Controls</h3>
+            <label>Account ID<input id="riskStrategyAccountId" list="accountHistory" /></label>
+            <label>Strategy ID<input id="riskStrategyId" type="number" min="0" value="0" /></label>
+            <div class="actions">
+              <button id="riskAllowStrategyBtn" type="button">Allow Strategy Opens</button>
+              <button id="riskBlockStrategyBtn" type="button" class="ghost">Block Strategy Opens</button>
+            </div>
+          </form>
+
+          <form id="riskPermissionForm">
+            <h3>API Key Permissions</h3>
+            <label>API Key ID<input id="riskApiKeyId" type="number" min="1" /></label>
+            <label>Account ID<input id="riskPermAccountId" list="accountHistory" /></label>
+            <label class="inline"><input id="riskCanRead" type="checkbox" checked /> can_read</label>
+            <label class="inline"><input id="riskCanTrade" type="checkbox" /> can_trade</label>
+            <label class="inline"><input id="riskCanClosePosition" type="checkbox" /> can_close_position</label>
+            <label class="inline"><input id="riskCanRiskManage" type="checkbox" /> can_risk_manage</label>
+            <label class="inline"><input id="riskCanBlockNewPositions" type="checkbox" /> can_block_new_positions</label>
+            <label class="inline"><input id="riskCanBlockAccount" type="checkbox" /> can_block_account</label>
+            <label class="inline"><input id="riskRestrictStrategies" type="checkbox" /> restrict_to_strategies</label>
+            <label>Strategy IDs CSV<input id="riskStrategyIdsCsv" placeholder="1,2,3" /></label>
+            <div class="actions">
+              <button id="riskLoadPermissionsBtn" type="button" class="ghost">Load Permissions</button>
+              <button id="riskSavePermissionBtn" type="button">Save Permission</button>
+            </div>
+          </form>
+        </div>
+        <div class="card">
+          <h3>API Key Permission Rows</h3>
+          <div id="riskPermissionsTable"></div>
+        </div>
+      </section>
+    </div>
+    <script src="https://unpkg.com/tabulator-tables@6.3.0/dist/js/tabulator.min.js"></script>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

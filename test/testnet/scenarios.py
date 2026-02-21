@@ -1,4 +1,4 @@
-import json
+﻿import json
 import argparse
 import os
 import subprocess
@@ -7,6 +7,7 @@ import time
 from decimal import Decimal
 from pathlib import Path
 from urllib import request as urllib_request
+from urllib import error as urllib_error
 
 
 class Logger:
@@ -133,11 +134,11 @@ def send_market(
     symbol: str,
     side: str,
     qty: str,
-    magic_id: int,
+    strategy_id: int,
     logger: Logger,
 ) -> int:
     logger.info(
-        f"sending market order account_id={account_id} symbol={symbol} side={side} qty={qty} magic_id={magic_id}"
+        f"sending market order account_id={account_id} symbol={symbol} side={side} qty={qty} strategy_id={strategy_id}"
     )
     out = http_json(
         "POST",
@@ -151,7 +152,7 @@ def send_market(
                 "side": side,
                 "order_type": "market",
                 "qty": qty,
-                "magic_id": magic_id,
+                "strategy_id": strategy_id,
                 "position_id": 0,
             },
         },
@@ -205,7 +206,9 @@ def force_reconcile_now(base_url: str, headers: dict[str, str], account_id: int,
     )
 
 
-def choose_buy_qty(base_url: str, headers: dict[str, str], account_id: int, symbol: str) -> str:
+def choose_buy_qty(
+    base_url: str, headers: dict[str, str], account_id: int, symbol: str, logger: Logger | None = None
+) -> str:
     ticker = http_json(
         "POST",
         f"{base_url}/ccxt/{account_id}/fetch_ticker",
@@ -213,25 +216,30 @@ def choose_buy_qty(base_url: str, headers: dict[str, str], account_id: int, symb
         {"args": [symbol], "kwargs": {}},
     )
     last = Decimal(str(ticker["result"]["last"]))
-    balance = http_json(
-        "POST",
-        f"{base_url}/ccxt/core/{account_id}/fetch_balance",
-        headers,
-        {"params": {}},
-    )
     quote = symbol.split("/")[-1]
+    min_quote = Decimal("12")
+
+    fallback_quote_to_use = Decimal(os.getenv("TESTNET_SCENARIO_FALLBACK_QUOTE", "15"))
+    quote_to_use = max(min_quote, fallback_quote_to_use)
     free = Decimal("0")
     try:
+        balance = http_json(
+            "POST",
+            f"{base_url}/ccxt/core/{account_id}/fetch_balance",
+            headers,
+            {"params": {}},
+        )
         free = Decimal(str(balance["result"][quote]["free"]))
-    except Exception:
-        free = Decimal("0")
-
-    if free <= Decimal("12"):
-        raise RuntimeError(f"insufficient {quote} free balance for scenarios: {free}")
-
-    quote_to_use = min(free * Decimal("0.15"), Decimal("30"))
-    if quote_to_use < Decimal("12"):
-        quote_to_use = Decimal("12")
+        if free <= min_quote:
+            raise RuntimeError(f"insufficient {quote} free balance for scenarios: {free}")
+        quote_to_use = min(free * Decimal("0.15"), Decimal("30"))
+        if quote_to_use < min_quote:
+            quote_to_use = min_quote
+    except (urllib_error.HTTPError, urllib_error.URLError, KeyError, ValueError, TypeError) as exc:
+        if logger:
+            logger.warn(
+                f"fetch_balance unavailable for account_id={account_id}; using fallback quote={quote_to_use} {quote}: {exc}"
+            )
 
     qty = (quote_to_use / last).quantize(Decimal("0.000001"))
     if qty <= 0:
@@ -295,7 +303,7 @@ def main() -> int:
     compose = ["docker", "compose", "-f", "apps/api/docker-compose.stack.yml"]
     logger.info("starting scenarios execution")
     logger.info(f"base_url={base_url} symbol={symbol} user_id={user_id}")
-    qty = choose_buy_qty(base_url, headers, int(context["account_id"]), symbol)
+    qty = choose_buy_qty(base_url, headers, int(context["account_id"]), symbol, logger=logger)
     logger.info(f"calculated qty={qty} from live balance/ticker")
 
     hedge_account = create_account_for_mode(
@@ -317,7 +325,7 @@ def main() -> int:
         logger=logger,
     )
 
-    # Hedge scenario: buy with magic 101, sell with magic 202 -> both sides can coexist.
+    # Hedge scenario: buy with strategy 101, sell with strategy 202 -> both sides can coexist.
     logger.info("running hedge scenario")
     hedge_order_1 = send_market(base_url, headers, hedge_account, symbol, "buy", qty, 101, logger)
     hedge_order_2 = send_market(base_url, headers, hedge_account, symbol, "sell", qty, 202, logger)
@@ -443,7 +451,7 @@ def main() -> int:
             "qty": qty,
             "orders": [hedge_order_1, hedge_order_2],
             "deal_count": len(hedge_deals),
-            "deal_magic_ids": sorted({int(d["magic_id"]) for d in hedge_deals}) if hedge_deals else [],
+            "deal_strategy_ids": sorted({int(d["strategy_id"]) for d in hedge_deals}) if hedge_deals else [],
             "open_positions_sides": sorted({str(p["side"]) for p in hedge_positions}),
         },
         "netting": {
@@ -451,7 +459,7 @@ def main() -> int:
             "qty": {"base": qty, "half": qty_half, "reverse": qty_reverse},
             "orders": [net_order_1, net_order_2, net_order_3],
             "deal_count": len(net_deals),
-            "deal_magic_ids": sorted({int(d["magic_id"]) for d in net_deals}) if net_deals else [],
+            "deal_strategy_ids": sorted({int(d["strategy_id"]) for d in net_deals}) if net_deals else [],
             "open_positions_sides": sorted({str(p["side"]) for p in net_open}),
             "history_positions": len(net_hist),
         },
@@ -480,3 +488,4 @@ if __name__ == "__main__":
     except Exception as exc:
         print(str(exc), file=sys.stderr)
         raise SystemExit(1)
+

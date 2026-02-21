@@ -21,17 +21,21 @@ class CCXTAdapter:
         api_key: str | None,
         secret: str | None,
         passphrase: str | None,
+        extra_config: dict[str, Any] | None = None,
     ) -> Any:
         exchange_cls = getattr(ccxt_async, exchange_id, None)
         if exchange_cls is None:
             raise RuntimeError(f"unsupported exchange_id: {exchange_id}")
+        config: dict[str, Any] = {}
+        if isinstance(extra_config, dict):
+            config.update(extra_config)
+        config["apiKey"] = _as_plain_secret(api_key)
+        config["secret"] = _as_plain_secret(secret)
+        config["password"] = _as_plain_secret(passphrase)
+        if "enableRateLimit" not in config:
+            config["enableRateLimit"] = True
         exchange = exchange_cls(
-            {
-                "apiKey": _as_plain_secret(api_key),
-                "secret": _as_plain_secret(secret),
-                "password": _as_plain_secret(passphrase),
-                "enableRateLimit": True,
-            }
+            config
         )
         if use_testnet:
             setter = getattr(exchange, "set_sandbox_mode", None)
@@ -46,6 +50,7 @@ class CCXTAdapter:
         api_key: str | None,
         secret: str | None,
         passphrase: str | None,
+        extra_config: dict[str, Any] | None,
         method: str,
         args: list[Any] | None = None,
         kwargs: dict[str, Any] | None = None,
@@ -56,6 +61,7 @@ class CCXTAdapter:
             api_key=api_key,
             secret=secret,
             passphrase=passphrase,
+            extra_config=extra_config,
         )
         try:
             fn = getattr(exchange, method, None)
@@ -84,6 +90,7 @@ class CCXTAdapter:
         api_key: str | None,
         secret: str | None,
         passphrase: str | None,
+        extra_config: dict[str, Any] | None,
         method: str,
         capabilities: list[str],
         args: list[Any] | None = None,
@@ -95,6 +102,7 @@ class CCXTAdapter:
             api_key=api_key,
             secret=secret,
             passphrase=passphrase,
+            extra_config=extra_config,
         )
         try:
             if capabilities and not any(
@@ -117,6 +125,7 @@ class CCXTAdapter:
         api_key: str | None,
         secret: str | None,
         passphrase: str | None,
+        extra_config: dict[str, Any] | None,
         symbol: str,
         side: str,
         order_type: str,
@@ -130,6 +139,7 @@ class CCXTAdapter:
             api_key=api_key,
             secret=secret,
             passphrase=passphrase,
+            extra_config=extra_config,
         )
         try:
             return await exchange.create_order(
@@ -150,6 +160,7 @@ class CCXTAdapter:
         api_key: str | None,
         secret: str | None,
         passphrase: str | None,
+        extra_config: dict[str, Any] | None,
         exchange_order_id: str,
         symbol: str,
         params: dict[str, Any] | None = None,
@@ -160,6 +171,7 @@ class CCXTAdapter:
             api_key=api_key,
             secret=secret,
             passphrase=passphrase,
+            extra_config=extra_config,
         )
         try:
             return await exchange.cancel_order(
@@ -177,6 +189,7 @@ class CCXTAdapter:
         api_key: str | None,
         secret: str | None,
         passphrase: str | None,
+        extra_config: dict[str, Any] | None,
         exchange_order_id: str,
         symbol: str,
         side: str,
@@ -191,6 +204,7 @@ class CCXTAdapter:
             api_key=api_key,
             secret=secret,
             passphrase=passphrase,
+            extra_config=extra_config,
         )
         try:
             await exchange.load_markets()
@@ -225,6 +239,7 @@ class CCXTAdapter:
         api_key: str | None,
         secret: str | None,
         passphrase: str | None,
+        extra_config: dict[str, Any] | None,
         symbol: str | None = None,
         since: int | None = None,
         limit: int | None = 200,
@@ -236,6 +251,7 @@ class CCXTAdapter:
             api_key=api_key,
             secret=secret,
             passphrase=passphrase,
+            extra_config=extra_config,
             method="fetch_my_trades",
             args=[symbol, since, limit, params or {}],
         )

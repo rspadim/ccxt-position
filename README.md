@@ -1,4 +1,4 @@
-# ccxt-position
+﻿# ccxt-position
 
 `ccxt-position` is a single-host OMS gateway that combines:
 
@@ -23,7 +23,7 @@ Specification-first bootstrap with first implementation slice available in `apps
 - `order`: command intent and exchange lifecycle state
 - `deal`: executed trade event
 - `position`: MT5-like tracked exposure
-- `magic_id`: strategy/robot identifier (`0` = automatic/default)
+- `strategy_id`: strategy/robot identifier (`0` = automatic/default)
 
 ## API Surfaces
 
@@ -46,7 +46,7 @@ Specification-first bootstrap with first implementation slice available in `apps
 - Operations: `docs/ops/deployment-single-host.md`
 - Roadmap: `docs/roadmap/mvp-scope.md`
 - Testnet bootstrap: `test/testnet/README.md`
-  - Includes `run.py` (bootstrap) and `scenarios.py` (hedge/netting + multi-magic live validation)
+  - Includes `run.py` (bootstrap) and `scenarios.py` (hedge/netting + multi-strategy live validation)
 
 ## Beginner Install (Docker)
 
@@ -122,3 +122,4 @@ curl -X POST "http://127.0.0.1:8000/ccxt/core/<ACCOUNT_ID>/create_order" \
   -H "Content-Type: application/json" \
   -d "{\"symbol\":\"BTC/USDT\",\"side\":\"buy\",\"order_type\":\"limit\",\"amount\":\"0.001\",\"price\":\"10000\",\"params\":{}}"
 ```
+

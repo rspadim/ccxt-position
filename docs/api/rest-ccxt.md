@@ -27,7 +27,7 @@ Stable typed wrapper for unified CCXT `fetch_open_orders`.
 
 Stable typed wrapper for unified CCXT `fetch_balance`.
 
-## `POST /ccxt/multiple_commands`
+## `POST /ccxt/commands`
 
 Batch command execution for one or multiple accounts.
 

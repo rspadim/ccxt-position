@@ -5,5 +5,5 @@ Minimum signals:
 - Command throughput and latency
 - Exchange call latency and error rate
 - Reconciliation lag
-- Queue depth (`command_queue`)
+- Dispatcher queue depth (in-memory worker queues)
 - Outbox delivery lag

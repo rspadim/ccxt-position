@@ -1,11 +1,19 @@
-from datetime import datetime
+﻿from datetime import datetime
 from decimal import Decimal
 from typing import Annotated, Any, Literal
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
 
 
-CommandType = Literal["send_order", "cancel_order", "change_order", "close_by", "close_position"]
+CommandType = Literal[
+    "send_order",
+    "cancel_order",
+    "cancel_all_orders",
+    "change_order",
+    "close_by",
+    "close_position",
+    "position_change",
+]
 OrderSide = Literal["buy", "sell"]
 OrderType = Literal["market", "limit"]
 OrderStatus = Literal[
@@ -16,7 +24,7 @@ OrderStatus = Literal[
     "CANCELED",
     "REJECTED",
 ]
-PositionState = Literal["open", "closed"]
+PositionState = Literal["open", "close_requested", "closed"]
 
 
 class StrictModel(BaseModel):
@@ -36,13 +44,16 @@ class SendOrderPayload(StrictModel):
         serialization_alias="qty",
     )
     price: Decimal | None = None
+    stop_loss: Decimal | None = None
+    stop_gain: Decimal | None = None
     strategy_id: int = Field(
         default=0,
-        validation_alias=AliasChoices("strategy_id", "magic_id"),
+        validation_alias=AliasChoices("strategy_id"),
         serialization_alias="strategy_id",
     )
     position_id: int = 0
     reason: str = "api"
+    comment: str | None = None
     reduce_only: bool = False
     client_order_id: str | None = None
 
@@ -54,7 +65,47 @@ class SendOrderPayload(StrictModel):
 
 
 class CancelOrderPayload(StrictModel):
-    order_id: int = Field(gt=0)
+    order_id: int | None = Field(default=None, gt=0)
+    order_ids: list[int] = Field(default_factory=list)
+    order_ids_csv: str | None = None
+
+    @model_validator(mode="after")
+    def normalize_order_ids(self) -> "CancelOrderPayload":
+        ids: list[int] = [int(x) for x in self.order_ids if int(x) > 0]
+        if self.order_id is not None:
+            ids.append(int(self.order_id))
+        csv = str(self.order_ids_csv or "").strip()
+        if csv:
+            for part in csv.split(","):
+                part = part.strip()
+                if part.isdigit():
+                    n = int(part)
+                    if n > 0:
+                        ids.append(n)
+        uniq = sorted(set(ids))
+        if not uniq:
+            raise ValueError("order_id or order_ids is required")
+        self.order_ids = uniq
+        return self
+
+
+class CancelAllOrdersPayload(StrictModel):
+    strategy_ids: list[int] = Field(default_factory=list)
+    strategy_ids_csv: str | None = None
+
+    @model_validator(mode="after")
+    def normalize_strategy_ids(self) -> "CancelAllOrdersPayload":
+        ids: list[int] = [int(x) for x in self.strategy_ids if int(x) >= 0]
+        csv = str(self.strategy_ids_csv or "").strip()
+        if csv:
+            for part in csv.split(","):
+                part = part.strip()
+                if part.isdigit():
+                    n = int(part)
+                    if n >= 0:
+                        ids.append(n)
+        self.strategy_ids = sorted(set(ids))
+        return self
 
 
 class ChangeOrderPayload(StrictModel):
@@ -74,7 +125,7 @@ class CloseByPayload(StrictModel):
     position_id_b: int = Field(gt=0)
     strategy_id: int = Field(
         default=0,
-        validation_alias=AliasChoices("strategy_id", "magic_id"),
+        validation_alias=AliasChoices("strategy_id"),
         serialization_alias="strategy_id",
     )
 
@@ -86,10 +137,11 @@ class ClosePositionPayload(StrictModel):
     qty: Decimal | None = Field(default=None, gt=Decimal("0"))
     strategy_id: int = Field(
         default=0,
-        validation_alias=AliasChoices("strategy_id", "magic_id"),
+        validation_alias=AliasChoices("strategy_id"),
         serialization_alias="strategy_id",
     )
     reason: str = "api"
+    comment: str | None = None
     client_order_id: str | None = None
 
     @model_validator(mode="after")
@@ -100,7 +152,7 @@ class ClosePositionPayload(StrictModel):
 
 
 class BaseCommand(StrictModel):
-    account_id: int = Field(gt=0)
+    account_id: int | None = Field(default=None, gt=0)
     request_id: str | None = None
 
 
@@ -112,6 +164,11 @@ class SendOrderCommand(BaseCommand):
 class CancelOrderCommand(BaseCommand):
     command: Literal["cancel_order"]
     payload: CancelOrderPayload
+
+
+class CancelAllOrdersCommand(BaseCommand):
+    command: Literal["cancel_all_orders"]
+    payload: CancelAllOrdersPayload
 
 
 class ChangeOrderCommand(BaseCommand):
@@ -129,12 +186,33 @@ class ClosePositionCommand(BaseCommand):
     payload: ClosePositionPayload
 
 
+class PositionChangePayload(StrictModel):
+    position_id: int = Field(gt=0)
+    stop_loss: Decimal | None = None
+    stop_gain: Decimal | None = None
+    comment: str | None = None
+
+    @model_validator(mode="after")
+    def validate_change_fields(self) -> "PositionChangePayload":
+        changed = {"stop_loss", "stop_gain", "comment"} & set(self.model_fields_set)
+        if not changed:
+            raise ValueError("at least one of stop_loss, stop_gain or comment must be provided")
+        return self
+
+
+class PositionChangeCommand(BaseCommand):
+    command: Literal["position_change"]
+    payload: PositionChangePayload
+
+
 CommandInput = Annotated[
     SendOrderCommand
     | CancelOrderCommand
+    | CancelAllOrdersCommand
     | ChangeOrderCommand
     | CloseByCommand
-    | ClosePositionCommand,
+    | ClosePositionCommand
+    | PositionChangeCommand,
     Field(discriminator="command"),
 ]
 
@@ -219,7 +297,7 @@ class ReassignInput(BaseModel):
     order_ids: list[int] = Field(default_factory=list)
     target_strategy_id: int = Field(
         default=0,
-        validation_alias=AliasChoices("target_strategy_id", "target_magic_id"),
+        validation_alias=AliasChoices("target_strategy_id"),
         serialization_alias="target_strategy_id",
     )
     target_position_id: int = 0
@@ -232,13 +310,16 @@ class PositionOrderModel(BaseModel):
     side: OrderSide
     order_type: OrderType
     status: OrderStatus
-    strategy_id: int = Field(validation_alias=AliasChoices("strategy_id", "magic_id"))
+    strategy_id: int = Field(validation_alias=AliasChoices("strategy_id"))
     position_id: int
     reason: str
+    comment: str | None = None
     client_order_id: str | None = None
     exchange_order_id: str | None = None
     qty: Decimal
     price: Decimal | None = None
+    stop_loss: Decimal | None = None
+    stop_gain: Decimal | None = None
     filled_qty: Decimal
     avg_fill_price: Decimal | None = None
     created_at: datetime
@@ -258,8 +339,9 @@ class PositionDealModel(BaseModel):
     fee: Decimal | None = None
     fee_currency: str | None = None
     pnl: Decimal | None = None
-    strategy_id: int = Field(validation_alias=AliasChoices("strategy_id", "magic_id"))
+    strategy_id: int = Field(validation_alias=AliasChoices("strategy_id"))
     reason: str
+    comment: str | None = None
     reconciled: bool
     exchange_trade_id: str | None = None
     created_at: datetime
@@ -273,8 +355,11 @@ class PositionModel(BaseModel):
     side: OrderSide
     qty: Decimal
     avg_price: Decimal
+    stop_loss: Decimal | None = None
+    stop_gain: Decimal | None = None
     state: PositionState
     reason: str
+    comment: str | None = None
     opened_at: datetime
     updated_at: datetime
     closed_at: datetime | None = None
@@ -301,6 +386,7 @@ class ReassignResponse(BaseModel):
 class ReconcileNowInput(BaseModel):
     account_id: int | None = Field(default=None, gt=0)
     account_ids: list[int] | str | None = None
+    scope: Literal["short", "hourly", "long"] = "short"
 
 
 class ReconcileNowResponse(BaseModel):
@@ -322,3 +408,272 @@ class ReconcileStatusItem(BaseModel):
 
 class ReconcileStatusResponse(BaseModel):
     items: list[ReconcileStatusItem]
+
+
+class AccountSummaryItem(BaseModel):
+    account_id: int
+    label: str
+    exchange_id: str
+    position_mode: str
+    is_testnet: bool
+    status: str
+    can_read: bool
+    can_trade: bool
+    can_risk_manage: bool
+
+
+class AccountsResponse(BaseModel):
+    items: list[AccountSummaryItem]
+
+
+class RiskSetAllowNewPositionsInput(BaseModel):
+    allow_new_positions: bool
+
+
+class RiskSetStrategyAllowNewPositionsInput(BaseModel):
+    strategy_id: int
+    allow_new_positions: bool
+
+
+class RiskSetAccountStatusInput(BaseModel):
+    status: Literal["active", "blocked"]
+
+
+class RiskActionResponse(BaseModel):
+    ok: bool
+    account_id: int
+    strategy_id: int | None = None
+    status: str | None = None
+    allow_new_positions: bool | None = None
+    rows: int = 0
+
+
+class AdminCreateAccountInput(BaseModel):
+    exchange_id: str = Field(min_length=1)
+    label: str = Field(min_length=1)
+    position_mode: Literal["hedge", "netting", "strategy_netting"] = "hedge"
+    is_testnet: bool = True
+    extra_config_json: dict[str, Any] = Field(default_factory=dict)
+
+
+class AdminCreateAccountResponse(BaseModel):
+    ok: bool
+    account_id: int
+
+
+class AdminAccountItem(BaseModel):
+    account_id: int
+    label: str
+    exchange_id: str
+    position_mode: str
+    extra_config_json: dict[str, Any] = Field(default_factory=dict)
+    is_testnet: bool
+    reconcile_enabled: bool
+    reconcile_short_interval_seconds: int | None = None
+    reconcile_short_lookback_seconds: int | None = None
+    reconcile_hourly_interval_seconds: int | None = None
+    reconcile_hourly_lookback_seconds: int | None = None
+    reconcile_long_interval_seconds: int | None = None
+    reconcile_long_lookback_seconds: int | None = None
+    dispatcher_worker_hint: int | None = None
+    dispatcher_hint_updated_at: str | None = None
+    raw_storage_mode: str
+    status: str
+    created_at: str
+    api_key_enc: str | None = None
+    secret_enc: str | None = None
+    passphrase_enc: str | None = None
+    credentials_updated_at: str | None = None
+
+
+class AdminAccountsResponse(BaseModel):
+    items: list[AdminAccountItem]
+
+
+class AdminUpdateAccountCredentialsInput(BaseModel):
+    api_key: str | None = None
+    secret: str | None = None
+    passphrase: str | None = None
+
+
+class AdminUpdateAccountInput(BaseModel):
+    exchange_id: str | None = None
+    label: str | None = None
+    position_mode: Literal["hedge", "netting", "strategy_netting"] | None = None
+    is_testnet: bool | None = None
+    status: Literal["active", "blocked"] | None = None
+    extra_config_json: dict[str, Any] | None = None
+    credentials: AdminUpdateAccountCredentialsInput | None = None
+
+
+class AdminUpdateAccountResponse(BaseModel):
+    ok: bool
+    account_id: int
+    rows: int
+
+
+class AdminUserItem(BaseModel):
+    user_id: int
+    user_name: str
+    role: str
+    status: str
+    created_at: str
+
+
+class AdminUsersResponse(BaseModel):
+    items: list[AdminUserItem]
+
+
+class AdminApiKeyAccountPermissionInput(BaseModel):
+    account_id: int
+    can_read: bool = True
+    can_trade: bool = False
+    can_close_position: bool = False
+    can_risk_manage: bool = False
+    can_block_new_positions: bool = False
+    can_block_account: bool = False
+    restrict_to_strategies: bool = False
+    strategy_ids: list[int] = Field(default_factory=list)
+
+
+class AdminCreateUserApiKeyInput(BaseModel):
+    user_name: str = Field(min_length=1)
+    role: Literal["admin", "trade"] = "trade"
+    api_key: str | None = None
+    password: str | None = None
+    permissions: list[AdminApiKeyAccountPermissionInput] = Field(default_factory=list)
+
+
+class AdminCreateUserApiKeyResponse(BaseModel):
+    ok: bool
+    user_id: int
+    api_key_id: int
+    api_key_plain: str
+
+
+class AdminUserApiKeyItem(BaseModel):
+    user_id: int
+    user_name: str
+    role: str
+    user_status: str
+    api_key_id: int
+    api_key_status: str
+    created_at: str
+
+
+class AdminUsersApiKeysResponse(BaseModel):
+    items: list[AdminUserApiKeyItem]
+
+
+class AdminUpdateApiKeyInput(BaseModel):
+    status: Literal["active", "disabled"]
+
+
+class AdminUpdateApiKeyResponse(BaseModel):
+    ok: bool
+    api_key_id: int
+    rows: int
+
+
+class AdminApiKeyPermissionItem(BaseModel):
+    api_key_id: int
+    account_id: int
+    can_read: bool
+    can_trade: bool
+    can_close_position: bool
+    can_risk_manage: bool
+    can_block_new_positions: bool
+    can_block_account: bool
+    restrict_to_strategies: bool
+    strategy_ids: list[int] = Field(default_factory=list)
+    status: str
+
+
+class AdminApiKeyPermissionsResponse(BaseModel):
+    items: list[AdminApiKeyPermissionItem]
+
+
+class AdminUpsertApiKeyPermissionInput(BaseModel):
+    account_id: int
+    can_read: bool = True
+    can_trade: bool = False
+    can_close_position: bool = False
+    can_risk_manage: bool = False
+    can_block_new_positions: bool = False
+    can_block_account: bool = False
+    restrict_to_strategies: bool = False
+    strategy_ids: list[int] = Field(default_factory=list)
+
+
+class AdminCreateStrategyInput(BaseModel):
+    name: str = Field(min_length=1)
+    account_ids: list[int] = Field(default_factory=list)
+
+
+class AdminCreateStrategyResponse(BaseModel):
+    ok: bool
+    strategy_id: int
+
+
+class AdminStrategyItem(BaseModel):
+    strategy_id: int
+    name: str
+    status: Literal["active", "disabled"]
+    account_ids: list[int] = Field(default_factory=list)
+
+
+class AdminStrategiesResponse(BaseModel):
+    items: list[AdminStrategyItem]
+
+
+class AdminUpdateStrategyInput(BaseModel):
+    name: str | None = None
+    status: Literal["active", "disabled"] | None = None
+
+
+class AdminUpdateStrategyResponse(BaseModel):
+    ok: bool
+    strategy_id: int
+    rows: int
+
+
+class StrategyItem(BaseModel):
+    strategy_id: int
+    name: str
+    status: Literal["active", "disabled"]
+    account_ids: list[int] = Field(default_factory=list)
+
+
+class StrategiesResponse(BaseModel):
+    items: list[StrategyItem]
+
+
+class CreateStrategyInput(BaseModel):
+    name: str = Field(min_length=1)
+    account_ids: list[int] = Field(default_factory=list)
+
+
+class CreateStrategyResponse(BaseModel):
+    ok: bool
+    strategy_id: int
+
+
+class AuthLoginPasswordInput(BaseModel):
+    user_name: str = Field(min_length=1)
+    password: str = Field(min_length=1)
+    api_key_id: int | None = None
+
+
+class AuthLoginPasswordResponse(BaseModel):
+    ok: bool
+    token: str
+    token_type: str
+    expires_at: str
+    user_id: int
+    role: str
+    api_key_id: int
+
+
+class CcxtExchangesResponse(BaseModel):
+    items: list[str]
+

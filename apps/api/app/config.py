@@ -22,7 +22,18 @@ class Settings(BaseSettings):
     worker_pool_id: int = 0
     worker_poll_interval_ms: int = 1000
     worker_max_attempts: int = 5
-    worker_reconciliation_interval_seconds: int = 30
+    worker_auto_reconcile_enabled: bool = True
+    worker_reconcile_short_interval_seconds: int = 60
+    worker_reconcile_short_lookback_minutes: int = 10
+    worker_reconcile_hourly_interval_seconds: int = 3600
+    worker_reconcile_hourly_lookback_minutes: int = 60
+    worker_reconcile_long_interval_seconds: int = 86400
+    worker_reconcile_long_lookback_days: int = 10
+    worker_reconcile_batch_limit: int = 200
+    dispatcher_host: str = "127.0.0.1"
+    dispatcher_port: int = 9100
+    dispatcher_request_timeout_seconds: int = 30
+    dispatcher_pool_size: int = 8
     disable_uvicorn_access_log: bool = True
     app_request_log: bool = True
     encryption_master_key: str = ""
@@ -39,6 +50,7 @@ def _flatten_sectioned_config(data: dict[str, Any]) -> dict[str, Any]:
     app = data.get("app", {})
     database = data.get("database", {})
     worker = data.get("worker", {})
+    dispatcher = data.get("dispatcher", {})
     logging_cfg = data.get("logging", {})
     security = data.get("security", {})
 
@@ -79,10 +91,49 @@ def _flatten_sectioned_config(data: dict[str, Any]) -> dict[str, Any]:
             out["worker_poll_interval_ms"] = worker["poll_interval_ms"]
         if "max_attempts" in worker:
             out["worker_max_attempts"] = worker["max_attempts"]
-        if "reconciliation_interval_seconds" in worker:
-            out["worker_reconciliation_interval_seconds"] = worker[
+        if "auto_reconcile_enabled" in worker:
+            out["worker_auto_reconcile_enabled"] = worker["auto_reconcile_enabled"]
+        if "reconcile_short_interval_seconds" in worker:
+            out["worker_reconcile_short_interval_seconds"] = worker[
+                "reconcile_short_interval_seconds"
+            ]
+        elif "reconciliation_interval_seconds" in worker:
+            # Backward-compatible key from previous config shape.
+            out["worker_reconcile_short_interval_seconds"] = worker[
                 "reconciliation_interval_seconds"
             ]
+        if "reconcile_short_lookback_minutes" in worker:
+            out["worker_reconcile_short_lookback_minutes"] = worker[
+                "reconcile_short_lookback_minutes"
+            ]
+        if "reconcile_hourly_interval_seconds" in worker:
+            out["worker_reconcile_hourly_interval_seconds"] = worker[
+                "reconcile_hourly_interval_seconds"
+            ]
+        if "reconcile_hourly_lookback_minutes" in worker:
+            out["worker_reconcile_hourly_lookback_minutes"] = worker[
+                "reconcile_hourly_lookback_minutes"
+            ]
+        if "reconcile_long_interval_seconds" in worker:
+            out["worker_reconcile_long_interval_seconds"] = worker[
+                "reconcile_long_interval_seconds"
+            ]
+        if "reconcile_long_lookback_days" in worker:
+            out["worker_reconcile_long_lookback_days"] = worker[
+                "reconcile_long_lookback_days"
+            ]
+        if "reconcile_batch_limit" in worker:
+            out["worker_reconcile_batch_limit"] = worker["reconcile_batch_limit"]
+
+    if isinstance(dispatcher, dict):
+        if "host" in dispatcher:
+            out["dispatcher_host"] = dispatcher["host"]
+        if "port" in dispatcher:
+            out["dispatcher_port"] = dispatcher["port"]
+        if "request_timeout_seconds" in dispatcher:
+            out["dispatcher_request_timeout_seconds"] = dispatcher["request_timeout_seconds"]
+        if "pool_size" in dispatcher:
+            out["dispatcher_pool_size"] = dispatcher["pool_size"]
 
     if isinstance(logging_cfg, dict):
         if "log_dir" in logging_cfg:
@@ -107,5 +158,11 @@ def load_settings() -> Settings:
     )
     if config_path.exists():
         data = json.loads(config_path.read_text(encoding="utf-8"))
-        return Settings(**_flatten_sectioned_config(data))
+        merged = _flatten_sectioned_config(data)
+        # Env vars must override JSON config (especially in Docker compose).
+        for field_name in Settings.model_fields:
+            env_key = field_name.upper()
+            if env_key in os.environ:
+                merged[field_name] = os.environ[env_key]
+        return Settings(**merged)
     return Settings()

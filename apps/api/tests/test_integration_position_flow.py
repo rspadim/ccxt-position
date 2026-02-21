@@ -1,4 +1,4 @@
-import json
+﻿import json
 import os
 import time
 from decimal import Decimal
@@ -68,7 +68,7 @@ def test_position_send_change_cancel_live() -> None:
                 "order_type": "limit",
                 "qty": "0.001",
                 "price": str(price_submit),
-                "magic_id": 4242,
+                "strategy_id": 4242,
                 "position_id": 0,
             },
         },
@@ -123,4 +123,5 @@ def test_position_send_change_cancel_live() -> None:
         return False
 
     assert _poll_until(_is_terminal, timeout_s=40) is True
+
 

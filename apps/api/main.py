@@ -1,24 +1,45 @@
 import asyncio
 import contextlib
 import json
-from datetime import datetime, timezone
-from typing import Annotated, Any
+from typing import Any
+import ccxt.async_support as ccxt_async
 
-from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Header, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.openapi.utils import get_openapi
+from pydantic import TypeAdapter
 
-from .app.auth import AuthContext, get_auth_context, validate_api_key
-from .app.ccxt_adapter import CCXTAdapter
 from .app.config import load_settings
-from .app.credentials_codec import CredentialsCodec
-from .app.db_mysql import DatabaseMySQL
+from .app.dispatcher_client import dispatch_request
 from .app.logging_utils import (
     http_log_payload,
     mask_header_value,
     now,
     setup_application_logging,
 )
-from .app.repository_mysql import MySQLCommandRepository
 from .app.schemas import (
+    AdminCreateAccountInput,
+    AdminAccountsResponse,
+    AdminCreateAccountResponse,
+    AdminUpdateAccountInput,
+    AdminUpdateAccountResponse,
+    AdminUsersResponse,
+    AdminCreateStrategyInput,
+    AdminCreateStrategyResponse,
+    AdminCreateUserApiKeyInput,
+    AdminUsersApiKeysResponse,
+    AdminCreateUserApiKeyResponse,
+    AdminUpdateApiKeyInput,
+    AdminUpdateApiKeyResponse,
+    AdminApiKeyPermissionsResponse,
+    AdminUpsertApiKeyPermissionInput,
+    AdminStrategiesResponse,
+    AdminUpdateStrategyInput,
+    AdminUpdateStrategyResponse,
+    CreateStrategyInput,
+    CreateStrategyResponse,
+    StrategiesResponse,
+    AccountsResponse,
     CcxtCoreCancelOrderInput,
     CcxtCoreCreateOrderInput,
     CcxtCoreFetchBalanceInput,
@@ -28,6 +49,9 @@ from .app.schemas import (
     CcxtBatchItem,
     CcxtBatchResponse,
     CcxtCallInput,
+    AuthLoginPasswordInput,
+    AuthLoginPasswordResponse,
+    CcxtExchangesResponse,
     CommandInput,
     CommandsResponse,
     PositionDealsResponse,
@@ -38,17 +62,51 @@ from .app.schemas import (
     ReconcileStatusResponse,
     ReassignResponse,
     ReassignInput,
+    RiskActionResponse,
+    RiskSetAccountStatusInput,
+    RiskSetAllowNewPositionsInput,
+    RiskSetStrategyAllowNewPositionsInput,
 )
-from .app.service import process_single_command
-from .worker_position import _run_reconciliation_once
 
 settings = load_settings()
 app = FastAPI(title="ccxt-position", version="0.1.0")
-app.state.db = None
-app.state.repo = None
-app.state.ccxt = None
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 app.state.loggers = {}
-app.state.credentials_codec = None
+COMMAND_INPUT_ADAPTER = TypeAdapter(CommandInput)
+
+
+def custom_openapi() -> dict[str, Any]:
+    if app.openapi_schema:
+        return app.openapi_schema
+    schema = get_openapi(
+        title=app.title,
+        version=app.version,
+        routes=app.routes,
+    )
+    components = schema.setdefault("components", {})
+    security_schemes = components.setdefault("securitySchemes", {})
+    security_schemes["ApiKeyAuth"] = {
+        "type": "apiKey",
+        "in": "header",
+        "name": "x-api-key",
+    }
+    for path, methods in schema.get("paths", {}).items():
+        if path == "/healthz":
+            continue
+        for _method, operation in methods.items():
+            if isinstance(operation, dict):
+                operation.setdefault("security", [{"ApiKeyAuth": []}])
+    app.openapi_schema = schema
+    return app.openapi_schema
+
+
+app.openapi = custom_openapi
 
 
 @app.middleware("http")
@@ -70,27 +128,14 @@ async def request_logging_middleware(request: Request, call_next: Any) -> Any:
 
 @app.on_event("startup")
 async def on_startup() -> None:
-    if settings.db_engine != "mysql":
-        raise RuntimeError(
-            f"db_engine={settings.db_engine!r} is not supported in v0; use mysql"
-        )
-    app.state.db = DatabaseMySQL(settings)
-    app.state.repo = MySQLCommandRepository()
     app.state.loggers = setup_application_logging(
         settings.disable_uvicorn_access_log, log_dir=settings.log_dir
     )
-    app.state.credentials_codec = CredentialsCodec(
-        settings.encryption_master_key,
-        require_encrypted=settings.require_encrypted_credentials,
-    )
-    app.state.ccxt = CCXTAdapter(logger=app.state.loggers.get("ccxt"))
-    await app.state.db.connect()
 
 
 @app.on_event("shutdown")
 async def on_shutdown() -> None:
-    if app.state.db is not None:
-        await app.state.db.disconnect()
+    return
 
 
 @app.get("/healthz")
@@ -103,46 +148,88 @@ async def healthz() -> dict[str, str]:
     }
 
 
+@app.get("/meta/ccxt/exchanges", response_model=CcxtExchangesResponse)
+async def get_ccxt_exchanges(
+    x_api_key: str = Header(default=""),
+) -> CcxtExchangesResponse:
+    auth = await dispatch_request(
+        host=settings.dispatcher_host,
+        port=settings.dispatcher_port,
+        timeout_seconds=settings.dispatcher_request_timeout_seconds,
+        payload={"op": "auth_check", "x_api_key": x_api_key},
+    )
+    if not auth.get("ok"):
+        raise HTTPException(status_code=401, detail=auth.get("error") or {"code": "invalid_api_key"})
+    return CcxtExchangesResponse(items=sorted(list(getattr(ccxt_async, "exchanges", []))))
+
+
+@app.get("/dispatcher/status")
+async def get_dispatcher_status(
+    x_api_key: str = Header(default=""),
+) -> dict[str, Any]:
+    out = await dispatch_request(
+        host=settings.dispatcher_host,
+        port=settings.dispatcher_port,
+        timeout_seconds=settings.dispatcher_request_timeout_seconds,
+        payload={"op": "status", "x_api_key": x_api_key},
+    )
+    if out.get("ok"):
+        return {"ok": True, "result": out.get("result", {})}
+    raise HTTPException(status_code=503, detail=out.get("error") or {"code": "dispatcher_unavailable"})
+
+
 @app.post("/position/commands", response_model=CommandsResponse)
 async def post_position_commands(
     commands: CommandInput | list[CommandInput],
-    auth: Annotated[AuthContext, Depends(get_auth_context)],
+    parallel: bool = False,
+    request_timeout_seconds: int | None = None,
+    x_api_key: str = Header(default=""),
 ) -> CommandsResponse:
     items = commands if isinstance(commands, list) else [commands]
-    results = []
-    for index, item in enumerate(items):
-        results.append(
-            await process_single_command(app.state.db, app.state.repo, auth, item, index)
+    dispatched = await dispatch_request(
+        host=settings.dispatcher_host,
+        port=settings.dispatcher_port,
+        timeout_seconds=_resolve_fastapi_timeout(
+            request_timeout_seconds,
+            default_timeout_seconds=None,
+        ),
+        payload={
+            "op": "position_commands_batch",
+            "x_api_key": x_api_key,
+            "parallel": bool(parallel),
+            "items": [item.model_dump(by_alias=True, mode="json") for item in items],
+        },
+    )
+    if not dispatched.get("ok"):
+        raise HTTPException(status_code=400, detail=dispatched.get("error") or {"code": "dispatcher_error"})
+    result = dispatched.get("result", {})
+    return CommandsResponse(results=result.get("results", []))
+
+
+def _scope_lookback_seconds(scope: str, account: dict[str, Any] | None = None) -> int:
+    account = account or {}
+    if scope == "hourly":
+        return max(
+            60,
+            int(
+                account.get("reconcile_hourly_lookback_seconds")
+                or (settings.worker_reconcile_hourly_lookback_minutes * 60)
+            ),
         )
-    return CommandsResponse(results=results)
-
-
-async def _require_account_permission(user_id: int, account_id: int, require_trade: bool = False) -> dict[str, Any]:
-    async with app.state.db.connection() as conn:
-        account = await app.state.repo.fetch_account_by_id(conn, account_id)
-        if account is None or account["status"] != "active":
-            raise HTTPException(status_code=404, detail={"code": "account_not_found"})
-        perms = await app.state.repo.fetch_permissions(conn, user_id, account_id)
-        await conn.commit()
-    if perms is None or not bool(perms[0]):
-        raise HTTPException(status_code=403, detail={"code": "permission_denied"})
-    if require_trade and not bool(perms[1]):
-        raise HTTPException(status_code=403, detail={"code": "permission_denied"})
-    return account
-
-
-async def _load_account_credentials(account_id: int) -> tuple[bool, str | None, str | None, str | None]:
-    async with app.state.db.connection() as conn:
-        _, is_testnet, api_key, secret, passphrase = await app.state.repo.fetch_account_exchange_credentials(
-            conn, account_id
+    if scope == "long":
+        return max(
+            60,
+            int(
+                account.get("reconcile_long_lookback_seconds")
+                or (settings.worker_reconcile_long_lookback_days * 86400)
+            ),
         )
-        await conn.commit()
-    codec: CredentialsCodec = app.state.credentials_codec
-    return (
-        is_testnet,
-        codec.decrypt_maybe(api_key),
-        codec.decrypt_maybe(secret),
-        codec.decrypt_maybe(passphrase),
+    return max(
+        60,
+        int(
+            account.get("reconcile_short_lookback_seconds")
+            or (settings.worker_reconcile_short_lookback_minutes * 60)
+        ),
     )
 
 
@@ -159,24 +246,14 @@ def _ccxt_requires_trade(func: str) -> bool:
     return fn.startswith(trade_prefixes)
 
 
-def _ccxt_raise_400(exc: Exception) -> HTTPException:
-    return HTTPException(status_code=400, detail={"code": "ccxt_error", "message": str(exc)})
-
-
-def _reconcile_status_of(updated_at: Any, stale_after_seconds: int) -> tuple[str, int | None]:
-    if updated_at is None:
-        return "never", None
-    if isinstance(updated_at, str):
-        try:
-            updated_dt = datetime.fromisoformat(updated_at)
-        except ValueError:
-            return "stale", None
-    else:
-        updated_dt = updated_at
-    if updated_dt.tzinfo is None:
-        updated_dt = updated_dt.replace(tzinfo=timezone.utc)
-    age = int((datetime.now(timezone.utc) - updated_dt).total_seconds())
-    return ("fresh" if age <= stale_after_seconds else "stale"), age
+def _resolve_fastapi_timeout(
+    request_timeout_seconds: int | None,
+    *,
+    default_timeout_seconds: int | None,
+) -> int | None:
+    if request_timeout_seconds is None:
+        return default_timeout_seconds
+    return max(1, int(request_timeout_seconds))
 
 
 @app.post("/ccxt/{account_id}/{func}")
@@ -184,42 +261,43 @@ async def post_ccxt_call(
     account_id: int,
     func: str,
     request: CcxtCallInput,
-    auth: Annotated[AuthContext, Depends(get_auth_context)],
+    request_timeout_seconds: int | None = None,
+    x_api_key: str = Header(default=""),
 ) -> dict[str, Any]:
-    account = await _require_account_permission(
-        auth.user_id, account_id, require_trade=_ccxt_requires_trade(func)
+    dispatched = await dispatch_request(
+        host=settings.dispatcher_host,
+        port=settings.dispatcher_port,
+        timeout_seconds=_resolve_fastapi_timeout(
+            request_timeout_seconds,
+            default_timeout_seconds=(
+                None if _ccxt_requires_trade(func) else settings.dispatcher_request_timeout_seconds
+            ),
+        ),
+        payload={
+            "op": "ccxt_call",
+            "x_api_key": x_api_key,
+            "account_id": account_id,
+            "func": func,
+            "args": request.args,
+            "kwargs": request.kwargs,
+        },
     )
-    is_testnet, api_key, secret, passphrase = await _load_account_credentials(account_id)
-    result = await app.state.ccxt.execute_method(
-        exchange_id=account["exchange_id"],
-        use_testnet=is_testnet,
-        api_key=api_key,
-        secret=secret,
-        passphrase=passphrase,
-        method=func,
-        args=request.args,
-        kwargs=request.kwargs,
-    )
-    return {"ok": True, "result": result}
+    if dispatched.get("ok"):
+        return {"ok": True, "result": dispatched.get("result")}
+    raise HTTPException(status_code=400, detail=dispatched.get("error") or {"code": "ccxt_error"})
 
 
 @app.post("/ccxt/core/{account_id}/create_order", response_model=CcxtResponse)
 async def post_ccxt_core_create_order(
     account_id: int,
     request: CcxtCoreCreateOrderInput,
-    auth: Annotated[AuthContext, Depends(get_auth_context)],
+    x_api_key: str = Header(default=""),
 ) -> CcxtResponse:
-    account = await _require_account_permission(auth.user_id, account_id, require_trade=True)
-    is_testnet, api_key, secret, passphrase = await _load_account_credentials(account_id)
-    try:
-        result = await app.state.ccxt.execute_unified_with_capability(
-            exchange_id=account["exchange_id"],
-            use_testnet=is_testnet,
-            api_key=api_key,
-            secret=secret,
-            passphrase=passphrase,
-            method="create_order",
-            capabilities=["createOrder"],
+    out = await post_ccxt_call(
+        account_id=account_id,
+        func="create_order",
+        request=CcxtCallInput(
+            args=[],
             kwargs={
                 "symbol": request.symbol,
                 "type": request.order_type,
@@ -228,290 +306,333 @@ async def post_ccxt_core_create_order(
                 "price": request.price,
                 "params": request.params,
             },
-        )
-    except Exception as exc:
-        raise _ccxt_raise_400(exc) from exc
-    return CcxtResponse(result=result)
+        ),
+        x_api_key=x_api_key,
+    )
+    return CcxtResponse(result=out["result"])
 
 
 @app.post("/ccxt/core/{account_id}/cancel_order", response_model=CcxtResponse)
 async def post_ccxt_core_cancel_order(
     account_id: int,
     request: CcxtCoreCancelOrderInput,
-    auth: Annotated[AuthContext, Depends(get_auth_context)],
+    x_api_key: str = Header(default=""),
 ) -> CcxtResponse:
-    account = await _require_account_permission(auth.user_id, account_id, require_trade=True)
-    is_testnet, api_key, secret, passphrase = await _load_account_credentials(account_id)
-    try:
-        result = await app.state.ccxt.execute_unified_with_capability(
-            exchange_id=account["exchange_id"],
-            use_testnet=is_testnet,
-            api_key=api_key,
-            secret=secret,
-            passphrase=passphrase,
-            method="cancel_order",
-            capabilities=["cancelOrder"],
-            kwargs={"id": request.id, "symbol": request.symbol, "params": request.params},
-        )
-    except Exception as exc:
-        raise _ccxt_raise_400(exc) from exc
-    return CcxtResponse(result=result)
+    out = await post_ccxt_call(
+        account_id=account_id,
+        func="cancel_order",
+        request=CcxtCallInput(args=[], kwargs={"id": request.id, "symbol": request.symbol, "params": request.params}),
+        x_api_key=x_api_key,
+    )
+    return CcxtResponse(result=out["result"])
 
 
 @app.post("/ccxt/core/{account_id}/fetch_order", response_model=CcxtResponse)
 async def post_ccxt_core_fetch_order(
     account_id: int,
     request: CcxtCoreFetchOrderInput,
-    auth: Annotated[AuthContext, Depends(get_auth_context)],
+    x_api_key: str = Header(default=""),
 ) -> CcxtResponse:
-    account = await _require_account_permission(auth.user_id, account_id, require_trade=False)
-    is_testnet, api_key, secret, passphrase = await _load_account_credentials(account_id)
-    try:
-        result = await app.state.ccxt.execute_unified_with_capability(
-            exchange_id=account["exchange_id"],
-            use_testnet=is_testnet,
-            api_key=api_key,
-            secret=secret,
-            passphrase=passphrase,
-            method="fetch_order",
-            capabilities=["fetchOrder"],
-            kwargs={"id": request.id, "symbol": request.symbol, "params": request.params},
-        )
-    except Exception as exc:
-        raise _ccxt_raise_400(exc) from exc
-    return CcxtResponse(result=result)
+    out = await post_ccxt_call(
+        account_id=account_id,
+        func="fetch_order",
+        request=CcxtCallInput(args=[], kwargs={"id": request.id, "symbol": request.symbol, "params": request.params}),
+        x_api_key=x_api_key,
+    )
+    return CcxtResponse(result=out["result"])
 
 
 @app.post("/ccxt/core/{account_id}/fetch_open_orders", response_model=CcxtResponse)
 async def post_ccxt_core_fetch_open_orders(
     account_id: int,
     request: CcxtCoreFetchOpenOrdersInput,
-    auth: Annotated[AuthContext, Depends(get_auth_context)],
+    x_api_key: str = Header(default=""),
 ) -> CcxtResponse:
-    account = await _require_account_permission(auth.user_id, account_id, require_trade=False)
-    is_testnet, api_key, secret, passphrase = await _load_account_credentials(account_id)
-    try:
-        result = await app.state.ccxt.execute_unified_with_capability(
-            exchange_id=account["exchange_id"],
-            use_testnet=is_testnet,
-            api_key=api_key,
-            secret=secret,
-            passphrase=passphrase,
-            method="fetch_open_orders",
-            capabilities=["fetchOpenOrders"],
+    out = await post_ccxt_call(
+        account_id=account_id,
+        func="fetch_open_orders",
+        request=CcxtCallInput(
+            args=[],
             kwargs={
                 "symbol": request.symbol,
                 "since": request.since,
                 "limit": request.limit,
                 "params": request.params,
             },
-        )
-    except Exception as exc:
-        raise _ccxt_raise_400(exc) from exc
-    return CcxtResponse(result=result)
+        ),
+        x_api_key=x_api_key,
+    )
+    return CcxtResponse(result=out["result"])
 
 
 @app.post("/ccxt/core/{account_id}/fetch_balance", response_model=CcxtResponse)
 async def post_ccxt_core_fetch_balance(
     account_id: int,
     request: CcxtCoreFetchBalanceInput,
-    auth: Annotated[AuthContext, Depends(get_auth_context)],
+    x_api_key: str = Header(default=""),
 ) -> CcxtResponse:
-    account = await _require_account_permission(auth.user_id, account_id, require_trade=False)
-    is_testnet, api_key, secret, passphrase = await _load_account_credentials(account_id)
-    try:
-        result = await app.state.ccxt.execute_unified_with_capability(
-            exchange_id=account["exchange_id"],
-            use_testnet=is_testnet,
-            api_key=api_key,
-            secret=secret,
-            passphrase=passphrase,
-            method="fetch_balance",
-            capabilities=["fetchBalance"],
-            kwargs={"params": request.params},
-        )
-    except Exception as exc:
-        raise _ccxt_raise_400(exc) from exc
-    return CcxtResponse(result=result)
+    out = await post_ccxt_call(
+        account_id=account_id,
+        func="fetch_balance",
+        request=CcxtCallInput(args=[], kwargs={"params": request.params}),
+        x_api_key=x_api_key,
+    )
+    return CcxtResponse(result=out["result"])
 
 
-@app.post("/ccxt/multiple_commands", response_model=CcxtBatchResponse)
+@app.post("/ccxt/commands", response_model=CcxtBatchResponse)
 async def post_ccxt_batch(
-    items: list[CcxtBatchItem],
-    auth: Annotated[AuthContext, Depends(get_auth_context)],
+    items: CcxtBatchItem | list[CcxtBatchItem],
+    parallel: bool = False,
+    request_timeout_seconds: int | None = None,
+    x_api_key: str = Header(default=""),
 ) -> CcxtBatchResponse:
-    results: list[dict[str, Any]] = []
-    for index, item in enumerate(items):
-        try:
-            account = await _require_account_permission(
-                auth.user_id,
-                item.account_id,
-                require_trade=_ccxt_requires_trade(item.func),
-            )
-            is_testnet, api_key, secret, passphrase = await _load_account_credentials(item.account_id)
-            result = await app.state.ccxt.execute_method(
-                exchange_id=account["exchange_id"],
-                use_testnet=is_testnet,
-                api_key=api_key,
-                secret=secret,
-                passphrase=passphrase,
-                method=item.func,
-                args=item.args,
-                kwargs=item.kwargs,
-            )
-            results.append({"index": index, "ok": True, "result": result})
-        except Exception as exc:  # pragma: no cover
-            results.append({"index": index, "ok": False, "error": {"message": str(exc)}})
-    return CcxtBatchResponse(results=results)
+    entries = items if isinstance(items, list) else [items]
+    has_trade_ops = any(_ccxt_requires_trade(item.func) for item in entries)
+    dispatched = await dispatch_request(
+        host=settings.dispatcher_host,
+        port=settings.dispatcher_port,
+        timeout_seconds=_resolve_fastapi_timeout(
+            request_timeout_seconds,
+            default_timeout_seconds=(
+                None if has_trade_ops else max(settings.dispatcher_request_timeout_seconds, 60)
+            ),
+        ),
+        payload={
+            "op": "ccxt_batch",
+            "x_api_key": x_api_key,
+            "parallel": bool(parallel),
+            "items": [item.model_dump(by_alias=True, mode="json") for item in entries],
+        },
+    )
+    if not dispatched.get("ok"):
+        raise HTTPException(status_code=400, detail=dispatched.get("error") or {"code": "dispatcher_error"})
+    result = dispatched.get("result", {})
+    return CcxtBatchResponse(results=result.get("results", []))
 
 
 @app.get("/position/orders/open", response_model=PositionOrdersResponse)
 async def get_position_orders_open(
     account_id: int,
-    auth: Annotated[AuthContext, Depends(get_auth_context)],
+    strategy_id: int | None = None,
+    x_api_key: str = Header(default=""),
 ) -> PositionOrdersResponse:
-    await _require_account_permission(auth.user_id, account_id, require_trade=False)
-    async with app.state.db.connection() as conn:
-        rows = await app.state.repo.list_orders(conn, account_id, open_only=True)
-        await conn.commit()
-    return PositionOrdersResponse(items=rows)
+    out = await dispatch_request(
+        host=settings.dispatcher_host,
+        port=settings.dispatcher_port,
+        timeout_seconds=settings.dispatcher_request_timeout_seconds,
+        payload={
+            "op": "position_query",
+            "x_api_key": x_api_key,
+            "account_id": account_id,
+            "query": "orders_open",
+            "strategy_id": strategy_id,
+        },
+    )
+    if not out.get("ok"):
+        raise HTTPException(status_code=400, detail=out.get("error") or {"code": "dispatcher_error"})
+    return PositionOrdersResponse(items=out.get("result", []))
 
 
 @app.get("/position/orders/history", response_model=PositionOrdersResponse)
 async def get_position_orders_history(
     account_id: int,
-    auth: Annotated[AuthContext, Depends(get_auth_context)],
+    strategy_id: int | None = None,
+    x_api_key: str = Header(default=""),
 ) -> PositionOrdersResponse:
-    await _require_account_permission(auth.user_id, account_id, require_trade=False)
-    async with app.state.db.connection() as conn:
-        rows = await app.state.repo.list_orders(conn, account_id, open_only=False)
-        await conn.commit()
-    return PositionOrdersResponse(items=rows)
+    out = await dispatch_request(
+        host=settings.dispatcher_host,
+        port=settings.dispatcher_port,
+        timeout_seconds=settings.dispatcher_request_timeout_seconds,
+        payload={
+            "op": "position_query",
+            "x_api_key": x_api_key,
+            "account_id": account_id,
+            "query": "orders_history",
+            "strategy_id": strategy_id,
+        },
+    )
+    if not out.get("ok"):
+        raise HTTPException(status_code=400, detail=out.get("error") or {"code": "dispatcher_error"})
+    return PositionOrdersResponse(items=out.get("result", []))
 
 
 @app.get("/position/deals", response_model=PositionDealsResponse)
 async def get_position_deals(
     account_id: int,
-    auth: Annotated[AuthContext, Depends(get_auth_context)],
+    strategy_id: int | None = None,
+    x_api_key: str = Header(default=""),
 ) -> PositionDealsResponse:
-    await _require_account_permission(auth.user_id, account_id, require_trade=False)
-    async with app.state.db.connection() as conn:
-        rows = await app.state.repo.list_deals(conn, account_id)
-        await conn.commit()
-    return PositionDealsResponse(items=rows)
+    out = await dispatch_request(
+        host=settings.dispatcher_host,
+        port=settings.dispatcher_port,
+        timeout_seconds=settings.dispatcher_request_timeout_seconds,
+        payload={
+            "op": "position_query",
+            "x_api_key": x_api_key,
+            "account_id": account_id,
+            "query": "deals",
+            "strategy_id": strategy_id,
+        },
+    )
+    if not out.get("ok"):
+        raise HTTPException(status_code=400, detail=out.get("error") or {"code": "dispatcher_error"})
+    return PositionDealsResponse(items=out.get("result", []))
 
 
 @app.get("/position/positions/open", response_model=PositionsResponse)
 async def get_position_positions_open(
     account_id: int,
-    auth: Annotated[AuthContext, Depends(get_auth_context)],
+    strategy_id: int | None = None,
+    x_api_key: str = Header(default=""),
 ) -> PositionsResponse:
-    await _require_account_permission(auth.user_id, account_id, require_trade=False)
-    async with app.state.db.connection() as conn:
-        rows = await app.state.repo.list_positions(conn, account_id, open_only=True)
-        await conn.commit()
-    return PositionsResponse(items=rows)
+    out = await dispatch_request(
+        host=settings.dispatcher_host,
+        port=settings.dispatcher_port,
+        timeout_seconds=settings.dispatcher_request_timeout_seconds,
+        payload={
+            "op": "position_query",
+            "x_api_key": x_api_key,
+            "account_id": account_id,
+            "query": "positions_open",
+            "strategy_id": strategy_id,
+        },
+    )
+    if not out.get("ok"):
+        raise HTTPException(status_code=400, detail=out.get("error") or {"code": "dispatcher_error"})
+    return PositionsResponse(items=out.get("result", []))
 
 
 @app.get("/position/positions/history", response_model=PositionsResponse)
 async def get_position_positions_history(
     account_id: int,
-    auth: Annotated[AuthContext, Depends(get_auth_context)],
+    strategy_id: int | None = None,
+    x_api_key: str = Header(default=""),
 ) -> PositionsResponse:
-    await _require_account_permission(auth.user_id, account_id, require_trade=False)
-    async with app.state.db.connection() as conn:
-        rows = await app.state.repo.list_positions(conn, account_id, open_only=False)
-        await conn.commit()
-    return PositionsResponse(items=rows)
+    out = await dispatch_request(
+        host=settings.dispatcher_host,
+        port=settings.dispatcher_port,
+        timeout_seconds=settings.dispatcher_request_timeout_seconds,
+        payload={
+            "op": "position_query",
+            "x_api_key": x_api_key,
+            "account_id": account_id,
+            "query": "positions_history",
+            "strategy_id": strategy_id,
+        },
+    )
+    if not out.get("ok"):
+        raise HTTPException(status_code=400, detail=out.get("error") or {"code": "dispatcher_error"})
+    return PositionsResponse(items=out.get("result", []))
 
 
 @app.post("/position/reassign", response_model=ReassignResponse)
 async def post_position_reassign(
     req: ReassignInput,
-    auth: Annotated[AuthContext, Depends(get_auth_context)],
+    x_api_key: str = Header(default=""),
 ) -> ReassignResponse:
-    await _require_account_permission(auth.user_id, req.account_id, require_trade=True)
-    async with app.state.db.connection() as conn:
-        deals_count = await app.state.repo.reassign_deals(
-            conn=conn,
-            account_id=req.account_id,
-            deal_ids=req.deal_ids,
-            target_magic_id=req.target_strategy_id,
-            target_position_id=req.target_position_id,
-        )
-        orders_count = await app.state.repo.reassign_orders(
-            conn=conn,
-            account_id=req.account_id,
-            order_ids=req.order_ids,
-            target_magic_id=req.target_strategy_id,
-            target_position_id=req.target_position_id,
-        )
-        await app.state.repo.insert_event(
-            conn=conn,
-            account_id=req.account_id,
-            namespace="position",
-            event_type="reassigned",
-            payload={
-                "deals_updated": deals_count,
-                "orders_updated": orders_count,
-                "target_strategy_id": req.target_strategy_id,
-                "target_position_id": req.target_position_id,
-            },
-        )
-        await conn.commit()
-    return ReassignResponse(ok=True, deals_updated=deals_count, orders_updated=orders_count)
+    out = await dispatch_request(
+        host=settings.dispatcher_host,
+        port=settings.dispatcher_port,
+        timeout_seconds=settings.dispatcher_request_timeout_seconds,
+        payload={
+            "op": "position_reassign",
+            "x_api_key": x_api_key,
+            "account_id": req.account_id,
+            "deal_ids": req.deal_ids,
+            "order_ids": req.order_ids,
+            "target_strategy_id": req.target_strategy_id,
+            "target_position_id": req.target_position_id,
+        },
+    )
+    if not out.get("ok"):
+        raise HTTPException(status_code=400, detail=out.get("error") or {"code": "dispatcher_error"})
+    res = out.get("result", {})
+    return ReassignResponse(ok=True, deals_updated=int(res.get("deals_updated", 0)), orders_updated=int(res.get("orders_updated", 0)))
 
 
 @app.post("/position/reconcile", response_model=ReconcileNowResponse)
 async def post_position_reconcile_now(
-    req: ReconcileNowInput | None,
-    auth: Annotated[AuthContext, Depends(get_auth_context)],
+    x_api_key: str = Header(default=""),
+    req: ReconcileNowInput | None = None,
 ) -> ReconcileNowResponse:
     request = req or ReconcileNowInput()
-    if request.account_id is not None:
-        account = await _require_account_permission(auth.user_id, request.account_id, require_trade=False)
-        account_ids = [request.account_id]
-        pool_id = int(account["pool_id"])
-    else:
-        async with app.state.db.connection() as conn:
-            rows = await app.state.repo.list_reconciliation_status_for_user(conn, auth.user_id)
-            await conn.commit()
-        account_ids = [int(r["account_id"]) for r in rows]
-        pool_id = settings.worker_pool_id
+    targets: list[int] = []
+    seen: set[int] = set()
 
-    if not account_ids:
+    if request.account_id is not None:
+        targets.append(int(request.account_id))
+        seen.add(int(request.account_id))
+
+    if request.account_ids is not None:
+        raw_ids: list[int] = []
+        if isinstance(request.account_ids, list):
+            raw_ids = [int(a) for a in request.account_ids if int(a) > 0]
+        elif isinstance(request.account_ids, str):
+            raw_ids = [int(x.strip()) for x in request.account_ids.split(",") if x.strip().isdigit() and int(x.strip()) > 0]
+        for aid in raw_ids:
+            if aid in seen:
+                continue
+            targets.append(aid)
+            seen.add(aid)
+
+    if not targets:
         return ReconcileNowResponse(ok=True, account_ids=[], triggered_count=0)
 
-    await _run_reconciliation_once(
-        db=app.state.db,
-        repo=app.state.repo,
-        ccxt_adapter=app.state.ccxt,
-        pool_id=int(pool_id),
-        credentials_codec=app.state.credentials_codec,
-        account_ids=set(account_ids),
+    if not targets:
+        return ReconcileNowResponse(ok=True, account_ids=[], triggered_count=0)
+    triggered = 0
+    for account_id in targets:
+        dispatched = await dispatch_request(
+            host=settings.dispatcher_host,
+            port=settings.dispatcher_port,
+            timeout_seconds=max(settings.dispatcher_request_timeout_seconds, 60),
+            payload={
+                "op": "reconcile_now",
+                "x_api_key": x_api_key,
+                "account_id": int(account_id),
+                "scope": request.scope,
+                "lookback_seconds": _scope_lookback_seconds(request.scope, account=None),
+            },
+        )
+        if dispatched.get("ok"):
+            triggered += 1
+
+    return ReconcileNowResponse(
+        ok=True,
+        account_ids=targets,
+        triggered_count=triggered,
     )
-    return ReconcileNowResponse(ok=True, account_ids=account_ids, triggered_count=len(account_ids))
 
 
 @app.get("/position/reconcile/{account_id}/status", response_model=ReconcileStatusResponse)
 async def get_position_reconcile_account_status(
     account_id: int,
     stale_after_seconds: int = 120,
-    auth: Annotated[AuthContext, Depends(get_auth_context)],
+    x_api_key: str = Header(default=""),
 ) -> ReconcileStatusResponse:
-    await _require_account_permission(auth.user_id, account_id, require_trade=False)
-    async with app.state.db.connection() as conn:
-        row = await app.state.repo.fetch_reconciliation_status_for_account(conn, account_id)
-        await conn.commit()
-    status, age = _reconcile_status_of(row["updated_at"], stale_after_seconds)
+    out = await dispatch_request(
+        host=settings.dispatcher_host,
+        port=settings.dispatcher_port,
+        timeout_seconds=settings.dispatcher_request_timeout_seconds,
+        payload={
+            "op": "reconcile_status_account",
+            "x_api_key": x_api_key,
+            "account_id": account_id,
+            "stale_after_seconds": stale_after_seconds,
+        },
+    )
+    if not out.get("ok"):
+        raise HTTPException(status_code=400, detail=out.get("error") or {"code": "dispatcher_error"})
+    row = out.get("result", {})
     return ReconcileStatusResponse(
         items=[
             {
                 "account_id": account_id,
-                "status": status,
+                "status": row.get("status"),
                 "cursor_value": row["cursor_value"],
                 "updated_at": row["updated_at"],
-                "age_seconds": age,
+                "age_seconds": row.get("age_seconds"),
             }
         ]
     )
@@ -521,80 +642,506 @@ async def get_position_reconcile_account_status(
 async def get_position_reconcile_status(
     status: str | None = None,
     stale_after_seconds: int = 120,
-    auth: Annotated[AuthContext, Depends(get_auth_context)],
+    x_api_key: str = Header(default=""),
 ) -> ReconcileStatusResponse:
     allowed = {None, "fresh", "stale", "never"}
     if status not in allowed:
         raise HTTPException(status_code=422, detail={"code": "validation_error", "message": "status must be fresh|stale|never"})
 
-    async with app.state.db.connection() as conn:
-        rows = await app.state.repo.list_reconciliation_status_for_user(conn, auth.user_id)
-        await conn.commit()
+    out = await dispatch_request(
+        host=settings.dispatcher_host,
+        port=settings.dispatcher_port,
+        timeout_seconds=settings.dispatcher_request_timeout_seconds,
+        payload={
+            "op": "reconcile_status_list",
+            "x_api_key": x_api_key,
+            "status": status,
+            "stale_after_seconds": stale_after_seconds,
+        },
+    )
+    if not out.get("ok"):
+        raise HTTPException(status_code=400, detail=out.get("error") or {"code": "dispatcher_error"})
+    return ReconcileStatusResponse(items=out.get("result", []))
 
-    items: list[dict[str, Any]] = []
-    for row in rows:
-        computed, age = _reconcile_status_of(row["updated_at"], stale_after_seconds)
-        if status is not None and computed != status:
-            continue
-        items.append(
-            {
-                "account_id": int(row["account_id"]),
-                "status": computed,
-                "cursor_value": row["cursor_value"],
-                "updated_at": row["updated_at"],
-                "age_seconds": age,
-            }
-        )
-    return ReconcileStatusResponse(items=items)
+
+@app.get("/position/accounts", response_model=AccountsResponse)
+async def get_position_accounts(
+    x_api_key: str = Header(default=""),
+) -> AccountsResponse:
+    out = await dispatch_request(
+        host=settings.dispatcher_host,
+        port=settings.dispatcher_port,
+        timeout_seconds=settings.dispatcher_request_timeout_seconds,
+        payload={
+            "op": "accounts_list",
+            "x_api_key": x_api_key,
+        },
+    )
+    if not out.get("ok"):
+        raise HTTPException(status_code=400, detail=out.get("error") or {"code": "dispatcher_error"})
+    return AccountsResponse(items=out.get("result", []))
+
+
+@app.post("/position/risk/{account_id}/allow_new_positions", response_model=RiskActionResponse)
+async def post_risk_allow_new_positions(
+    account_id: int,
+    req: RiskSetAllowNewPositionsInput,
+    x_api_key: str = Header(default=""),
+) -> RiskActionResponse:
+    out = await dispatch_request(
+        host=settings.dispatcher_host,
+        port=settings.dispatcher_port,
+        timeout_seconds=settings.dispatcher_request_timeout_seconds,
+        payload={
+            "op": "risk_set_allow_new_positions",
+            "x_api_key": x_api_key,
+            "account_id": account_id,
+            "allow_new_positions": bool(req.allow_new_positions),
+        },
+    )
+    if not out.get("ok"):
+        raise HTTPException(status_code=400, detail=out.get("error") or {"code": "dispatcher_error"})
+    res = out.get("result", {})
+    return RiskActionResponse(
+        ok=True,
+        account_id=int(res.get("account_id", account_id)),
+        allow_new_positions=bool(res.get("allow_new_positions", req.allow_new_positions)),
+        rows=int(res.get("rows", 0)),
+    )
+
+
+@app.post("/position/risk/{account_id}/strategies/allow_new_positions", response_model=RiskActionResponse)
+async def post_risk_strategy_allow_new_positions(
+    account_id: int,
+    req: RiskSetStrategyAllowNewPositionsInput,
+    x_api_key: str = Header(default=""),
+) -> RiskActionResponse:
+    out = await dispatch_request(
+        host=settings.dispatcher_host,
+        port=settings.dispatcher_port,
+        timeout_seconds=settings.dispatcher_request_timeout_seconds,
+        payload={
+            "op": "risk_set_strategy_allow_new_positions",
+            "x_api_key": x_api_key,
+            "account_id": account_id,
+            "strategy_id": int(req.strategy_id),
+            "allow_new_positions": bool(req.allow_new_positions),
+        },
+    )
+    if not out.get("ok"):
+        raise HTTPException(status_code=400, detail=out.get("error") or {"code": "dispatcher_error"})
+    res = out.get("result", {})
+    return RiskActionResponse(
+        ok=True,
+        account_id=int(res.get("account_id", account_id)),
+        strategy_id=int(res.get("strategy_id", req.strategy_id)),
+        allow_new_positions=bool(res.get("allow_new_positions", req.allow_new_positions)),
+        rows=int(res.get("rows", 0)),
+    )
+
+
+@app.post("/position/risk/{account_id}/status", response_model=RiskActionResponse)
+async def post_risk_account_status(
+    account_id: int,
+    req: RiskSetAccountStatusInput,
+    x_api_key: str = Header(default=""),
+) -> RiskActionResponse:
+    out = await dispatch_request(
+        host=settings.dispatcher_host,
+        port=settings.dispatcher_port,
+        timeout_seconds=settings.dispatcher_request_timeout_seconds,
+        payload={
+            "op": "risk_set_account_status",
+            "x_api_key": x_api_key,
+            "account_id": account_id,
+            "status": req.status,
+        },
+    )
+    if not out.get("ok"):
+        raise HTTPException(status_code=400, detail=out.get("error") or {"code": "dispatcher_error"})
+    res = out.get("result", {})
+    return RiskActionResponse(
+        ok=True,
+        account_id=int(res.get("account_id", account_id)),
+        status=str(res.get("status", req.status)),
+        rows=int(res.get("rows", 0)),
+    )
+
+
+@app.post("/admin/accounts", response_model=AdminCreateAccountResponse)
+async def post_admin_create_account(
+    req: AdminCreateAccountInput,
+    x_api_key: str = Header(default=""),
+) -> AdminCreateAccountResponse:
+    out = await dispatch_request(
+        host=settings.dispatcher_host,
+        port=settings.dispatcher_port,
+        timeout_seconds=settings.dispatcher_request_timeout_seconds,
+        payload={
+            "op": "admin_create_account",
+            "x_api_key": x_api_key,
+            "exchange_id": req.exchange_id,
+            "label": req.label,
+            "position_mode": req.position_mode,
+            "is_testnet": req.is_testnet,
+            "extra_config_json": req.extra_config_json,
+        },
+    )
+    if not out.get("ok"):
+        raise HTTPException(status_code=400, detail=out.get("error") or {"code": "dispatcher_error"})
+    return AdminCreateAccountResponse(ok=True, account_id=int((out.get("result") or {}).get("account_id", 0)))
+
+
+@app.get("/admin/accounts", response_model=AdminAccountsResponse)
+async def get_admin_accounts(
+    x_api_key: str = Header(default=""),
+) -> AdminAccountsResponse:
+    out = await dispatch_request(
+        host=settings.dispatcher_host,
+        port=settings.dispatcher_port,
+        timeout_seconds=settings.dispatcher_request_timeout_seconds,
+        payload={
+            "op": "admin_list_accounts",
+            "x_api_key": x_api_key,
+        },
+    )
+    if not out.get("ok"):
+        raise HTTPException(status_code=400, detail=out.get("error") or {"code": "dispatcher_error"})
+    return AdminAccountsResponse(items=out.get("result", []))
+
+
+@app.patch("/admin/accounts/{account_id}", response_model=AdminUpdateAccountResponse)
+async def patch_admin_account(
+    account_id: int,
+    req: AdminUpdateAccountInput,
+    x_api_key: str = Header(default=""),
+) -> AdminUpdateAccountResponse:
+    out = await dispatch_request(
+        host=settings.dispatcher_host,
+        port=settings.dispatcher_port,
+        timeout_seconds=settings.dispatcher_request_timeout_seconds,
+        payload={
+            "op": "admin_update_account",
+            "x_api_key": x_api_key,
+            "account_id": account_id,
+            "exchange_id": req.exchange_id,
+            "label": req.label,
+            "position_mode": req.position_mode,
+            "is_testnet": req.is_testnet,
+            "status": req.status,
+            "extra_config_json": req.extra_config_json,
+            "credentials": None if req.credentials is None else req.credentials.model_dump(mode="json"),
+        },
+    )
+    if not out.get("ok"):
+        raise HTTPException(status_code=400, detail=out.get("error") or {"code": "dispatcher_error"})
+    res = out.get("result", {})
+    return AdminUpdateAccountResponse(
+        ok=True,
+        account_id=int(res.get("account_id", account_id)),
+        rows=int(res.get("rows", 0)),
+    )
+
+
+@app.post("/admin/users-with-api-key", response_model=AdminCreateUserApiKeyResponse)
+async def post_admin_create_user_api_key(
+    req: AdminCreateUserApiKeyInput,
+    x_api_key: str = Header(default=""),
+) -> AdminCreateUserApiKeyResponse:
+    out = await dispatch_request(
+        host=settings.dispatcher_host,
+        port=settings.dispatcher_port,
+        timeout_seconds=settings.dispatcher_request_timeout_seconds,
+        payload={
+            "op": "admin_create_user_api_key",
+            "x_api_key": x_api_key,
+            "user_name": req.user_name,
+            "role": req.role,
+            "api_key": req.api_key,
+            "password": req.password,
+            "permissions": [item.model_dump(mode="json") for item in req.permissions],
+        },
+    )
+    if not out.get("ok"):
+        raise HTTPException(status_code=400, detail=out.get("error") or {"code": "dispatcher_error"})
+    res = out.get("result", {})
+    return AdminCreateUserApiKeyResponse(
+        ok=True,
+        user_id=int(res.get("user_id", 0)),
+        api_key_id=int(res.get("api_key_id", 0)),
+        api_key_plain=str(res.get("api_key_plain", "")),
+    )
+
+
+@app.get("/admin/users-api-keys", response_model=AdminUsersApiKeysResponse)
+async def get_admin_users_api_keys(
+    x_api_key: str = Header(default=""),
+) -> AdminUsersApiKeysResponse:
+    out = await dispatch_request(
+        host=settings.dispatcher_host,
+        port=settings.dispatcher_port,
+        timeout_seconds=settings.dispatcher_request_timeout_seconds,
+        payload={
+            "op": "admin_list_users_api_keys",
+            "x_api_key": x_api_key,
+        },
+    )
+    if not out.get("ok"):
+        raise HTTPException(status_code=400, detail=out.get("error") or {"code": "dispatcher_error"})
+    return AdminUsersApiKeysResponse(items=out.get("result", []))
+
+
+@app.patch("/admin/api-keys/{api_key_id}", response_model=AdminUpdateApiKeyResponse)
+async def patch_admin_api_key(
+    api_key_id: int,
+    req: AdminUpdateApiKeyInput,
+    x_api_key: str = Header(default=""),
+) -> AdminUpdateApiKeyResponse:
+    out = await dispatch_request(
+        host=settings.dispatcher_host,
+        port=settings.dispatcher_port,
+        timeout_seconds=settings.dispatcher_request_timeout_seconds,
+        payload={
+            "op": "admin_update_api_key",
+            "x_api_key": x_api_key,
+            "api_key_id": api_key_id,
+            "status": req.status,
+        },
+    )
+    if not out.get("ok"):
+        raise HTTPException(status_code=400, detail=out.get("error") or {"code": "dispatcher_error"})
+    res = out.get("result", {})
+    return AdminUpdateApiKeyResponse(
+        ok=True,
+        api_key_id=int(res.get("api_key_id", api_key_id)),
+        rows=int(res.get("rows", 0)),
+    )
+
+
+@app.get("/admin/api-keys/{api_key_id}/permissions", response_model=AdminApiKeyPermissionsResponse)
+async def get_admin_api_key_permissions(
+    api_key_id: int,
+    x_api_key: str = Header(default=""),
+) -> AdminApiKeyPermissionsResponse:
+    out = await dispatch_request(
+        host=settings.dispatcher_host,
+        port=settings.dispatcher_port,
+        timeout_seconds=settings.dispatcher_request_timeout_seconds,
+        payload={
+            "op": "admin_list_api_key_permissions",
+            "x_api_key": x_api_key,
+            "api_key_id": api_key_id,
+        },
+    )
+    if not out.get("ok"):
+        raise HTTPException(status_code=400, detail=out.get("error") or {"code": "dispatcher_error"})
+    return AdminApiKeyPermissionsResponse(items=out.get("result", []))
+
+
+@app.put("/admin/api-keys/{api_key_id}/permissions", response_model=AdminUpdateApiKeyResponse)
+async def put_admin_api_key_permission(
+    api_key_id: int,
+    req: AdminUpsertApiKeyPermissionInput,
+    x_api_key: str = Header(default=""),
+) -> AdminUpdateApiKeyResponse:
+    out = await dispatch_request(
+        host=settings.dispatcher_host,
+        port=settings.dispatcher_port,
+        timeout_seconds=settings.dispatcher_request_timeout_seconds,
+        payload={
+            "op": "admin_upsert_api_key_permission",
+            "x_api_key": x_api_key,
+            "api_key_id": api_key_id,
+            "account_id": req.account_id,
+            "can_read": req.can_read,
+            "can_trade": req.can_trade,
+            "can_close_position": req.can_close_position,
+            "can_risk_manage": req.can_risk_manage,
+            "can_block_new_positions": req.can_block_new_positions,
+            "can_block_account": req.can_block_account,
+            "restrict_to_strategies": req.restrict_to_strategies,
+            "strategy_ids": req.strategy_ids,
+        },
+    )
+    if not out.get("ok"):
+        raise HTTPException(status_code=400, detail=out.get("error") or {"code": "dispatcher_error"})
+    res = out.get("result", {})
+    return AdminUpdateApiKeyResponse(ok=True, api_key_id=int(res.get("api_key_id", api_key_id)), rows=int(res.get("rows", 0)))
+
+
+@app.get("/admin/users", response_model=AdminUsersResponse)
+async def get_admin_users(
+    x_api_key: str = Header(default=""),
+) -> AdminUsersResponse:
+    out = await dispatch_request(
+        host=settings.dispatcher_host,
+        port=settings.dispatcher_port,
+        timeout_seconds=settings.dispatcher_request_timeout_seconds,
+        payload={
+            "op": "admin_list_users",
+            "x_api_key": x_api_key,
+        },
+    )
+    if not out.get("ok"):
+        raise HTTPException(status_code=400, detail=out.get("error") or {"code": "dispatcher_error"})
+    return AdminUsersResponse(items=out.get("result", []))
+
+
+@app.post("/auth/login-password", response_model=AuthLoginPasswordResponse)
+async def post_auth_login_password(
+    req: AuthLoginPasswordInput,
+) -> AuthLoginPasswordResponse:
+    out = await dispatch_request(
+        host=settings.dispatcher_host,
+        port=settings.dispatcher_port,
+        timeout_seconds=settings.dispatcher_request_timeout_seconds,
+        payload={
+            "op": "auth_login_password",
+            "user_name": req.user_name,
+            "password": req.password,
+            "api_key_id": req.api_key_id,
+        },
+    )
+    if not out.get("ok"):
+        raise HTTPException(status_code=400, detail=out.get("error") or {"code": "auth_error"})
+    res = out.get("result", {})
+    return AuthLoginPasswordResponse(
+        ok=True,
+        token=str(res.get("token", "")),
+        token_type=str(res.get("token_type", "bearer")),
+        expires_at=str(res.get("expires_at", "")),
+        user_id=int(res.get("user_id", 0)),
+        role=str(res.get("role", "trade")),
+        api_key_id=int(res.get("api_key_id", 0)),
+    )
+
+
+@app.post("/admin/strategies", response_model=AdminCreateStrategyResponse)
+async def post_admin_create_strategy(
+    req: AdminCreateStrategyInput,
+    x_api_key: str = Header(default=""),
+) -> AdminCreateStrategyResponse:
+    out = await dispatch_request(
+        host=settings.dispatcher_host,
+        port=settings.dispatcher_port,
+        timeout_seconds=settings.dispatcher_request_timeout_seconds,
+        payload={
+            "op": "admin_create_strategy",
+            "x_api_key": x_api_key,
+            "name": req.name,
+            "account_ids": req.account_ids,
+        },
+    )
+    if not out.get("ok"):
+        raise HTTPException(status_code=400, detail=out.get("error") or {"code": "dispatcher_error"})
+    return AdminCreateStrategyResponse(ok=True, strategy_id=int((out.get("result") or {}).get("strategy_id", 0)))
+
+
+@app.get("/admin/strategies", response_model=AdminStrategiesResponse)
+async def get_admin_list_strategies(
+    x_api_key: str = Header(default=""),
+) -> AdminStrategiesResponse:
+    out = await dispatch_request(
+        host=settings.dispatcher_host,
+        port=settings.dispatcher_port,
+        timeout_seconds=settings.dispatcher_request_timeout_seconds,
+        payload={
+            "op": "admin_list_strategies",
+            "x_api_key": x_api_key,
+        },
+    )
+    if not out.get("ok"):
+        raise HTTPException(status_code=400, detail=out.get("error") or {"code": "dispatcher_error"})
+    return AdminStrategiesResponse(items=out.get("result", []))
+
+
+@app.patch("/admin/strategies/{strategy_id}", response_model=AdminUpdateStrategyResponse)
+async def patch_admin_update_strategy(
+    strategy_id: int,
+    req: AdminUpdateStrategyInput,
+    x_api_key: str = Header(default=""),
+) -> AdminUpdateStrategyResponse:
+    out = await dispatch_request(
+        host=settings.dispatcher_host,
+        port=settings.dispatcher_port,
+        timeout_seconds=settings.dispatcher_request_timeout_seconds,
+        payload={
+            "op": "admin_update_strategy",
+            "x_api_key": x_api_key,
+            "strategy_id": strategy_id,
+            "name": req.name,
+            "status": req.status,
+        },
+    )
+    if not out.get("ok"):
+        raise HTTPException(status_code=400, detail=out.get("error") or {"code": "dispatcher_error"})
+    res = out.get("result", {})
+    return AdminUpdateStrategyResponse(
+        ok=True,
+        strategy_id=int(res.get("strategy_id", strategy_id)),
+        rows=int(res.get("rows", 0)),
+    )
+
+
+@app.get("/strategies", response_model=StrategiesResponse)
+async def get_strategies(
+    x_api_key: str = Header(default=""),
+) -> StrategiesResponse:
+    out = await dispatch_request(
+        host=settings.dispatcher_host,
+        port=settings.dispatcher_port,
+        timeout_seconds=settings.dispatcher_request_timeout_seconds,
+        payload={
+            "op": "strategy_list",
+            "x_api_key": x_api_key,
+        },
+    )
+    if not out.get("ok"):
+        raise HTTPException(status_code=400, detail=out.get("error") or {"code": "dispatcher_error"})
+    return StrategiesResponse(items=out.get("result", []))
+
+
+@app.post("/strategies", response_model=CreateStrategyResponse)
+async def post_strategies(
+    req: CreateStrategyInput,
+    x_api_key: str = Header(default=""),
+) -> CreateStrategyResponse:
+    out = await dispatch_request(
+        host=settings.dispatcher_host,
+        port=settings.dispatcher_port,
+        timeout_seconds=settings.dispatcher_request_timeout_seconds,
+        payload={
+            "op": "strategy_create",
+            "x_api_key": x_api_key,
+            "name": req.name,
+            "account_ids": req.account_ids,
+        },
+    )
+    if not out.get("ok"):
+        raise HTTPException(status_code=400, detail=out.get("error") or {"code": "dispatcher_error"})
+    return CreateStrategyResponse(ok=True, strategy_id=int((out.get("result") or {}).get("strategy_id", 0)))
 
 
 @app.websocket("/ws")
 async def ws_endpoint(websocket: WebSocket) -> None:
-    api_key = websocket.headers.get("x-api-key")
-    account_id_raw = websocket.headers.get("x-account-id")
-    if not api_key or not account_id_raw:
-        await websocket.close(code=1008)
-        return
-
-    try:
-        account_id = int(account_id_raw)
-    except ValueError:
-        await websocket.close(code=1008)
-        return
-
-    auth = await validate_api_key(app.state.db, api_key)
-    if auth is None:
-        await websocket.close(code=1008)
-        return
-
-    try:
-        account = await _require_account_permission(auth.user_id, account_id, require_trade=False)
-    except HTTPException:
-        await websocket.close(code=1008)
-        return
-
     await websocket.accept()
     api_logger = app.state.loggers.get("api")
-    if api_logger is not None:
-        api_logger.info(
-            "ws_connect %s",
-            json.dumps(
-                {
-                    "account_id": str(account_id),
-                    "x_api_key": mask_header_value("x-api-key", api_key),
-                    "x_after_id": websocket.headers.get("x-after-id", "0"),
-                },
-                separators=(",", ":"),
-            ),
-        )
+    api_key = str(websocket.headers.get("x-api-key") or "").strip()
     subscriptions = {"position", "ccxt"}
-    after_id_raw = websocket.headers.get("x-after-id", "0")
-    try:
-        last_event_id = int(after_id_raw or "0")
-    except ValueError:
-        last_event_id = 0
+    subscribed_accounts: set[int] = set()
+    last_event_id_by_account: dict[int, int] = {}
+    if api_key:
+        auth_check = await dispatch_request(
+            host=settings.dispatcher_host,
+            port=settings.dispatcher_port,
+            timeout_seconds=settings.dispatcher_request_timeout_seconds,
+            payload={"op": "auth_check", "x_api_key": api_key},
+        )
+        if not auth_check.get("ok"):
+            await websocket.close(code=1008)
+            return
     await websocket.send_json(
-        {"id": "server-hello", "ok": True, "type": "ws_event", "event": "connected", "payload": {"account_id": account_id}}
+        {"id": "server-hello", "ok": True, "type": "ws_event", "event": "connected", "payload": {}}
     )
 
     while True:
@@ -613,61 +1160,305 @@ async def ws_endpoint(websocket: WebSocket) -> None:
                     )
                     continue
 
+                if action == "auth":
+                    candidate = str(payload.get("api_key", "")).strip()
+                    if not candidate:
+                        await websocket.send_json(
+                            {
+                                "id": req_id,
+                                "ok": False,
+                                "type": "ws_response",
+                                "namespace": "system",
+                                "action": action,
+                                "event": "error",
+                                "payload": {"code": "missing_api_key"},
+                            }
+                        )
+                        continue
+                    auth_check = await dispatch_request(
+                        host=settings.dispatcher_host,
+                        port=settings.dispatcher_port,
+                        timeout_seconds=settings.dispatcher_request_timeout_seconds,
+                        payload={"op": "auth_check", "x_api_key": candidate},
+                    )
+                    if not auth_check.get("ok"):
+                        await websocket.send_json(
+                            {
+                                "id": req_id,
+                                "ok": False,
+                                "type": "ws_response",
+                                "namespace": "system",
+                                "action": action,
+                                "event": "error",
+                                "payload": auth_check.get("error") or {"code": "invalid_api_key"},
+                            }
+                        )
+                        continue
+                    api_key = candidate
+                    if api_logger is not None:
+                        api_logger.info(
+                            "ws_auth %s",
+                            json.dumps(
+                                {
+                                    "x_api_key": mask_header_value("x-api-key", api_key),
+                                },
+                                separators=(",", ":"),
+                            ),
+                        )
+                    await websocket.send_json(
+                        {
+                            "id": req_id,
+                            "ok": True,
+                            "type": "ws_response",
+                            "namespace": "system",
+                            "action": action,
+                            "event": "authenticated",
+                            "payload": auth_check.get("result") or {},
+                        }
+                    )
+                    continue
+
+                if not api_key:
+                    await websocket.send_json(
+                        {
+                            "id": req_id,
+                            "ok": False,
+                            "type": "ws_response",
+                            "namespace": namespace or "system",
+                            "action": action,
+                            "event": "error",
+                            "payload": {"code": "not_authenticated"},
+                        }
+                    )
+                    continue
+
                 if action == "subscribe":
                     namespaces = payload.get("namespaces", [])
                     if isinstance(namespaces, list):
                         subscriptions = {str(n) for n in namespaces if str(n) in {"position", "ccxt"}}
                         if not subscriptions:
                             subscriptions = {"position"}
-                    await websocket.send_json(
-                        {"id": req_id, "ok": True, "type": "ws_response", "namespace": "system", "action": action, "event": "subscribed", "payload": {"namespaces": sorted(subscriptions)}}
+                    account_ids_raw = payload.get("account_ids") if isinstance(payload.get("account_ids"), list) else []
+                    account_ids = sorted(
+                        {int(x) for x in account_ids_raw if str(x).isdigit() and int(x) > 0}
                     )
-                    continue
-
-                if namespace == "position" and action == "command":
-                    command_payload = dict(payload)
-                    command_payload["account_id"] = account_id
-                    item = CommandInput.model_validate(command_payload)
-                    result = await process_single_command(
-                        app.state.db, app.state.repo, auth, item, 0
-                    )
-                    await websocket.send_json(
-                        {
-                            "id": req_id,
-                            "ok": result.ok,
-                            "type": "ws_response",
-                            "namespace": "position",
-                            "action": action,
-                            "event": "command_result",
-                            "payload": result.model_dump(),
-                        }
-                    )
-                    continue
-
-                if namespace == "ccxt" and action == "call":
-                    method = str(payload.get("func", "")).strip()
-                    args = payload.get("args") if isinstance(payload.get("args"), list) else []
-                    kwargs = payload.get("kwargs") if isinstance(payload.get("kwargs"), dict) else {}
-                    is_testnet, api_key_val, secret, passphrase = await _load_account_credentials(account_id)
-                    result = await app.state.ccxt.execute_method(
-                        exchange_id=account["exchange_id"],
-                        use_testnet=is_testnet,
-                        api_key=api_key_val,
-                        secret=secret,
-                        passphrase=passphrase,
-                        method=method,
-                        args=args,
-                        kwargs=kwargs,
-                    )
+                    if not account_ids:
+                        await websocket.send_json(
+                            {
+                                "id": req_id,
+                                "ok": False,
+                                "type": "ws_response",
+                                "namespace": "system",
+                                "action": action,
+                                "event": "error",
+                                "payload": {"code": "missing_account_ids"},
+                            }
+                        )
+                        continue
+                    authorized: list[int] = []
+                    for account_id in account_ids:
+                        chk = await dispatch_request(
+                            host=settings.dispatcher_host,
+                            port=settings.dispatcher_port,
+                            timeout_seconds=settings.dispatcher_request_timeout_seconds,
+                            payload={
+                                "op": "authorize_account",
+                                "x_api_key": api_key,
+                                "account_id": account_id,
+                                "require_trade": False,
+                                "for_ws": True,
+                            },
+                        )
+                        if chk.get("ok"):
+                            authorized.append(account_id)
+                    if not authorized:
+                        await websocket.send_json(
+                            {
+                                "id": req_id,
+                                "ok": False,
+                                "type": "ws_response",
+                                "namespace": "system",
+                                "action": action,
+                                "event": "error",
+                                "payload": {"code": "permission_denied"},
+                            }
+                        )
+                        continue
+                    subscribed_accounts = set(authorized)
+                    for account_id in subscribed_accounts:
+                        tail = await dispatch_request(
+                            host=settings.dispatcher_host,
+                            port=settings.dispatcher_port,
+                            timeout_seconds=settings.dispatcher_request_timeout_seconds,
+                            payload={
+                                "op": "ws_tail_id",
+                                "x_api_key": api_key,
+                                "account_id": account_id,
+                            },
+                        )
+                        last_event_id_by_account[account_id] = (
+                            int(((tail.get("result") or {}).get("tail_id")) or 0) if tail.get("ok") else 0
+                        )
                     await websocket.send_json(
                         {
                             "id": req_id,
                             "ok": True,
                             "type": "ws_response",
+                            "namespace": "system",
+                            "action": action,
+                            "event": "subscribed",
+                            "payload": {
+                                "namespaces": sorted(subscriptions),
+                                "account_ids": sorted(subscribed_accounts),
+                            },
+                        }
+                    )
+                    with_snapshot = bool(payload.get("with_snapshot", True))
+                    if with_snapshot and "position" in subscriptions:
+                        for account_id in sorted(subscribed_accounts):
+                            open_orders = await dispatch_request(
+                                host=settings.dispatcher_host,
+                                port=settings.dispatcher_port,
+                                timeout_seconds=settings.dispatcher_request_timeout_seconds,
+                                payload={
+                                    "op": "position_query",
+                                    "x_api_key": api_key,
+                                    "account_id": account_id,
+                                    "query": "orders_open",
+                                },
+                            )
+                            if open_orders.get("ok"):
+                                for row in open_orders.get("result", []) or []:
+                                    await websocket.send_json(
+                                        {
+                                            "id": None,
+                                            "ok": True,
+                                            "type": "ws_event",
+                                            "namespace": "position",
+                                            "action": "snapshot",
+                                            "event": "snapshot_open_order",
+                                            "payload": row,
+                                        }
+                                    )
+                            open_positions = await dispatch_request(
+                                host=settings.dispatcher_host,
+                                port=settings.dispatcher_port,
+                                timeout_seconds=settings.dispatcher_request_timeout_seconds,
+                                payload={
+                                    "op": "position_query",
+                                    "x_api_key": api_key,
+                                    "account_id": account_id,
+                                    "query": "positions_open",
+                                },
+                            )
+                            if open_positions.get("ok"):
+                                for row in open_positions.get("result", []) or []:
+                                    await websocket.send_json(
+                                        {
+                                            "id": None,
+                                            "ok": True,
+                                            "type": "ws_event",
+                                            "namespace": "position",
+                                            "action": "snapshot",
+                                            "event": "snapshot_open_position",
+                                            "payload": row,
+                                        }
+                                    )
+                    continue
+
+                if namespace == "position" and action == "command":
+                    command_payload = dict(payload)
+                    account_id = int(command_payload.get("account_id", 0) or 0)
+                    if account_id <= 0:
+                        await websocket.send_json(
+                            {
+                                "id": req_id,
+                                "ok": False,
+                                "type": "ws_response",
+                                "namespace": "position",
+                                "action": action,
+                                "event": "error",
+                                "payload": {"code": "missing_account_id"},
+                            }
+                        )
+                        continue
+                    item = COMMAND_INPUT_ADAPTER.validate_python(command_payload)
+                    dispatched = await dispatch_request(
+                        host=settings.dispatcher_host,
+                        port=settings.dispatcher_port,
+                        timeout_seconds=settings.dispatcher_request_timeout_seconds,
+                        payload={
+                            "op": "position_command",
+                            "x_api_key": api_key,
+                            "account_id": account_id,
+                            "index": 0,
+                            "item": item.model_dump(by_alias=True, mode="json"),
+                        },
+                    )
+                    result = dispatched.get("result", {}) if dispatched.get("ok") else {
+                        "index": 0,
+                        "ok": False,
+                        "command_id": None,
+                        "order_id": None,
+                        "error": dispatched.get("error") or {"code": "dispatcher_error"},
+                    }
+                    await websocket.send_json(
+                        {
+                            "id": req_id,
+                            "ok": bool(result.get("ok", False)),
+                            "type": "ws_response",
+                            "namespace": "position",
+                            "action": action,
+                            "event": "command_result",
+                            "payload": result,
+                        }
+                    )
+                    continue
+
+                if namespace == "ccxt" and action == "call":
+                    account_id = int(payload.get("account_id", 0) or 0)
+                    if account_id <= 0:
+                        await websocket.send_json(
+                            {
+                                "id": req_id,
+                                "ok": False,
+                                "type": "ws_response",
+                                "namespace": "ccxt",
+                                "action": action,
+                                "event": "error",
+                                "payload": {"code": "missing_account_id"},
+                            }
+                        )
+                        continue
+                    method = str(payload.get("func", "")).strip()
+                    args = payload.get("args") if isinstance(payload.get("args"), list) else []
+                    kwargs = payload.get("kwargs") if isinstance(payload.get("kwargs"), dict) else {}
+                    dispatched = await dispatch_request(
+                        host=settings.dispatcher_host,
+                        port=settings.dispatcher_port,
+                        timeout_seconds=settings.dispatcher_request_timeout_seconds,
+                        payload={
+                            "op": "ccxt_call",
+                            "x_api_key": api_key,
+                            "account_id": account_id,
+                            "func": method,
+                            "args": args,
+                            "kwargs": kwargs,
+                        },
+                    )
+                    await websocket.send_json(
+                        {
+                            "id": req_id,
+                            "ok": bool(dispatched.get("ok")),
+                            "type": "ws_response",
                             "namespace": "ccxt",
                             "action": action,
-                            "event": "ccxt_result",
-                            "payload": {"result": result},
+                            "event": "ccxt_result" if dispatched.get("ok") else "error",
+                            "payload": (
+                                {"result": dispatched.get("result")}
+                                if dispatched.get("ok")
+                                else {"code": "ccxt_error", "detail": dispatched.get("error")}
+                            ),
                         }
                     )
                     continue
@@ -686,30 +1477,52 @@ async def ws_endpoint(websocket: WebSocket) -> None:
             except asyncio.TimeoutError:
                 pass
 
-            async with app.state.db.connection() as conn:
-                events = await app.state.repo.fetch_outbox_events(conn, account_id, last_event_id, limit=100)
-                await conn.commit()
-            for ev in events:
-                if ev["namespace"] not in subscriptions:
-                    last_event_id = max(last_event_id, int(ev["id"]))
-                    continue
-                last_event_id = max(last_event_id, int(ev["id"]))
-                await websocket.send_json(
-                    {
-                        "id": None,
-                        "ok": True,
-                        "type": "ws_event",
-                        "namespace": ev["namespace"],
-                        "action": "event",
-                        "event": ev["event_type"],
-                        "payload": ev["payload"],
-                    }
-                )
+            if api_key and subscribed_accounts:
+                for account_id in sorted(subscribed_accounts):
+                    from_id = int(last_event_id_by_account.get(account_id, 0))
+                    pulled = await dispatch_request(
+                        host=settings.dispatcher_host,
+                        port=settings.dispatcher_port,
+                        timeout_seconds=settings.dispatcher_request_timeout_seconds,
+                        payload={
+                            "op": "ws_pull_events",
+                            "x_api_key": api_key,
+                            "account_id": account_id,
+                            "from_event_id": from_id,
+                            "limit": 100,
+                        },
+                    )
+                    events = pulled.get("result", []) if pulled.get("ok") else []
+                    for ev in events:
+                        if ev["namespace"] not in subscriptions:
+                            last_event_id_by_account[account_id] = max(
+                                int(last_event_id_by_account.get(account_id, 0)),
+                                int(ev["id"]),
+                            )
+                            continue
+                        last_event_id_by_account[account_id] = max(
+                            int(last_event_id_by_account.get(account_id, 0)),
+                            int(ev["id"]),
+                        )
+                        event_payload = ev["payload"] if isinstance(ev.get("payload"), dict) else {}
+                        if "account_id" not in event_payload:
+                            event_payload["account_id"] = account_id
+                        await websocket.send_json(
+                            {
+                                "id": None,
+                                "ok": True,
+                                "type": "ws_event",
+                                "namespace": ev["namespace"],
+                                "action": "event",
+                                "event": ev["event_type"],
+                                "payload": event_payload,
+                            }
+                        )
         except WebSocketDisconnect:
             if api_logger is not None:
                 api_logger.info(
                     "ws_disconnect %s",
-                    json.dumps({"account_id": str(account_id)}, separators=(",", ":")),
+                    json.dumps({"account_ids": sorted(subscribed_accounts)}, separators=(",", ":")),
                 )
             return
         except Exception:
@@ -720,5 +1533,5 @@ async def ws_endpoint(websocket: WebSocket) -> None:
             if api_logger is not None:
                 api_logger.exception(
                     "ws_error %s",
-                    json.dumps({"account_id": str(account_id)}, separators=(",", ":")),
+                    json.dumps({"account_ids": sorted(subscribed_accounts)}, separators=(",", ":")),
                 )

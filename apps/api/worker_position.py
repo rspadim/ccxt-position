@@ -1,31 +1,29 @@
-import asyncio
-import contextlib
+﻿import time
 from decimal import Decimal
 from typing import Any
 
 from .app.ccxt_adapter import CCXTAdapter
-from .app.config import load_settings
 from .app.credentials_codec import CredentialsCodec
-from .app.db_mysql import DatabaseMySQL
-from .app.logging_utils import setup_application_logging
 from .app.repository_mysql import MySQLCommandRepository
-
-
-class PermanentCommandError(Exception):
-    pass
-
-
-def _release_close_position_requested(payload: dict[str, Any]) -> int | None:
-    if str(payload.get("origin_command", "")) == "close_position":
-        position_id = int(payload.get("position_id", 0) or 0)
-        return position_id if position_id > 0 else None
-    return None
 
 
 def _dec(value: Any) -> Decimal:
     if value is None:
         return Decimal("0")
     return Decimal(str(value))
+
+
+def _extract_client_order_id(trade: dict[str, Any]) -> str | None:
+    direct = trade.get("clientOrderId")
+    if direct:
+        return str(direct)
+    info = trade.get("info")
+    if isinstance(info, dict):
+        for key in ("clientOrderId", "client_order_id", "clientOrderIdStr", "c"):
+            value = info.get(key)
+            if value:
+                return str(value)
+    return None
 
 
 def _safe_trade(trade: dict[str, Any]) -> dict[str, Any] | None:
@@ -40,6 +38,7 @@ def _safe_trade(trade: dict[str, Any]) -> dict[str, Any] | None:
     return {
         "id": str(trade.get("id")) if trade.get("id") is not None else None,
         "order": str(trade.get("order")) if trade.get("order") is not None else None,
+        "client_order_id": _extract_client_order_id(trade),
         "symbol": str(symbol),
         "side": side,
         "amount": _dec(amount),
@@ -62,12 +61,18 @@ async def _project_trade_to_position(
     if await repo.deal_exists_by_exchange_trade_id(conn, account_id, exchange_trade.get("id")):
         return
 
-    linked_order = await repo.fetch_open_order_by_exchange_order_id(
-        conn, account_id, exchange_trade.get("order")
+    linked_order = await repo.fetch_open_order_link(
+        conn,
+        account_id,
+        exchange_order_id=exchange_trade.get("order"),
+        client_order_id=exchange_trade.get("client_order_id"),
     )
-    magic_id = int(linked_order["magic_id"]) if linked_order else 0
+    strategy_id = int(linked_order["strategy_id"]) if linked_order else 0
     position_id = int(linked_order["position_id"]) if linked_order else 0
     order_id = int(linked_order["id"]) if linked_order else None
+    order_stop_loss = linked_order.get("stop_loss") if linked_order else None
+    order_stop_gain = linked_order.get("stop_gain") if linked_order else None
+    order_comment = linked_order.get("comment") if linked_order else None
 
     qty = exchange_trade["amount"]
     price = exchange_trade["price"]
@@ -78,15 +83,48 @@ async def _project_trade_to_position(
     if mode == "hedge":
         if position_id > 0:
             explicit = await repo.fetch_open_position(conn, account_id, position_id)
-            if explicit is not None and explicit[1] == symbol and explicit[2] == side:
-                old_qty = _dec(explicit[3])
-                old_avg = _dec(explicit[4])
-                new_qty = old_qty + qty
-                if new_qty <= 0:
-                    await repo.close_position(conn, position_id)
+            if explicit is not None and explicit[1] == symbol:
+                explicit_side = str(explicit[3]).lower()
+                old_qty = _dec(explicit[4])
+                old_avg = _dec(explicit[5])
+                if explicit_side == side:
+                    new_qty = old_qty + qty
+                    if new_qty <= 0:
+                        await repo.close_position(conn, position_id)
+                    else:
+                        new_avg = ((old_qty * old_avg) + (qty * price)) / new_qty
+                        await repo.update_position_open_qty_price(conn, position_id, new_qty, new_avg)
                 else:
-                    new_avg = ((old_qty * old_avg) + (qty * price)) / new_qty
-                    await repo.update_position_open_qty_price(conn, position_id, new_qty, new_avg)
+                    if old_qty > qty:
+                        remain = old_qty - qty
+                        await repo.update_position_open_qty_price(conn, position_id, remain, old_avg)
+                    elif old_qty == qty:
+                        await repo.close_position(conn, position_id)
+                    else:
+                        reverse_qty = qty - old_qty
+                        await repo.close_position(conn, position_id)
+                        reverse = await repo.fetch_open_position_for_symbol(conn, account_id, symbol, side)
+                        if reverse is None:
+                            position_id = await repo.create_position_open(
+                                conn=conn,
+                                account_id=account_id,
+                                symbol=symbol,
+                                strategy_id=strategy_id,
+                                side=side,
+                                qty=reverse_qty,
+                                avg_price=price,
+                                stop_loss=order_stop_loss,
+                                stop_gain=order_stop_gain,
+                                comment=order_comment,
+                                reason=reason,
+                            )
+                        else:
+                            position_id = int(reverse["id"])
+                            rev_old_qty = _dec(reverse["qty"])
+                            rev_old_avg = _dec(reverse["avg_price"])
+                            rev_new_qty = rev_old_qty + reverse_qty
+                            rev_new_avg = ((rev_old_qty * rev_old_avg) + (reverse_qty * price)) / rev_new_qty
+                            await repo.update_position_open_qty_price(conn, position_id, rev_new_qty, rev_new_avg)
             else:
                 existing = await repo.fetch_open_position_for_symbol(conn, account_id, symbol, side)
                 if existing is None:
@@ -94,9 +132,13 @@ async def _project_trade_to_position(
                         conn=conn,
                         account_id=account_id,
                         symbol=symbol,
+                        strategy_id=strategy_id,
                         side=side,
                         qty=qty,
                         avg_price=price,
+                        stop_loss=order_stop_loss,
+                        stop_gain=order_stop_gain,
+                        comment=order_comment,
                         reason=reason,
                     )
                 else:
@@ -116,9 +158,13 @@ async def _project_trade_to_position(
                     conn=conn,
                     account_id=account_id,
                     symbol=symbol,
+                    strategy_id=strategy_id,
                     side=side,
                     qty=qty,
                     avg_price=price,
+                    stop_loss=order_stop_loss,
+                    stop_gain=order_stop_gain,
+                    comment=order_comment,
                     reason=reason,
                 )
             else:
@@ -132,16 +178,19 @@ async def _project_trade_to_position(
                     new_avg = ((old_qty * old_avg) + (qty * price)) / new_qty
                     await repo.update_position_open_qty_price(conn, position_id, new_qty, new_avg)
     else:
-        # netting: single live position per symbol. Opposite trades reduce/close/reverse.
         existing = await repo.fetch_open_net_position_by_symbol(conn, account_id, symbol)
         if existing is None:
             position_id = await repo.create_position_open(
                 conn=conn,
                 account_id=account_id,
                 symbol=symbol,
+                strategy_id=strategy_id,
                 side=side,
                 qty=qty,
                 avg_price=price,
+                stop_loss=order_stop_loss,
+                stop_gain=order_stop_gain,
+                comment=order_comment,
                 reason=reason,
             )
         else:
@@ -169,9 +218,13 @@ async def _project_trade_to_position(
                         conn=conn,
                         account_id=account_id,
                         symbol=symbol,
+                        strategy_id=strategy_id,
                         side=side,
                         qty=reverse_qty,
                         avg_price=price,
+                        stop_loss=order_stop_loss,
+                        stop_gain=order_stop_gain,
+                        comment=order_comment,
                         reason=reason,
                     )
 
@@ -187,8 +240,9 @@ async def _project_trade_to_position(
         fee=exchange_trade["fee_cost"],
         fee_currency=exchange_trade["fee_currency"],
         pnl=Decimal("0"),
-        magic_id=magic_id,
+        strategy_id=strategy_id,
         reason=reason,
+        comment=order_comment,
         reconciled=reconciled,
         exchange_trade_id=exchange_trade["id"],
     )
@@ -203,459 +257,119 @@ async def _project_trade_to_position(
             "position_id": position_id,
             "symbol": symbol,
             "side": side,
+            "strategy_id": strategy_id,
         },
     )
 
 
-async def _process_claimed_queue_item(
-    db: DatabaseMySQL,
+def _normalized_trades(trades: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for trade in trades:
+        norm = _safe_trade(trade)
+        if norm is not None:
+            out.append(norm)
+    out.sort(key=lambda t: (int(t["timestamp"] or 0), str(t.get("id") or "")))
+    return out
+
+
+async def _reconcile_account_once(
+    conn: Any,
     repo: MySQLCommandRepository,
     ccxt_adapter: CCXTAdapter,
-    queue_id: int,
-    command_id: int,
+    credentials_codec: CredentialsCodec,
     account_id: int,
-    credentials_codec: CredentialsCodec,
+    lookback_seconds: int,
+    scope: str,
+    limit: int,
 ) -> None:
-    async with db.connection() as conn:
-        try:
-            cmd_account_id, command_type, payload = await repo.fetch_command_for_worker(
-                conn, command_id
-            )
-            if cmd_account_id != account_id:
-                raise RuntimeError("queue/account mismatch")
-
-            exchange_id, is_testnet, api_key_enc, secret_enc, passphrase_enc = await repo.fetch_account_exchange_credentials(
-                conn, account_id
-            )
-            api_key = credentials_codec.decrypt_maybe(api_key_enc)
-            secret = credentials_codec.decrypt_maybe(secret_enc)
-            passphrase = credentials_codec.decrypt_maybe(passphrase_enc)
-            position_lock_id = _release_close_position_requested(payload)
-
-            if command_type == "send_order":
-                order = await repo.fetch_order_for_command_send(conn, command_id)
-                if order is None:
-                    raise PermanentCommandError("missing local order for send_order")
-
-                params = {}
-                if payload.get("reduce_only") is True:
-                    params["reduceOnly"] = True
-                client_order_id = order.get("client_order_id") or str(order["id"])
-                params["clientOrderId"] = client_order_id
-
-                created = await ccxt_adapter.create_order(
-                    exchange_id=exchange_id,
-                    use_testnet=is_testnet,
-                    api_key=api_key,
-                    secret=secret,
-                    passphrase=passphrase,
-                    symbol=order["symbol"],
-                    side=order["side"],
-                    order_type=order["order_type"],
-                    amount=order["qty"],
-                    price=order["price"],
-                    params=params,
-                )
-                exchange_order_id = str(created.get("id")) if created.get("id") is not None else None
-                await repo.mark_order_submitted_exchange(conn, order["id"], exchange_order_id)
-                await repo.insert_ccxt_order_raw(
-                    conn=conn,
-                    account_id=account_id,
-                    exchange_id=exchange_id,
-                    exchange_order_id=exchange_order_id,
-                    client_order_id=str(created.get("clientOrderId")) if created.get("clientOrderId") else client_order_id,
-                    symbol=str(created.get("symbol")) if created.get("symbol") else order["symbol"],
-                    raw_json=created,
-                )
-                await repo.insert_event(
-                    conn=conn,
-                    account_id=account_id,
-                    namespace="position",
-                    event_type="order_submitted",
-                    payload={
-                        "command_id": command_id,
-                        "order_id": order["id"],
-                        "exchange_order_id": exchange_order_id,
-                    },
-                )
-
-            elif command_type == "cancel_order":
-                order_id = int(payload.get("order_id", 0) or 0)
-                if order_id <= 0:
-                    raise PermanentCommandError("payload.order_id is required for cancel_order")
-                order = await repo.fetch_order_by_id(conn, account_id, order_id)
-                if order is None:
-                    raise PermanentCommandError("order not found")
-                if not order.get("exchange_order_id"):
-                    raise PermanentCommandError("order has no exchange_order_id to cancel")
-                canceled = await ccxt_adapter.cancel_order(
-                    exchange_id=exchange_id,
-                    use_testnet=is_testnet,
-                    api_key=api_key,
-                    secret=secret,
-                    passphrase=passphrase,
-                    exchange_order_id=str(order["exchange_order_id"]),
-                    symbol=str(order["symbol"]),
-                    params={},
-                )
-                await repo.mark_order_canceled(conn, order_id)
-                await repo.insert_ccxt_order_raw(
-                    conn=conn,
-                    account_id=account_id,
-                    exchange_id=exchange_id,
-                    exchange_order_id=str(canceled.get("id")) if canceled.get("id") else str(order["exchange_order_id"]),
-                    client_order_id=str(canceled.get("clientOrderId")) if canceled.get("clientOrderId") else str(order.get("client_order_id") or ""),
-                    symbol=str(canceled.get("symbol")) if canceled.get("symbol") else str(order["symbol"]),
-                    raw_json=canceled,
-                )
-                await repo.insert_event(
-                    conn=conn,
-                    account_id=account_id,
-                    namespace="position",
-                    event_type="order_canceled",
-                    payload={"command_id": command_id, "order_id": order_id},
-                )
-
-            elif command_type == "change_order":
-                order_id = int(payload.get("order_id", 0) or 0)
-                if order_id <= 0:
-                    raise PermanentCommandError("payload.order_id is required for change_order")
-                order = await repo.fetch_order_by_id(conn, account_id, order_id)
-                if order is None:
-                    raise PermanentCommandError("order not found")
-                if not order.get("exchange_order_id"):
-                    raise PermanentCommandError("order has no exchange_order_id to change")
-                new_price = payload.get("new_price", order["price"])
-                new_qty = payload.get("new_qty", order["qty"])
-                edited = await ccxt_adapter.edit_or_replace_order(
-                    exchange_id=exchange_id,
-                    use_testnet=is_testnet,
-                    api_key=api_key,
-                    secret=secret,
-                    passphrase=passphrase,
-                    exchange_order_id=str(order["exchange_order_id"]),
-                    symbol=str(order["symbol"]),
-                    side=str(order["side"]),
-                    order_type=str(order["order_type"]),
-                    amount=new_qty,
-                    price=new_price,
-                    params={},
-                )
-                new_exchange_order_id = str(edited.get("id")) if edited.get("id") else str(order["exchange_order_id"])
-                await repo.mark_order_submitted_exchange(conn, order_id, new_exchange_order_id)
-                await repo.insert_ccxt_order_raw(
-                    conn=conn,
-                    account_id=account_id,
-                    exchange_id=exchange_id,
-                    exchange_order_id=new_exchange_order_id,
-                    client_order_id=str(edited.get("clientOrderId")) if edited.get("clientOrderId") else str(order.get("client_order_id") or ""),
-                    symbol=str(edited.get("symbol")) if edited.get("symbol") else str(order["symbol"]),
-                    raw_json=edited,
-                )
-                await repo.insert_event(
-                    conn=conn,
-                    account_id=account_id,
-                    namespace="position",
-                    event_type="order_changed",
-                    payload={"command_id": command_id, "order_id": order_id},
-                )
-            elif command_type == "close_by":
-                pos_a = int(payload.get("position_id_a", payload.get("position_id", 0)) or 0)
-                pos_b = int(payload.get("position_id_b", 0) or 0)
-                if pos_a <= 0 or pos_b <= 0:
-                    raise PermanentCommandError("close_by requires position_id_a/position_id_b")
-                row_a = await repo.fetch_open_position(conn, account_id, pos_a)
-                row_b = await repo.fetch_open_position(conn, account_id, pos_b)
-                if row_a is None or row_b is None:
-                    raise PermanentCommandError("close_by positions must exist and be open")
-
-                pid_a, symbol_a, side_a, qty_a, avg_a = row_a
-                pid_b, symbol_b, side_b, qty_b, avg_b = row_b
-                if symbol_a != symbol_b:
-                    raise PermanentCommandError("close_by positions must have same symbol")
-                if side_a == side_b:
-                    raise PermanentCommandError("close_by positions must be opposite sides")
-
-                q_a = _dec(qty_a)
-                q_b = _dec(qty_b)
-                close_qty = min(q_a, q_b)
-                if close_qty <= 0:
-                    raise PermanentCommandError("close_by quantity is zero")
-
-                magic_id = int(payload.get("strategy_id", payload.get("magic_id", 0)) or 0)
-                reason = "close_by_internal"
-
-                await repo.insert_position_deal(
-                    conn=conn,
-                    account_id=account_id,
-                    order_id=None,
-                    position_id=pid_a,
-                    symbol=symbol_a,
-                    side=side_a,
-                    qty=close_qty,
-                    price=_dec(avg_a),
-                    fee=Decimal("0"),
-                    fee_currency=None,
-                    pnl=Decimal("0"),
-                    magic_id=magic_id,
-                    reason=reason,
-                    reconciled=True,
-                    exchange_trade_id=None,
-                )
-                await repo.insert_position_deal(
-                    conn=conn,
-                    account_id=account_id,
-                    order_id=None,
-                    position_id=pid_b,
-                    symbol=symbol_b,
-                    side=side_b,
-                    qty=close_qty,
-                    price=_dec(avg_b),
-                    fee=Decimal("0"),
-                    fee_currency=None,
-                    pnl=Decimal("0"),
-                    magic_id=magic_id,
-                    reason=reason,
-                    reconciled=True,
-                    exchange_trade_id=None,
-                )
-
-                left_a = q_a - close_qty
-                left_b = q_b - close_qty
-                if left_a <= 0:
-                    await repo.close_position(conn, pid_a)
-                else:
-                    await repo.update_position_open_qty_price(conn, pid_a, left_a, _dec(avg_a))
-                if left_b <= 0:
-                    await repo.close_position(conn, pid_b)
-                else:
-                    await repo.update_position_open_qty_price(conn, pid_b, left_b, _dec(avg_b))
-
-                await repo.insert_event(
-                    conn=conn,
-                    account_id=account_id,
-                    namespace="position",
-                    event_type="close_by_executed",
-                    payload={
-                        "command_id": command_id,
-                        "position_id_a": pid_a,
-                        "position_id_b": pid_b,
-                        "qty": str(close_qty),
-                    },
-                )
-            else:
-                raise PermanentCommandError(f"unsupported command_type: {command_type}")
-
-            await repo.mark_command_completed(conn, command_id)
-            await repo.mark_queue_done(conn, queue_id)
-            if position_lock_id is not None:
-                await repo.release_close_position_lock(conn, position_lock_id)
-            await conn.commit()
-        except PermanentCommandError:
-            await repo.mark_command_failed(conn, command_id)
-            order_id = await repo.fetch_order_id_by_command_id(conn, command_id)
-            if order_id is not None:
-                await repo.mark_order_rejected(conn, order_id)
-            position_lock_id = _release_close_position_requested(payload if "payload" in locals() else {})
-            if position_lock_id is not None:
-                await repo.release_close_position_lock(conn, position_lock_id)
-            await repo.mark_queue_dead(conn, queue_id)
-            await conn.commit()
-            return
-        except Exception:
-            await repo.mark_command_failed(conn, command_id)
-            position_lock_id = _release_close_position_requested(payload if "payload" in locals() else {})
-            if position_lock_id is not None:
-                await repo.release_close_position_lock(conn, position_lock_id)
-            await repo.mark_queue_failed(conn, queue_id, delay_seconds=15)
-            await conn.commit()
-            raise
-
-
-async def _run_reconciliation_once(
-    db: DatabaseMySQL,
-    repo: MySQLCommandRepository,
-    ccxt_adapter: CCXTAdapter,
-    pool_id: int,
-    credentials_codec: CredentialsCodec,
-    account_ids: set[int] | None = None,
-) -> None:
-    async with db.connection() as conn:
-        accounts = await repo.list_active_accounts_by_pool(conn, pool_id)
-        await conn.commit()
-
-    for account in accounts:
-        account_id = int(account["id"])
-        if account_ids is not None and account_id not in account_ids:
-            continue
-        async with db.connection() as conn:
-            try:
-                exchange_id, is_testnet, api_key_enc, secret_enc, passphrase_enc = await repo.fetch_account_exchange_credentials(
-                    conn, account_id
-                )
-                api_key = credentials_codec.decrypt_maybe(api_key_enc)
-                secret = credentials_codec.decrypt_maybe(secret_enc)
-                passphrase = credentials_codec.decrypt_maybe(passphrase_enc)
-                cursor_raw = await repo.fetch_reconciliation_cursor(
-                    conn, account_id, "my_trades_since"
-                )
-                since = int(cursor_raw) if cursor_raw and cursor_raw.isdigit() else None
-                trades = await ccxt_adapter.fetch_my_trades(
-                    exchange_id=exchange_id,
-                    use_testnet=is_testnet,
-                    api_key=api_key,
-                    secret=secret,
-                    passphrase=passphrase,
-                    symbol=None,
-                    since=since,
-                    limit=200,
-                    params={},
-                )
-
-                max_ts = since or 0
-                for trade in trades:
-                    norm = _safe_trade(trade)
-                    if norm is None:
-                        continue
-                    await repo.insert_ccxt_trade_raw(
-                        conn=conn,
-                        account_id=account_id,
-                        exchange_id=exchange_id,
-                        exchange_trade_id=norm["id"],
-                        exchange_order_id=norm["order"],
-                        symbol=norm["symbol"],
-                        raw_json=norm["raw"],
-                    )
-                    await _project_trade_to_position(
-                        repo=repo,
-                        conn=conn,
-                        account_id=account_id,
-                        exchange_trade=norm,
-                        reason="external",
-                        reconciled=False,
-                    )
-                    if isinstance(norm["timestamp"], int) and norm["timestamp"] > max_ts:
-                        max_ts = norm["timestamp"]
-
-                if max_ts > 0:
-                    await repo.update_reconciliation_cursor(
-                        conn=conn,
-                        account_id=account_id,
-                        entity="my_trades_since",
-                        cursor_value=str(max_ts + 1),
-                    )
-                    await repo.insert_event(
-                        conn=conn,
-                        account_id=account_id,
-                        namespace="position",
-                        event_type="reconciliation_tick",
-                        payload={"trades_count": len(trades), "cursor": max_ts + 1},
-                    )
-                await conn.commit()
-            except Exception:
-                await conn.rollback()
-                continue
-
-
-async def run_worker() -> None:
-    settings = load_settings()
-    if settings.db_engine != "mysql":
-        raise RuntimeError("worker-position v0 supports only mysql db_engine")
-
-    db = DatabaseMySQL(settings)
-    repo = MySQLCommandRepository()
-    credentials_codec = CredentialsCodec(
-        settings.encryption_master_key,
-        require_encrypted=settings.require_encrypted_credentials,
+    exchange_id, is_testnet, api_key_enc, secret_enc, passphrase_enc, extra_config = await repo.fetch_account_exchange_credentials(
+        conn, account_id
     )
-    loggers = setup_application_logging(
-        settings.disable_uvicorn_access_log, log_dir=settings.log_dir
-    )
-    position_logger = loggers.get("position")
-    ccxt_adapter = CCXTAdapter(logger=loggers.get("ccxt"))
-    await db.connect()
-    if position_logger is not None:
-        position_logger.info(
-            "worker_started %s",
-            {
-                "worker_id": settings.worker_id,
-                "pool_id": settings.worker_pool_id,
-            },
-        )
-    last_recon_ts = 0.0
+    api_key = credentials_codec.decrypt_maybe(api_key_enc)
+    secret = credentials_codec.decrypt_maybe(secret_enc)
+    passphrase = credentials_codec.decrypt_maybe(passphrase_enc)
+
+    lookback_ms = max(1, int(lookback_seconds)) * 1000
+    floor_since = max(0, int(time.time() * 1000) - lookback_ms)
+
+    cursor_raw = await repo.fetch_reconciliation_cursor(conn, account_id, "my_trades_since")
+    cursor_since = int(cursor_raw) if cursor_raw and cursor_raw.isdigit() else None
+    since = floor_since if cursor_since is None else min(cursor_since, floor_since)
 
     try:
-        while True:
-            claimed: tuple[int, int, int, int] | None = None
-            async with db.connection() as conn:
-                claimed = await repo.claim_next_queue_item(
-                    conn=conn,
-                    pool_id=settings.worker_pool_id,
-                    worker_id=settings.worker_id,
-                )
-                await conn.commit()
-
-            if claimed is None:
-                await asyncio.sleep(max(settings.worker_poll_interval_ms, 50) / 1000.0)
-                now = asyncio.get_running_loop().time()
-                if (
-                    now - last_recon_ts
-                    >= max(settings.worker_reconciliation_interval_seconds, 5)
-                ):
-                    await _run_reconciliation_once(
-                        db=db,
-                        repo=repo,
-                        ccxt_adapter=ccxt_adapter,
-                        pool_id=settings.worker_pool_id,
-                        credentials_codec=credentials_codec,
-                    )
-                    last_recon_ts = now
-                continue
-
-            queue_id, command_id, account_id, attempts = claimed
-            if attempts > settings.worker_max_attempts:
-                async with db.connection() as conn:
-                    await repo.mark_command_failed(conn, command_id)
-                    await repo.mark_queue_dead(conn, queue_id)
-                    await conn.commit()
-                if position_logger is not None:
-                    position_logger.warning(
-                        "queue_dead %s",
-                        {"queue_id": queue_id, "command_id": command_id, "attempts": attempts},
-                    )
-                continue
+        trades = await ccxt_adapter.fetch_my_trades(
+            exchange_id=exchange_id,
+            use_testnet=is_testnet,
+            api_key=api_key,
+            secret=secret,
+            passphrase=passphrase,
+            extra_config=extra_config,
+            symbol=None,
+            since=since,
+            limit=max(10, int(limit)),
+            params={},
+        )
+    except Exception:
+        symbols = await repo.list_recent_symbols_for_account(conn, account_id, limit=20)
+        trades = []
+        for symbol in symbols:
             try:
-                await _process_claimed_queue_item(
-                    db, repo, ccxt_adapter, queue_id, command_id, account_id, credentials_codec
+                chunk = await ccxt_adapter.fetch_my_trades(
+                    exchange_id=exchange_id,
+                    use_testnet=is_testnet,
+                    api_key=api_key,
+                    secret=secret,
+                    passphrase=passphrase,
+                    extra_config=extra_config,
+                    symbol=symbol,
+                    since=since,
+                    limit=max(10, int(limit)),
+                    params={},
                 )
+                trades.extend(chunk or [])
             except Exception:
-                # failure already persisted; continue polling.
-                if position_logger is not None:
-                    position_logger.exception(
-                        "worker_process_error %s",
-                        {"queue_id": queue_id, "command_id": command_id, "account_id": account_id},
-                    )
-                pass
+                continue
 
-            now = asyncio.get_running_loop().time()
-            if (
-                now - last_recon_ts
-                >= max(settings.worker_reconciliation_interval_seconds, 5)
-            ):
-                await _run_reconciliation_once(
-                    db=db,
-                    repo=repo,
-                    ccxt_adapter=ccxt_adapter,
-                    pool_id=settings.worker_pool_id,
-                    credentials_codec=credentials_codec,
-                )
-                last_recon_ts = now
-    finally:
-        with contextlib.suppress(Exception):
-            await db.disconnect()
-        if position_logger is not None:
-            position_logger.info("worker_stopped %s", {"worker_id": settings.worker_id})
+    normalized = _normalized_trades(trades)
+    max_ts = cursor_since or 0
+    for norm in normalized:
+        await repo.insert_ccxt_trade_raw(
+            conn=conn,
+            account_id=account_id,
+            exchange_id=exchange_id,
+            exchange_trade_id=norm["id"],
+            exchange_order_id=norm["order"],
+            symbol=norm["symbol"],
+            raw_json=norm["raw"],
+        )
+        await _project_trade_to_position(
+            repo=repo,
+            conn=conn,
+            account_id=account_id,
+            exchange_trade=norm,
+            reason="external",
+            reconciled=False,
+        )
+        if isinstance(norm["timestamp"], int) and norm["timestamp"] > max_ts:
+            max_ts = norm["timestamp"]
 
+    if max_ts > 0:
+        await repo.update_reconciliation_cursor(
+            conn=conn,
+            account_id=account_id,
+            entity="my_trades_since",
+            cursor_value=str(max_ts + 1),
+        )
+    await repo.insert_event(
+        conn=conn,
+        account_id=account_id,
+        namespace="position",
+        event_type="reconciliation_tick",
+        payload={
+            "scope": scope,
+            "lookback_seconds": int(lookback_seconds),
+            "trades_count": len(normalized),
+            "cursor": max_ts + 1 if max_ts > 0 else None,
+        },
+    )
 
-if __name__ == "__main__":
-    asyncio.run(run_worker())

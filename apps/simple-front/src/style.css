@@ -1,0 +1,182 @@
+:root {
+  font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+  color: #101418;
+  background: linear-gradient(180deg, #e8eff8 0%, #f4f7fb 60%, #eef3f7 100%);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+}
+
+#app {
+  padding: 12px;
+}
+
+.topbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.topbar h1 {
+  margin: 0;
+  font-size: 20px;
+}
+
+.tabs {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.tab {
+  background: #ecf2fa;
+  color: #1e2f45;
+}
+
+.tab.active {
+  background: #1462b0;
+  color: #fff;
+}
+
+.status {
+  font-size: 12px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: #d4e3f5;
+}
+
+.card {
+  background: #fff;
+  border: 1px solid #cfd8e3;
+  border-radius: 8px;
+  padding: 10px;
+  margin-bottom: 10px;
+}
+
+h2 {
+  margin: 0 0 8px;
+  font-size: 15px;
+}
+
+h3 {
+  margin: 0 0 6px;
+  font-size: 13px;
+}
+
+.grid {
+  display: grid;
+  gap: 8px;
+}
+
+.cols-4 {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.cols-2 {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+}
+
+.inline-input {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.inline-input input {
+  flex: 1;
+}
+
+.inline-btn {
+  white-space: nowrap;
+}
+
+.is-hidden {
+  display: none;
+}
+
+.inline {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+}
+
+input,
+select,
+textarea,
+button {
+  border: 1px solid #b7c4d4;
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-size: 12px;
+}
+
+textarea {
+  min-height: 60px;
+  font-family: Consolas, "Courier New", monospace;
+}
+
+button {
+  cursor: pointer;
+  background: #1462b0;
+  color: #fff;
+  border: 1px solid #0f4f8d;
+}
+
+button.ghost {
+  background: #ecf2fa;
+  color: #1e2f45;
+}
+
+.actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+  flex-wrap: wrap;
+}
+
+.mini-actions {
+  display: flex;
+  gap: 6px;
+  align-items: end;
+}
+
+#viewAccountsSelect {
+  min-height: 120px;
+}
+
+form {
+  border: 1px solid #d8e0eb;
+  border-radius: 8px;
+  padding: 8px;
+}
+
+.tables {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.tabulator {
+  font-size: 11px;
+}
+
+@media (max-width: 1024px) {
+  .cols-4,
+  .cols-2,
+  .tables {
+    grid-template-columns: 1fr;
+  }
+}

@@ -1,4 +1,4 @@
-import argparse
+﻿import argparse
 import asyncio
 import hashlib
 import json
@@ -134,6 +134,36 @@ async def _create_api_key_for_user(user_id: int, api_key_plain: str | None) -> t
                     (user_id, key_hash),
                 )
                 key_id = int(cur.lastrowid)
+                await cur.execute(
+                    """
+                    INSERT INTO api_key_account_permissions (
+                        api_key_id, account_id, can_read, can_trade, can_close_position,
+                        can_risk_manage, can_block_new_positions, can_block_account, restrict_to_strategies, status
+                    )
+                    SELECT
+                        %s,
+                        uap.account_id,
+                        uap.can_read,
+                        uap.can_trade,
+                        uap.can_trade,
+                        uap.can_risk_manage,
+                        uap.can_risk_manage,
+                        uap.can_risk_manage,
+                        FALSE,
+                        'active'
+                    FROM user_account_permissions uap
+                    WHERE uap.user_id = %s
+                    ON DUPLICATE KEY UPDATE
+                        can_read = VALUES(can_read),
+                        can_trade = VALUES(can_trade),
+                        can_close_position = VALUES(can_close_position),
+                        can_risk_manage = VALUES(can_risk_manage),
+                        can_block_new_positions = VALUES(can_block_new_positions),
+                        can_block_account = VALUES(can_block_account),
+                        status = VALUES(status)
+                    """,
+                    (key_id, user_id),
+                )
             await conn.commit()
     finally:
         await db.disconnect()
@@ -178,6 +208,46 @@ async def _create_account_and_permission(
                         can_risk_manage = VALUES(can_risk_manage)
                     """,
                     (user_id, account_id, can_read, can_trade, can_risk_manage),
+                )
+                await cur.execute(
+                    """
+                    INSERT INTO api_key_account_permissions (
+                        api_key_id, account_id, can_read, can_trade, can_close_position,
+                        can_risk_manage, can_block_new_positions, can_block_account, restrict_to_strategies, status
+                    )
+                    SELECT
+                        uak.id,
+                        %s,
+                        %s,
+                        %s,
+                        %s,
+                        %s,
+                        %s,
+                        %s,
+                        FALSE,
+                        'active'
+                    FROM user_api_keys uak
+                    WHERE uak.user_id = %s
+                      AND uak.status = 'active'
+                    ON DUPLICATE KEY UPDATE
+                        can_read = VALUES(can_read),
+                        can_trade = VALUES(can_trade),
+                        can_close_position = VALUES(can_close_position),
+                        can_risk_manage = VALUES(can_risk_manage),
+                        can_block_new_positions = VALUES(can_block_new_positions),
+                        can_block_account = VALUES(can_block_account),
+                        status = VALUES(status)
+                    """,
+                    (
+                        account_id,
+                        bool(can_read),
+                        bool(can_trade),
+                        bool(can_trade),
+                        bool(can_risk_manage),
+                        bool(can_risk_manage),
+                        bool(can_risk_manage),
+                        user_id,
+                    ),
                 )
             await conn.commit()
     finally:
@@ -397,7 +467,7 @@ def cmd_send_order(args: argparse.Namespace) -> None:
         "side": args.side,
         "order_type": args.order_type,
         "qty": str(args.qty),
-        "magic_id": args.magic_id,
+        "strategy_id": args.strategy_id,
         "position_id": args.position_id,
     }
     if args.price is not None:
@@ -423,7 +493,7 @@ def cmd_close_position(args: argparse.Namespace) -> None:
     payload: dict[str, Any] = {
         "position_id": args.position_id,
         "order_type": args.order_type,
-        "magic_id": args.magic_id,
+        "strategy_id": args.strategy_id,
     }
     if args.price is not None:
         payload["price"] = str(args.price)
@@ -436,7 +506,7 @@ def cmd_close_by(args: argparse.Namespace) -> None:
     payload = {
         "position_id_a": args.position_id_a,
         "position_id_b": args.position_id_b,
-        "magic_id": args.magic_id,
+        "strategy_id": args.strategy_id,
     }
     _post_position_command(args.base_url, args.api_key, args.account_id, "close_by", payload)
 
@@ -447,7 +517,7 @@ def cmd_reassign_position(args: argparse.Namespace) -> None:
         "account_id": args.account_id,
         "deal_ids": args.deal_ids,
         "order_ids": args.order_ids,
-        "target_magic_id": args.target_magic_id,
+        "target_strategy_id": args.target_strategy_id,
         "target_position_id": args.target_position_id,
     }
     out = _http_json("POST", url, _default_headers(args.api_key), req)
@@ -538,7 +608,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p_send.add_argument("--order-type", choices=["market", "limit"], required=True)
     p_send.add_argument("--qty", required=True)
     p_send.add_argument("--price")
-    p_send.add_argument("--magic-id", type=int, default=0)
+    p_send.add_argument("--strategy-id", type=int, default=0)
     p_send.add_argument("--position-id", type=int, default=0)
     p_send.set_defaults(func=cmd_send_order)
 
@@ -556,19 +626,19 @@ def _build_parser() -> argparse.ArgumentParser:
     p_close.add_argument("--position-id", type=int, required=True)
     p_close.add_argument("--order-type", choices=["market", "limit"], default="market")
     p_close.add_argument("--price")
-    p_close.add_argument("--magic-id", type=int, default=0)
+    p_close.add_argument("--strategy-id", type=int, default=0)
     p_close.set_defaults(func=cmd_close_position)
 
     p_close_by = sub.add_parser("close-by", parents=[common], help="Close two opposite positions internally")
     p_close_by.add_argument("--position-id-a", type=int, required=True)
     p_close_by.add_argument("--position-id-b", type=int, required=True)
-    p_close_by.add_argument("--magic-id", type=int, default=0)
+    p_close_by.add_argument("--strategy-id", type=int, default=0)
     p_close_by.set_defaults(func=cmd_close_by)
 
-    p_reassign = sub.add_parser("reassign-position", parents=[common], help="Reassign deals/orders to magic/position")
+    p_reassign = sub.add_parser("reassign-position", parents=[common], help="Reassign deals/orders to strategy/position")
     p_reassign.add_argument("--deal-ids", nargs="*", type=int, default=[])
     p_reassign.add_argument("--order-ids", nargs="*", type=int, default=[])
-    p_reassign.add_argument("--target-magic-id", type=int, default=0)
+    p_reassign.add_argument("--target-strategy-id", type=int, default=0)
     p_reassign.add_argument("--target-position-id", type=int, default=0)
     p_reassign.set_defaults(func=cmd_reassign_position)
 
@@ -583,3 +653,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

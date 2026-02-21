@@ -18,7 +18,13 @@ def test_flatten_sectioned_config_maps_sections() -> None:
             "pool_id": 3,
             "poll_interval_ms": 250,
             "max_attempts": 9,
-            "reconciliation_interval_seconds": 45,
+            "auto_reconcile_enabled": True,
+            "reconcile_short_interval_seconds": 45,
+            "reconcile_short_lookback_minutes": 15,
+            "reconcile_hourly_interval_seconds": 3600,
+            "reconcile_hourly_lookback_minutes": 60,
+            "reconcile_long_interval_seconds": 86400,
+            "reconcile_long_lookback_days": 10,
         },
         "logging": {"log_dir": "logs-dev", "disable_uvicorn_access_log": True},
         "security": {"encryption_master_key": "abc"},
@@ -29,6 +35,8 @@ def test_flatten_sectioned_config_maps_sections() -> None:
     assert out["mysql_host"] == "db"
     assert out["worker_pool_id"] == 3
     assert out["worker_poll_interval_ms"] == 250
+    assert out["worker_reconcile_short_interval_seconds"] == 45
+    assert out["worker_reconcile_short_lookback_minutes"] == 15
     assert out["log_dir"] == "logs-dev"
     assert out["encryption_master_key"] == "abc"
 

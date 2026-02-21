@@ -1,4 +1,4 @@
-# REST: Position Domain
+﻿# REST: Position Domain
 
 ## `POST /position/commands`
 
@@ -24,7 +24,7 @@ Request body is a discriminated union by `command`:
   - `order_type` (`market|limit`) or alias `type`
   - `qty` (> 0) or alias `amount`
   - `price` required for `limit`
-  - optional: `magic_id`, `position_id`, `reason`, `reduce_only`, `client_order_id`
+  - optional: `strategy_id`, `position_id`, `reason`, `reduce_only`, `client_order_id`
 - `cancel_order.payload`:
   - `order_id` (int > 0)
 - `change_order.payload`:
@@ -33,10 +33,10 @@ Request body is a discriminated union by `command`:
 - `close_by.payload`:
   - `position_id_a` (int > 0)
   - `position_id_b` (int > 0)
-  - optional: `magic_id`
+  - optional: `strategy_id`
 - `close_position.payload`:
   - `position_id` (int > 0)
-  - optional: `order_type` (`market|limit`, default `market`), `price` (required for `limit`), `qty`, `magic_id`, `reason`, `client_order_id`
+  - optional: `order_type` (`market|limit`, default `market`), `price` (required for `limit`), `qty`, `strategy_id`, `reason`, `client_order_id`
 
 Invalid payload now fails fast with HTTP `422` before queueing.
 
@@ -58,7 +58,7 @@ Behavior:
 - `GET /position/reconcile/{account_id}/status`
 - `GET /position/reconcile/status`
 
-`/position/reassign` updates `magic_id` and `position_id` for selected deals/orders and marks deals as reconciled.
+`/position/reassign` updates `strategy_id` and `position_id` for selected deals/orders and marks deals as reconciled.
 
 `/position/reconcile` triggers on-demand reconciliation.
 
@@ -68,3 +68,4 @@ Behavior:
 `/position/reconcile/{account_id}/status` returns one account reconciliation health.
 
 `/position/reconcile/status` returns all visible accounts and supports `?status=fresh|stale|never`.
+

@@ -8,9 +8,13 @@ venv/
 
 # Build/test/cache
 .pytest_cache/
+pytest-cache-files-*/
+pytest-*/
 .mypy_cache/
 .coverage
 htmlcov/
+node_modules/
+apps/simple-front/node_modules/
 
 # IDE/editor
 .vscode/
@@ -32,6 +36,8 @@ logs/
 !test/testnet/.env.testnet.example
 test/testnet/.env.testnet
 test/testnet/runtime/
+apps/api/config.json
+apps/api/config.docker.json
 
 # MySQL dumps/temp
 *.sql.tmp

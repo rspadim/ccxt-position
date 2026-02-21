@@ -2,12 +2,6 @@
 
 Endpoint: `WS /ws`
 
-Connection headers:
-
-- `x-api-key`
-- `x-account-id`
-- optional `x-after-id`
-
 Request envelope:
 
 ```json
@@ -25,5 +19,8 @@ Rules:
 - Client request `id` is required
 - Server echoes same `id` for command responses
 - Event streams support `position_*` and `ccxt_*`
+- Authenticate with `x-api-key` header or `action=auth` + `payload.api_key`
+- Subscribe with `action=subscribe`, `payload.account_ids[]`, and `payload.namespaces[]`
+- Client can request initial open-orders/open-positions snapshot on subscribe (`payload.with_snapshot=true`, default true)
 - `action=command` under `namespace=position` maps to the same command pipeline as REST
 - `action=call` under `namespace=ccxt` maps to CCXT gateway execution

@@ -1,4 +1,4 @@
-import json
+﻿import json
 import os
 import subprocess
 import sys
@@ -181,7 +181,7 @@ def main() -> int:
                 "order_type": "limit",
                 "qty": "0.001",
                 "price": str(price),
-                "magic_id": 999,
+                "strategy_id": 999,
                 "position_id": 0,
             },
         },
@@ -210,3 +210,4 @@ if __name__ == "__main__":
     except Exception as exc:
         print(str(exc), file=sys.stderr)
         raise SystemExit(1)
+
