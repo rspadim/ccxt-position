@@ -47,7 +47,7 @@ What it does:
 
 ## Multi-Scenario Validation
 
-Run hedge/netting live scenarios with multiple `magic_id` and position reduce/reverse:
+Run hedge/netting live scenarios with multiple `magic_id`, position reduce/reverse, and mirrored-account reconciliation (same exchange credentials in two account IDs):
 
 ```bash
 python test/testnet/scenarios.py

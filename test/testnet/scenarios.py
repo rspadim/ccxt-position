@@ -132,6 +132,40 @@ def wait_order_terminal(base_url: str, headers: dict[str, str], account_id: int,
     return wait_until(_check, timeout_s=180, sleep_s=2.0)
 
 
+def choose_buy_qty(base_url: str, headers: dict[str, str], account_id: int, symbol: str) -> str:
+    ticker = http_json(
+        "POST",
+        f"{base_url}/ccxt/{account_id}/fetch_ticker",
+        headers,
+        {"args": [symbol], "kwargs": {}},
+    )
+    last = Decimal(str(ticker["result"]["last"]))
+    balance = http_json(
+        "POST",
+        f"{base_url}/ccxt/core/{account_id}/fetch_balance",
+        headers,
+        {"params": {}},
+    )
+    quote = symbol.split("/")[-1]
+    free = Decimal("0")
+    try:
+        free = Decimal(str(balance["result"][quote]["free"]))
+    except Exception:
+        free = Decimal("0")
+
+    if free <= Decimal("12"):
+        raise RuntimeError(f"insufficient {quote} free balance for scenarios: {free}")
+
+    quote_to_use = min(free * Decimal("0.15"), Decimal("30"))
+    if quote_to_use < Decimal("12"):
+        quote_to_use = Decimal("12")
+
+    qty = (quote_to_use / last).quantize(Decimal("0.000001"))
+    if qty <= 0:
+        raise RuntimeError(f"calculated qty invalid: {qty}")
+    return format(qty, "f")
+
+
 def wait_min_deals(base_url: str, headers: dict[str, str], account_id: int, min_count: int) -> list[dict] | None:
     def _check():
         rows = http_json("GET", f"{base_url}/position/deals?account_id={account_id}", headers).get("items", [])
@@ -178,6 +212,7 @@ def main() -> int:
         raise RuntimeError("BINANCE_TESTNET_API_KEY and BINANCE_TESTNET_SECRET_KEY are required in .env.testnet")
 
     compose = ["docker", "compose", "-f", "apps/api/docker-compose.stack.yml"]
+    qty = choose_buy_qty(base_url, headers, int(context["account_id"]), symbol)
 
     hedge_account = create_account_for_mode(
         compose=compose,
@@ -197,22 +232,29 @@ def main() -> int:
     )
 
     # Hedge scenario: buy with magic 101, sell with magic 202 -> both sides can coexist.
-    hedge_order_1 = send_market(base_url, headers, hedge_account, symbol, "buy", "0.001", 101)
-    hedge_order_2 = send_market(base_url, headers, hedge_account, symbol, "sell", "0.001", 202)
-    wait_order_terminal(base_url, headers, hedge_account, hedge_order_1)
-    wait_order_terminal(base_url, headers, hedge_account, hedge_order_2)
+    hedge_order_1 = send_market(base_url, headers, hedge_account, symbol, "buy", qty, 101)
+    hedge_order_2 = send_market(base_url, headers, hedge_account, symbol, "sell", qty, 202)
+    h1 = wait_order_terminal(base_url, headers, hedge_account, hedge_order_1)
+    h2 = wait_order_terminal(base_url, headers, hedge_account, hedge_order_2)
+    if not h1 or h1.get("status") != "FILLED" or not h2 or h2.get("status") != "FILLED":
+        raise RuntimeError(f"hedge scenario requires FILLED orders, got: {h1} / {h2}")
     hedge_deals = wait_min_deals(base_url, headers, hedge_account, 2) or []
     hedge_positions = http_json(
         "GET", f"{base_url}/position/positions/open?account_id={hedge_account}", headers
     ).get("items", [])
 
     # Netting scenario: buy, partial sell reduce, then sell larger to reverse side.
-    net_order_1 = send_market(base_url, headers, netting_account, symbol, "buy", "0.002", 301)
-    net_order_2 = send_market(base_url, headers, netting_account, symbol, "sell", "0.001", 302)
-    net_order_3 = send_market(base_url, headers, netting_account, symbol, "sell", "0.003", 303)
-    wait_order_terminal(base_url, headers, netting_account, net_order_1)
-    wait_order_terminal(base_url, headers, netting_account, net_order_2)
-    wait_order_terminal(base_url, headers, netting_account, net_order_3)
+    qty_dec = Decimal(qty)
+    qty_half = format((qty_dec / Decimal("2")).quantize(Decimal("0.000001")), "f")
+    qty_reverse = format((qty_dec * Decimal("1.5")).quantize(Decimal("0.000001")), "f")
+    net_order_1 = send_market(base_url, headers, netting_account, symbol, "buy", qty, 301)
+    net_order_2 = send_market(base_url, headers, netting_account, symbol, "sell", qty_half, 302)
+    net_order_3 = send_market(base_url, headers, netting_account, symbol, "sell", qty_reverse, 303)
+    n1 = wait_order_terminal(base_url, headers, netting_account, net_order_1)
+    n2 = wait_order_terminal(base_url, headers, netting_account, net_order_2)
+    n3 = wait_order_terminal(base_url, headers, netting_account, net_order_3)
+    if not n1 or n1.get("status") != "FILLED" or not n2 or n2.get("status") != "FILLED" or not n3 or n3.get("status") != "FILLED":
+        raise RuntimeError(f"netting scenario requires FILLED orders, got: {n1} / {n2} / {n3}")
     net_deals = wait_min_deals(base_url, headers, netting_account, 3) or []
     net_open = http_json(
         "GET", f"{base_url}/position/positions/open?account_id={netting_account}", headers
@@ -238,8 +280,10 @@ def main() -> int:
         api_key=api_key,
         secret_key=secret_key,
     )
-    mirror_order = send_market(base_url, headers, mirror_a, symbol, "buy", "0.001", 404)
-    wait_order_terminal(base_url, headers, mirror_a, mirror_order)
+    mirror_order = send_market(base_url, headers, mirror_a, symbol, "buy", qty, 404)
+    m = wait_order_terminal(base_url, headers, mirror_a, mirror_order)
+    if not m or m.get("status") != "FILLED":
+        raise RuntimeError(f"mirror source order must be FILLED, got: {m}")
 
     # Reconciliation runs periodically; wait until mirrored trade appears in both accounts.
     def _mirror_check():
@@ -259,6 +303,7 @@ def main() -> int:
     summary = {
         "hedge": {
             "account_id": hedge_account,
+            "qty": qty,
             "orders": [hedge_order_1, hedge_order_2],
             "deal_count": len(hedge_deals),
             "deal_magic_ids": sorted({int(d["magic_id"]) for d in hedge_deals}) if hedge_deals else [],
@@ -266,6 +311,7 @@ def main() -> int:
         },
         "netting": {
             "account_id": netting_account,
+            "qty": {"base": qty, "half": qty_half, "reverse": qty_reverse},
             "orders": [net_order_1, net_order_2, net_order_3],
             "deal_count": len(net_deals),
             "deal_magic_ids": sorted({int(d["magic_id"]) for d in net_deals}) if net_deals else [],
