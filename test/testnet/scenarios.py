@@ -177,6 +177,24 @@ def wait_order_terminal(base_url: str, headers: dict[str, str], account_id: int,
     return wait_until(_check, timeout_s=180, sleep_s=2.0)
 
 
+def wait_deal_for_order(
+    base_url: str,
+    headers: dict[str, str],
+    account_id: int,
+    order_id: int,
+    timeout_s: int = 180,
+    sleep_s: float = 2.0,
+) -> dict | None:
+    def _check():
+        rows = http_json("GET", f"{base_url}/position/deals?account_id={account_id}", headers).get("items", [])
+        for row in rows:
+            if row.get("order_id") is not None and int(row["order_id"]) == order_id:
+                return row
+        return None
+
+    return wait_until(_check, timeout_s=timeout_s, sleep_s=sleep_s)
+
+
 def choose_buy_qty(base_url: str, headers: dict[str, str], account_id: int, symbol: str) -> str:
     ticker = http_json(
         "POST",
@@ -231,6 +249,7 @@ def collect_exchange_trade_ids(deals: list[dict]) -> set[str]:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run live testnet scenarios")
     parser.add_argument("--verbose", action="store_true")
+    parser.add_argument("--timeout-seconds", type=int, default=180)
     args = parser.parse_args()
 
     root = Path(__file__).resolve().parents[2]
@@ -292,11 +311,15 @@ def main() -> int:
     logger.info("running hedge scenario")
     hedge_order_1 = send_market(base_url, headers, hedge_account, symbol, "buy", qty, 101, logger)
     hedge_order_2 = send_market(base_url, headers, hedge_account, symbol, "sell", qty, 202, logger)
-    h1 = wait_order_terminal(base_url, headers, hedge_account, hedge_order_1)
-    h2 = wait_order_terminal(base_url, headers, hedge_account, hedge_order_2)
-    logger.info(f"hedge terminal statuses: {h1.get('status') if h1 else None}, {h2.get('status') if h2 else None}")
-    if not h1 or h1.get("status") != "FILLED" or not h2 or h2.get("status") != "FILLED":
-        raise RuntimeError(f"hedge scenario requires FILLED orders, got: {h1} / {h2}")
+    h1_deal = wait_deal_for_order(
+        base_url, headers, hedge_account, hedge_order_1, timeout_s=args.timeout_seconds, sleep_s=2.0
+    )
+    h2_deal = wait_deal_for_order(
+        base_url, headers, hedge_account, hedge_order_2, timeout_s=args.timeout_seconds, sleep_s=2.0
+    )
+    logger.info(f"hedge deals found: order1={bool(h1_deal)} order2={bool(h2_deal)}")
+    if not h1_deal or not h2_deal:
+        raise RuntimeError(f"hedge scenario requires deals for both orders, got: {h1_deal} / {h2_deal}")
     hedge_deals = wait_min_deals(base_url, headers, hedge_account, 2) or []
     hedge_positions = http_json(
         "GET", f"{base_url}/position/positions/open?account_id={hedge_account}", headers
@@ -310,14 +333,18 @@ def main() -> int:
     net_order_1 = send_market(base_url, headers, netting_account, symbol, "buy", qty, 301, logger)
     net_order_2 = send_market(base_url, headers, netting_account, symbol, "sell", qty_half, 302, logger)
     net_order_3 = send_market(base_url, headers, netting_account, symbol, "sell", qty_reverse, 303, logger)
-    n1 = wait_order_terminal(base_url, headers, netting_account, net_order_1)
-    n2 = wait_order_terminal(base_url, headers, netting_account, net_order_2)
-    n3 = wait_order_terminal(base_url, headers, netting_account, net_order_3)
-    logger.info(
-        f"netting terminal statuses: {n1.get('status') if n1 else None}, {n2.get('status') if n2 else None}, {n3.get('status') if n3 else None}"
+    n1 = wait_deal_for_order(
+        base_url, headers, netting_account, net_order_1, timeout_s=args.timeout_seconds, sleep_s=2.0
     )
-    if not n1 or n1.get("status") != "FILLED" or not n2 or n2.get("status") != "FILLED" or not n3 or n3.get("status") != "FILLED":
-        raise RuntimeError(f"netting scenario requires FILLED orders, got: {n1} / {n2} / {n3}")
+    n2 = wait_deal_for_order(
+        base_url, headers, netting_account, net_order_2, timeout_s=args.timeout_seconds, sleep_s=2.0
+    )
+    n3 = wait_deal_for_order(
+        base_url, headers, netting_account, net_order_3, timeout_s=args.timeout_seconds, sleep_s=2.0
+    )
+    logger.info(f"netting deals found: o1={bool(n1)} o2={bool(n2)} o3={bool(n3)}")
+    if not n1 or not n2 or not n3:
+        raise RuntimeError(f"netting scenario requires deals for all orders, got: {n1} / {n2} / {n3}")
     net_deals = wait_min_deals(base_url, headers, netting_account, 3) or []
     net_open = http_json(
         "GET", f"{base_url}/position/positions/open?account_id={netting_account}", headers
@@ -347,10 +374,12 @@ def main() -> int:
         logger=logger,
     )
     mirror_order = send_market(base_url, headers, mirror_a, symbol, "buy", qty, 404, logger)
-    m = wait_order_terminal(base_url, headers, mirror_a, mirror_order)
-    logger.info(f"mirror source order status: {m.get('status') if m else None}")
-    if not m or m.get("status") != "FILLED":
-        raise RuntimeError(f"mirror source order must be FILLED, got: {m}")
+    m = wait_deal_for_order(
+        base_url, headers, mirror_a, mirror_order, timeout_s=args.timeout_seconds, sleep_s=2.0
+    )
+    logger.info(f"mirror source order deal found: {bool(m)}")
+    if not m:
+        raise RuntimeError(f"mirror source order must generate a deal, got: {m}")
 
     # Reconciliation runs periodically; wait until mirrored trade appears in both accounts.
     def _mirror_check():

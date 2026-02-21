@@ -52,6 +52,7 @@ Run hedge/netting live scenarios with multiple `magic_id`, position reduce/rever
 ```bash
 python test/testnet/scenarios.py
 python test/testnet/scenarios.py --verbose
+python test/testnet/scenarios.py --verbose --timeout-seconds 120
 ```
 
 Output is saved to:
