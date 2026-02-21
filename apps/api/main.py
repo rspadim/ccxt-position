@@ -1,6 +1,7 @@
 import asyncio
 import contextlib
 import json
+from datetime import datetime, timezone
 from typing import Annotated, Any
 
 from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
@@ -32,10 +33,14 @@ from .app.schemas import (
     PositionDealsResponse,
     PositionOrdersResponse,
     PositionsResponse,
+    ReconcileNowInput,
+    ReconcileNowResponse,
+    ReconcileStatusResponse,
     ReassignResponse,
     ReassignInput,
 )
 from .app.service import process_single_command
+from .worker_position import _run_reconciliation_once
 
 settings = load_settings()
 app = FastAPI(title="ccxt-position", version="0.1.0")
@@ -156,6 +161,22 @@ def _ccxt_requires_trade(func: str) -> bool:
 
 def _ccxt_raise_400(exc: Exception) -> HTTPException:
     return HTTPException(status_code=400, detail={"code": "ccxt_error", "message": str(exc)})
+
+
+def _reconcile_status_of(updated_at: Any, stale_after_seconds: int) -> tuple[str, int | None]:
+    if updated_at is None:
+        return "never", None
+    if isinstance(updated_at, str):
+        try:
+            updated_dt = datetime.fromisoformat(updated_at)
+        except ValueError:
+            return "stale", None
+    else:
+        updated_dt = updated_at
+    if updated_dt.tzinfo is None:
+        updated_dt = updated_dt.replace(tzinfo=timezone.utc)
+    age = int((datetime.now(timezone.utc) - updated_dt).total_seconds())
+    return ("fresh" if age <= stale_after_seconds else "stale"), age
 
 
 @app.post("/ccxt/{account_id}/{func}")
@@ -415,14 +436,14 @@ async def post_position_reassign(
             conn=conn,
             account_id=req.account_id,
             deal_ids=req.deal_ids,
-            target_magic_id=req.target_magic_id,
+            target_magic_id=req.target_strategy_id,
             target_position_id=req.target_position_id,
         )
         orders_count = await app.state.repo.reassign_orders(
             conn=conn,
             account_id=req.account_id,
             order_ids=req.order_ids,
-            target_magic_id=req.target_magic_id,
+            target_magic_id=req.target_strategy_id,
             target_position_id=req.target_position_id,
         )
         await app.state.repo.insert_event(
@@ -433,12 +454,98 @@ async def post_position_reassign(
             payload={
                 "deals_updated": deals_count,
                 "orders_updated": orders_count,
-                "target_magic_id": req.target_magic_id,
+                "target_strategy_id": req.target_strategy_id,
                 "target_position_id": req.target_position_id,
             },
         )
         await conn.commit()
     return ReassignResponse(ok=True, deals_updated=deals_count, orders_updated=orders_count)
+
+
+@app.post("/position/reconcile", response_model=ReconcileNowResponse)
+async def post_position_reconcile_now(
+    req: ReconcileNowInput | None,
+    auth: Annotated[AuthContext, Depends(get_auth_context)],
+) -> ReconcileNowResponse:
+    request = req or ReconcileNowInput()
+    if request.account_id is not None:
+        account = await _require_account_permission(auth.user_id, request.account_id, require_trade=False)
+        account_ids = [request.account_id]
+        pool_id = int(account["pool_id"])
+    else:
+        async with app.state.db.connection() as conn:
+            rows = await app.state.repo.list_reconciliation_status_for_user(conn, auth.user_id)
+            await conn.commit()
+        account_ids = [int(r["account_id"]) for r in rows]
+        pool_id = settings.worker_pool_id
+
+    if not account_ids:
+        return ReconcileNowResponse(ok=True, account_ids=[], triggered_count=0)
+
+    await _run_reconciliation_once(
+        db=app.state.db,
+        repo=app.state.repo,
+        ccxt_adapter=app.state.ccxt,
+        pool_id=int(pool_id),
+        credentials_codec=app.state.credentials_codec,
+        account_ids=set(account_ids),
+    )
+    return ReconcileNowResponse(ok=True, account_ids=account_ids, triggered_count=len(account_ids))
+
+
+@app.get("/position/reconcile/{account_id}/status", response_model=ReconcileStatusResponse)
+async def get_position_reconcile_account_status(
+    account_id: int,
+    stale_after_seconds: int = 120,
+    auth: Annotated[AuthContext, Depends(get_auth_context)],
+) -> ReconcileStatusResponse:
+    await _require_account_permission(auth.user_id, account_id, require_trade=False)
+    async with app.state.db.connection() as conn:
+        row = await app.state.repo.fetch_reconciliation_status_for_account(conn, account_id)
+        await conn.commit()
+    status, age = _reconcile_status_of(row["updated_at"], stale_after_seconds)
+    return ReconcileStatusResponse(
+        items=[
+            {
+                "account_id": account_id,
+                "status": status,
+                "cursor_value": row["cursor_value"],
+                "updated_at": row["updated_at"],
+                "age_seconds": age,
+            }
+        ]
+    )
+
+
+@app.get("/position/reconcile/status", response_model=ReconcileStatusResponse)
+async def get_position_reconcile_status(
+    status: str | None = None,
+    stale_after_seconds: int = 120,
+    auth: Annotated[AuthContext, Depends(get_auth_context)],
+) -> ReconcileStatusResponse:
+    allowed = {None, "fresh", "stale", "never"}
+    if status not in allowed:
+        raise HTTPException(status_code=422, detail={"code": "validation_error", "message": "status must be fresh|stale|never"})
+
+    async with app.state.db.connection() as conn:
+        rows = await app.state.repo.list_reconciliation_status_for_user(conn, auth.user_id)
+        await conn.commit()
+
+    items: list[dict[str, Any]] = []
+    for row in rows:
+        computed, age = _reconcile_status_of(row["updated_at"], stale_after_seconds)
+        if status is not None and computed != status:
+            continue
+        items.append(
+            {
+                "account_id": int(row["account_id"]),
+                "status": computed,
+                "cursor_value": row["cursor_value"],
+                "updated_at": row["updated_at"],
+                "age_seconds": age,
+            }
+        )
+    return ReconcileStatusResponse(items=items)
 
 
 @app.websocket("/ws")

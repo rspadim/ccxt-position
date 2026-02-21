@@ -95,7 +95,7 @@ class MySQLCommandRepository:
         if row is None:
             return "hedge"
         mode = str(row[0]).lower().strip()
-        if mode not in {"hedge", "netting"}:
+        if mode not in {"hedge", "netting", "strategy_netting"}:
             return "hedge"
         return mode
 
@@ -222,11 +222,11 @@ class MySQLCommandRepository:
 
     async def fetch_open_position(
         self, conn: Any, account_id: int, position_id: int
-    ) -> tuple[int, str, str, str, str] | None:
+    ) -> tuple[int, str, int, str, str, str] | None:
         async with conn.cursor() as cur:
             await cur.execute(
                 """
-                SELECT id, symbol, side, qty, avg_price
+                SELECT id, symbol, strategy_id, side, qty, avg_price
                 FROM position_positions
                 WHERE id = %s AND account_id = %s AND state = 'open'
                 LIMIT 1
@@ -236,7 +236,7 @@ class MySQLCommandRepository:
             row = await cur.fetchone()
         if row is None:
             return None
-        return int(row[0]), str(row[1]), str(row[2]).lower(), str(row[3]), str(row[4])
+        return int(row[0]), str(row[1]), int(row[2]), str(row[3]).lower(), str(row[4]), str(row[5])
 
     async def fetch_order_for_update(
         self, conn: Any, account_id: int, order_id: int
@@ -616,7 +616,7 @@ class MySQLCommandRepository:
         async with conn.cursor() as cur:
             await cur.execute(
                 """
-                SELECT id, qty, avg_price, side
+                SELECT id, qty, avg_price, side, strategy_id
                 FROM position_positions
                 WHERE account_id = %s AND symbol = %s AND side = %s AND state = 'open'
                 ORDER BY id DESC
@@ -627,7 +627,13 @@ class MySQLCommandRepository:
             row = await cur.fetchone()
         if row is None:
             return None
-        return {"id": int(row[0]), "qty": row[1], "avg_price": row[2], "side": str(row[3]).lower()}
+        return {
+            "id": int(row[0]),
+            "qty": row[1],
+            "avg_price": row[2],
+            "side": str(row[3]).lower(),
+            "strategy_id": int(row[4]),
+        }
 
     async def fetch_open_net_position_by_symbol(
         self, conn: Any, account_id: int, symbol: str
@@ -635,7 +641,7 @@ class MySQLCommandRepository:
         async with conn.cursor() as cur:
             await cur.execute(
                 """
-                SELECT id, qty, avg_price, side
+                SELECT id, qty, avg_price, side, strategy_id
                 FROM position_positions
                 WHERE account_id = %s AND symbol = %s AND state = 'open'
                 ORDER BY id DESC
@@ -646,13 +652,48 @@ class MySQLCommandRepository:
             row = await cur.fetchone()
         if row is None:
             return None
-        return {"id": int(row[0]), "qty": row[1], "avg_price": row[2], "side": str(row[3]).lower()}
+        return {
+            "id": int(row[0]),
+            "qty": row[1],
+            "avg_price": row[2],
+            "side": str(row[3]).lower(),
+            "strategy_id": int(row[4]),
+        }
+
+    async def fetch_open_strategy_net_position_by_symbol_strategy(
+        self, conn: Any, account_id: int, symbol: str, strategy_id: int
+    ) -> dict[str, Any] | None:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT id, qty, avg_price, side, strategy_id
+                FROM position_positions
+                WHERE account_id = %s
+                  AND symbol = %s
+                  AND strategy_id = %s
+                  AND state = 'open'
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (account_id, symbol, strategy_id),
+            )
+            row = await cur.fetchone()
+        if row is None:
+            return None
+        return {
+            "id": int(row[0]),
+            "qty": row[1],
+            "avg_price": row[2],
+            "side": str(row[3]).lower(),
+            "strategy_id": int(row[4]),
+        }
 
     async def create_position_open(
         self,
         conn: Any,
         account_id: int,
         symbol: str,
+        strategy_id: int,
         side: str,
         qty: Any,
         avg_price: Any,
@@ -661,10 +702,10 @@ class MySQLCommandRepository:
         async with conn.cursor() as cur:
             await cur.execute(
                 """
-                INSERT INTO position_positions (account_id, symbol, side, qty, avg_price, state, reason)
-                VALUES (%s, %s, %s, %s, %s, 'open', %s)
+                INSERT INTO position_positions (account_id, symbol, strategy_id, side, qty, avg_price, state, reason)
+                VALUES (%s, %s, %s, %s, %s, %s, 'open', %s)
                 """,
-                (account_id, symbol, side, qty, avg_price, reason),
+                (account_id, symbol, strategy_id, side, qty, avg_price, reason),
             )
             return int(cur.lastrowid)
 
@@ -841,6 +882,64 @@ class MySQLCommandRepository:
             return None
         return str(row[0])
 
+    async def fetch_reconciliation_status_for_account(
+        self, conn: Any, account_id: int, entity: str = "my_trades_since"
+    ) -> dict[str, Any]:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT a.id, rc.cursor_value, rc.updated_at
+                FROM accounts a
+                LEFT JOIN reconciliation_cursor rc
+                  ON rc.account_id = a.id
+                 AND rc.entity = %s
+                WHERE a.id = %s
+                LIMIT 1
+                """,
+                (entity, account_id),
+            )
+            row = await cur.fetchone()
+        if row is None:
+            raise ValueError("account_not_found")
+        updated_at = row[2]
+        return {
+            "account_id": int(row[0]),
+            "cursor_value": None if row[1] is None else str(row[1]),
+            "updated_at": updated_at,
+        }
+
+    async def list_reconciliation_status_for_user(
+        self, conn: Any, user_id: int, entity: str = "my_trades_since"
+    ) -> list[dict[str, Any]]:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT a.id, rc.cursor_value, rc.updated_at
+                FROM accounts a
+                JOIN user_account_permissions uap
+                  ON uap.account_id = a.id
+                 AND uap.user_id = %s
+                 AND uap.can_read = TRUE
+                LEFT JOIN reconciliation_cursor rc
+                  ON rc.account_id = a.id
+                 AND rc.entity = %s
+                WHERE a.status = 'active'
+                ORDER BY a.id ASC
+                """,
+                (user_id, entity),
+            )
+            rows = await cur.fetchall()
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            out.append(
+                {
+                    "account_id": int(row[0]),
+                    "cursor_value": None if row[1] is None else str(row[1]),
+                    "updated_at": row[2],
+                }
+            )
+        return out
+
     async def list_orders(self, conn: Any, account_id: int, open_only: bool) -> list[dict[str, Any]]:
         status_filter = "AND status IN ('PENDING_SUBMIT','SUBMITTED','PARTIALLY_FILLED')" if open_only else ""
         async with conn.cursor() as cur:
@@ -927,7 +1026,7 @@ class MySQLCommandRepository:
         async with conn.cursor() as cur:
             await cur.execute(
                 f"""
-                SELECT id, symbol, side, qty, avg_price, state, reason, opened_at, updated_at, closed_at
+                SELECT id, symbol, strategy_id, side, qty, avg_price, state, reason, opened_at, updated_at, closed_at
                 FROM position_positions
                 WHERE account_id = %s {state_filter}
                 ORDER BY id DESC
@@ -943,14 +1042,15 @@ class MySQLCommandRepository:
                     "id": int(r[0]),
                     "account_id": account_id,
                     "symbol": r[1],
-                    "side": r[2],
-                    "qty": str(r[3]),
-                    "avg_price": str(r[4]),
-                    "state": r[5],
-                    "reason": r[6],
-                    "opened_at": str(r[7]),
-                    "updated_at": str(r[8]),
-                    "closed_at": None if r[9] is None else str(r[9]),
+                    "strategy_id": int(r[2]),
+                    "side": r[3],
+                    "qty": str(r[4]),
+                    "avg_price": str(r[5]),
+                    "state": r[6],
+                    "reason": r[7],
+                    "opened_at": str(r[8]),
+                    "updated_at": str(r[9]),
+                    "closed_at": None if r[10] is None else str(r[10]),
                 }
             )
         return out

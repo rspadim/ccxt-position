@@ -71,7 +71,7 @@ async def _insert_pending_order(
     command_id: int,
     account_id: int,
     payload: dict[str, Any],
-    magic_id: int,
+    strategy_id: int,
     position_id: int,
     reason: str,
 ) -> int:
@@ -102,7 +102,7 @@ async def _insert_pending_order(
         symbol=symbol,
         side=side,
         order_type=order_type,
-        magic_id=magic_id,
+        magic_id=strategy_id,
         position_id=position_id,
         reason=reason,
         client_order_id=client_order_id,
@@ -128,7 +128,7 @@ def _build_close_position_payload(position_row: tuple[int, str, str, str, str], 
         "qty": payload.get("qty", qty),
         "price": price,
         "position_id": position_id,
-        "magic_id": payload.get("magic_id", 0),
+        "strategy_id": payload.get("strategy_id", payload.get("magic_id", 0)),
         "reason": payload.get("reason", "api"),
         "reduce_only": True,
         "origin_command": "close_position",
@@ -211,7 +211,7 @@ async def process_single_command(
                 effective_command = "send_order"
 
             reason = str(payload.get("reason", "api"))
-            magic_id = int(payload.get("magic_id", 0) or 0)
+            strategy_id = int(payload.get("strategy_id", payload.get("magic_id", 0)) or 0)
             position_id = int(payload.get("position_id", 0) or 0)
 
             if item.command == "change_order":
@@ -233,7 +233,7 @@ async def process_single_command(
                     command_id=command_id,
                     account_id=account_id,
                     payload=payload,
-                    magic_id=magic_id,
+                    strategy_id=strategy_id,
                     position_id=position_id,
                     reason=reason,
                 )

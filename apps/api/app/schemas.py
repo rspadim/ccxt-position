@@ -36,7 +36,11 @@ class SendOrderPayload(StrictModel):
         serialization_alias="qty",
     )
     price: Decimal | None = None
-    magic_id: int = 0
+    strategy_id: int = Field(
+        default=0,
+        validation_alias=AliasChoices("strategy_id", "magic_id"),
+        serialization_alias="strategy_id",
+    )
     position_id: int = 0
     reason: str = "api"
     reduce_only: bool = False
@@ -68,7 +72,11 @@ class ChangeOrderPayload(StrictModel):
 class CloseByPayload(StrictModel):
     position_id_a: int = Field(gt=0)
     position_id_b: int = Field(gt=0)
-    magic_id: int = 0
+    strategy_id: int = Field(
+        default=0,
+        validation_alias=AliasChoices("strategy_id", "magic_id"),
+        serialization_alias="strategy_id",
+    )
 
 
 class ClosePositionPayload(StrictModel):
@@ -76,7 +84,11 @@ class ClosePositionPayload(StrictModel):
     order_type: OrderType = "market"
     price: Decimal | None = None
     qty: Decimal | None = Field(default=None, gt=Decimal("0"))
-    magic_id: int = 0
+    strategy_id: int = Field(
+        default=0,
+        validation_alias=AliasChoices("strategy_id", "magic_id"),
+        serialization_alias="strategy_id",
+    )
     reason: str = "api"
     client_order_id: str | None = None
 
@@ -205,7 +217,11 @@ class ReassignInput(BaseModel):
     account_id: int = Field(gt=0)
     deal_ids: list[int] = Field(default_factory=list)
     order_ids: list[int] = Field(default_factory=list)
-    target_magic_id: int = 0
+    target_strategy_id: int = Field(
+        default=0,
+        validation_alias=AliasChoices("target_strategy_id", "target_magic_id"),
+        serialization_alias="target_strategy_id",
+    )
     target_position_id: int = 0
 
 
@@ -216,7 +232,7 @@ class PositionOrderModel(BaseModel):
     side: OrderSide
     order_type: OrderType
     status: OrderStatus
-    magic_id: int
+    strategy_id: int = Field(validation_alias=AliasChoices("strategy_id", "magic_id"))
     position_id: int
     reason: str
     client_order_id: str | None = None
@@ -242,7 +258,7 @@ class PositionDealModel(BaseModel):
     fee: Decimal | None = None
     fee_currency: str | None = None
     pnl: Decimal | None = None
-    magic_id: int
+    strategy_id: int = Field(validation_alias=AliasChoices("strategy_id", "magic_id"))
     reason: str
     reconciled: bool
     exchange_trade_id: str | None = None
@@ -280,3 +296,29 @@ class ReassignResponse(BaseModel):
     ok: bool
     deals_updated: int
     orders_updated: int
+
+
+class ReconcileNowInput(BaseModel):
+    account_id: int | None = Field(default=None, gt=0)
+    account_ids: list[int] | str | None = None
+
+
+class ReconcileNowResponse(BaseModel):
+    ok: bool
+    account_ids: list[int]
+    triggered_count: int
+
+
+ReconcileHealth = Literal["fresh", "stale", "never"]
+
+
+class ReconcileStatusItem(BaseModel):
+    account_id: int
+    status: ReconcileHealth
+    cursor_value: str | None = None
+    updated_at: datetime | None = None
+    age_seconds: int | None = None
+
+
+class ReconcileStatusResponse(BaseModel):
+    items: list[ReconcileStatusItem]

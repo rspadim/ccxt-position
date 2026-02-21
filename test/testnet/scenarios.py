@@ -195,6 +195,16 @@ def wait_deal_for_order(
     return wait_until(_check, timeout_s=timeout_s, sleep_s=sleep_s)
 
 
+def force_reconcile_now(base_url: str, headers: dict[str, str], account_id: int, logger: Logger) -> None:
+    logger.info(f"forcing reconciliation for account_id={account_id}")
+    http_json(
+        "POST",
+        f"{base_url}/position/reconcile",
+        headers,
+        {"account_id": account_id},
+    )
+
+
 def choose_buy_qty(base_url: str, headers: dict[str, str], account_id: int, symbol: str) -> str:
     ticker = http_json(
         "POST",
@@ -314,9 +324,15 @@ def main() -> int:
     h1_deal = wait_deal_for_order(
         base_url, headers, hedge_account, hedge_order_1, timeout_s=args.timeout_seconds, sleep_s=2.0
     )
+    if not h1_deal:
+        force_reconcile_now(base_url, headers, hedge_account, logger)
+        h1_deal = wait_deal_for_order(base_url, headers, hedge_account, hedge_order_1, timeout_s=30, sleep_s=2.0)
     h2_deal = wait_deal_for_order(
         base_url, headers, hedge_account, hedge_order_2, timeout_s=args.timeout_seconds, sleep_s=2.0
     )
+    if not h2_deal:
+        force_reconcile_now(base_url, headers, hedge_account, logger)
+        h2_deal = wait_deal_for_order(base_url, headers, hedge_account, hedge_order_2, timeout_s=30, sleep_s=2.0)
     logger.info(f"hedge deals found: order1={bool(h1_deal)} order2={bool(h2_deal)}")
     if not h1_deal or not h2_deal:
         raise RuntimeError(f"hedge scenario requires deals for both orders, got: {h1_deal} / {h2_deal}")
@@ -336,12 +352,21 @@ def main() -> int:
     n1 = wait_deal_for_order(
         base_url, headers, netting_account, net_order_1, timeout_s=args.timeout_seconds, sleep_s=2.0
     )
+    if not n1:
+        force_reconcile_now(base_url, headers, netting_account, logger)
+        n1 = wait_deal_for_order(base_url, headers, netting_account, net_order_1, timeout_s=30, sleep_s=2.0)
     n2 = wait_deal_for_order(
         base_url, headers, netting_account, net_order_2, timeout_s=args.timeout_seconds, sleep_s=2.0
     )
+    if not n2:
+        force_reconcile_now(base_url, headers, netting_account, logger)
+        n2 = wait_deal_for_order(base_url, headers, netting_account, net_order_2, timeout_s=30, sleep_s=2.0)
     n3 = wait_deal_for_order(
         base_url, headers, netting_account, net_order_3, timeout_s=args.timeout_seconds, sleep_s=2.0
     )
+    if not n3:
+        force_reconcile_now(base_url, headers, netting_account, logger)
+        n3 = wait_deal_for_order(base_url, headers, netting_account, net_order_3, timeout_s=30, sleep_s=2.0)
     logger.info(f"netting deals found: o1={bool(n1)} o2={bool(n2)} o3={bool(n3)}")
     if not n1 or not n2 or not n3:
         raise RuntimeError(f"netting scenario requires deals for all orders, got: {n1} / {n2} / {n3}")
@@ -377,6 +402,9 @@ def main() -> int:
     m = wait_deal_for_order(
         base_url, headers, mirror_a, mirror_order, timeout_s=args.timeout_seconds, sleep_s=2.0
     )
+    if not m:
+        force_reconcile_now(base_url, headers, mirror_a, logger)
+        m = wait_deal_for_order(base_url, headers, mirror_a, mirror_order, timeout_s=30, sleep_s=2.0)
     logger.info(f"mirror source order deal found: {bool(m)}")
     if not m:
         raise RuntimeError(f"mirror source order must generate a deal, got: {m}")

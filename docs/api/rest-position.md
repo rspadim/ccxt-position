@@ -54,5 +54,17 @@ Behavior:
 - `GET /position/positions/open`
 - `GET /position/positions/history`
 - `POST /position/reassign`
+- `POST /position/reconcile`
+- `GET /position/reconcile/{account_id}/status`
+- `GET /position/reconcile/status`
 
 `/position/reassign` updates `magic_id` and `position_id` for selected deals/orders and marks deals as reconciled.
+
+`/position/reconcile` triggers on-demand reconciliation.
+
+- with `account_id`: runs for one account
+- without `account_id`: runs for all accounts visible to the authenticated user
+
+`/position/reconcile/{account_id}/status` returns one account reconciliation health.
+
+`/position/reconcile/status` returns all visible accounts and supports `?status=fresh|stale|never`.

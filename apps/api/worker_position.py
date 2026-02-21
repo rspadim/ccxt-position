@@ -382,7 +382,7 @@ async def _process_claimed_queue_item(
                 if close_qty <= 0:
                     raise PermanentCommandError("close_by quantity is zero")
 
-                magic_id = int(payload.get("magic_id", 0) or 0)
+                magic_id = int(payload.get("strategy_id", payload.get("magic_id", 0)) or 0)
                 reason = "close_by_internal"
 
                 await repo.insert_position_deal(
@@ -478,6 +478,7 @@ async def _run_reconciliation_once(
     ccxt_adapter: CCXTAdapter,
     pool_id: int,
     credentials_codec: CredentialsCodec,
+    account_ids: set[int] | None = None,
 ) -> None:
     async with db.connection() as conn:
         accounts = await repo.list_active_accounts_by_pool(conn, pool_id)
@@ -485,6 +486,8 @@ async def _run_reconciliation_once(
 
     for account in accounts:
         account_id = int(account["id"])
+        if account_ids is not None and account_id not in account_ids:
+            continue
         async with db.connection() as conn:
             try:
                 exchange_id, is_testnet, api_key_enc, secret_enc, passphrase_enc = await repo.fetch_account_exchange_credentials(
