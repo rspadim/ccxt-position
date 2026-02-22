@@ -1,4 +1,4 @@
-﻿import json
+import json
 import os
 import time
 from decimal import Decimal
@@ -57,7 +57,7 @@ def test_position_send_change_cancel_live() -> None:
 
     send = _http_json(
         "POST",
-        f"{base_url}/position/commands",
+        f"{base_url}/oms/commands",
         headers,
         {
             "account_id": account_id,
@@ -80,7 +80,7 @@ def test_position_send_change_cancel_live() -> None:
     def _get_order() -> dict | None:
         out = _http_json(
             "GET",
-            f"{base_url}/position/orders/open?account_id={account_id}",
+            f"{base_url}/oms/orders/open?account_id={account_id}",
             headers,
         )
         for item in out.get("items", []):
@@ -93,7 +93,7 @@ def test_position_send_change_cancel_live() -> None:
 
     change = _http_json(
         "POST",
-        f"{base_url}/position/commands",
+        f"{base_url}/oms/commands",
         headers,
         {
             "account_id": account_id,
@@ -105,7 +105,7 @@ def test_position_send_change_cancel_live() -> None:
 
     cancel = _http_json(
         "POST",
-        f"{base_url}/position/commands",
+        f"{base_url}/oms/commands",
         headers,
         {"account_id": account_id, "command": "cancel_order", "payload": {"order_id": order_id}},
     )
@@ -114,7 +114,7 @@ def test_position_send_change_cancel_live() -> None:
     def _is_terminal() -> bool:
         hist = _http_json(
             "GET",
-            f"{base_url}/position/orders/history?account_id={account_id}",
+            f"{base_url}/oms/orders/history?account_id={account_id}",
             headers,
         )
         for item in hist.get("items", []):

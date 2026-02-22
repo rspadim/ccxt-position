@@ -1,4 +1,4 @@
-﻿import I18N from "./i18n.json";
+import I18N from "./i18n.json";
 import "@awesome.me/webawesome/dist/components/button/button.js";
 import "@awesome.me/webawesome/dist/components/tab-group/tab-group.js";
 import "@awesome.me/webawesome/dist/components/tab/tab.js";
@@ -13,7 +13,6 @@ const STORAGE = {
   strategyIds: "simple_front.strategy_ids",
   language: "simple_front.language",
   themeMode: "simple_front.theme_mode",
-  densityMode: "simple_front.density_mode",
   activeMenu: "simple_front.active_menu",
 };
 
@@ -31,7 +30,6 @@ const state = {
   locale: "pt-BR",
   userRole: "",
   themeMode: "system",
-  densityMode: "normal",
   closeBySourceRow: null,
 };
 
@@ -105,15 +103,6 @@ function status(text, isConnected = false) {
   };
   apply("status");
   apply("loginStatus");
-  syncWsActionButtons(!!isConnected);
-}
-
-function syncWsActionButtons(isConnected) {
-  const connectBtn = document.getElementById("connectBtn");
-  const disconnectBtn = document.getElementById("disconnectBtn");
-  if (!connectBtn || !disconnectBtn) return;
-  connectBtn.classList.toggle("is-hidden", !!isConnected);
-  disconnectBtn.classList.toggle("is-hidden", !isConnected);
 }
 
 function resolveTheme(mode) {
@@ -156,36 +145,6 @@ function cycleThemeMode() {
   const idx = order.indexOf(state.themeMode);
   const next = order[(idx + 1) % order.length];
   applyThemeMode(next, true);
-}
-
-function applyDensityMode(mode, persist = true) {
-  const normalized = ["compact", "normal", "spacious"].includes(String(mode))
-    ? String(mode)
-    : "normal";
-  state.densityMode = normalized;
-  document.documentElement.setAttribute("data-density", normalized);
-  const node = document.getElementById("densityModeBtn");
-  if (node) {
-    const iconByMode = {
-      compact: "fa-table-cells",
-      normal: "fa-table-cells-large",
-      spacious: "fa-grip",
-    };
-    const labelKey = `density.${normalized}`;
-    const label = t(labelKey, normalized);
-    const icon = iconByMode[normalized] || iconByMode.normal;
-    node.innerHTML = `<i class="fa-solid ${icon}" aria-hidden="true"></i><span>${label}</span>`;
-    const titlePrefix = state.locale === "pt-BR" ? "Densidade" : state.locale === "es" ? "Densidad" : "Density";
-    node.setAttribute("title", `${titlePrefix}: ${label}`);
-  }
-  if (persist) localStorage.setItem(STORAGE.densityMode, normalized);
-}
-
-function cycleDensityMode() {
-  const order = ["compact", "normal", "spacious"];
-  const idx = order.indexOf(state.densityMode);
-  const next = order[(idx + 1) % order.length];
-  applyDensityMode(next, true);
 }
 
 function getConfig() {
@@ -327,30 +286,6 @@ function parseCsvIntList(value) {
     .split(",")
     .map((x) => Number(String(x).trim()))
     .filter((n) => Number.isFinite(n) && n > 0);
-}
-
-function parseNullablePositiveInt(value, label = "value") {
-  if (value === null || value === undefined) return null;
-  const text = String(value).trim();
-  if (!text) return null;
-  const n = Number(text);
-  if (!Number.isFinite(n) || n <= 0 || !Number.isInteger(n)) {
-    throw new Error(`${label} inválido`);
-  }
-  return n;
-}
-
-function parseAccountIdsValue(value, fallbackAllAccountIds = []) {
-  const allIds = [...new Set((fallbackAllAccountIds || []).map((x) => Number(x)).filter((n) => Number.isFinite(n) && n > 0))];
-  if (Array.isArray(value)) {
-    return [...new Set(value.map((x) => Number(x)).filter((n) => Number.isFinite(n) && n > 0))];
-  }
-  const text = String(value || "").trim().toLowerCase();
-  if (!text || text === "all" || text === "*") {
-    if (allIds.length > 0) return allIds;
-    throw new Error("nenhuma conta disponível para aplicar 'all'");
-  }
-  return [...new Set(parseCsvIntList(value))];
 }
 
 function defaultPresetAccountId() {
@@ -551,11 +486,6 @@ function renderLanguageOptions(selectedCode = "pt-BR") {
 }
 
 function applyLanguageTexts() {
-  document.querySelectorAll("[data-i18n]").forEach((node) => {
-    const key = String(node.getAttribute("data-i18n") || "").trim();
-    if (!key) return;
-    node.textContent = t(key, node.textContent || "");
-  });
   const apply = (id, key, fallback) => {
     const node = document.getElementById(id);
     if (!node) return;
@@ -570,7 +500,7 @@ function applyLanguageTexts() {
   };
   applyMenu("tabLoginBtn", "menu.login_config", "Login / Config");
   applyMenu("tabStrategiesBtn", "menu.strategies", "Strategies");
-  applyMenu("tabPositionsBtn", "menu.oms", "OMS");
+  applyMenu("tabPositionsBtn", "menu.positions", "Positions");
   applyMenu("tabCommandsBtn", "menu.ccxt_commands", "CCXT Commands");
   applyMenu("tabSystemBtn", "menu.system_monitor", "System Monitor");
   applyMenu("tabRiskBtn", "menu.risk", "Risk");
@@ -580,44 +510,17 @@ function applyLanguageTexts() {
   apply("loginModeUserPassOption", "login.mode_user_password", "User + Password");
   apply("selectAllAccountsBtn", "common.select_all", "Select All");
   apply("clearAccountsBtn", "common.clear", "Clear");
-  apply("viewAccountsLabel", "trade.filter_accounts", "Filter Accounts");
   apply("loginAuthBtn", "login.authenticate", "Authenticate");
   apply("connectBtn", "trade.connect_ws", "Connect WS");
   apply("disconnectBtn", "trade.disconnect_ws", "Disconnect");
-  apply("refreshOmsBtn", "trade.refresh_tables", "Refresh Tables");
+  apply("refreshBtn", "trade.refresh_tables", "Refresh Tables");
   apply("accountsBtn", "trade.load_accounts", "Reload Accounts");
-  apply("tradeCreateStrategyTitle", "trade.create_strategy", "Create Strategy");
-  apply("tradeCreateStrategyBtn", "trade.create_strategy", "Create Strategy");
-  apply("tradeMyStrategiesTitle", "trade.my_strategies", "My Strategies");
-  apply("loadTradeStrategiesBtn", "trade.load_strategies", "Load Strategies");
-  apply("tradeStrategyNameLabel", "trade.name", "Name");
-  apply("tradeStrategyAccountsLabel", "trade.accounts", "Accounts");
-  apply("adminCreateStrategyTitle", "admin.create_strategy", "Create Strategy");
-  apply("adminCreateStrategyBtn", "admin.create_strategy", "Create Strategy");
-  apply("adminStrategyAccountsLabel", "trade.accounts", "Accounts");
-  apply("loadStrategiesBtn", "trade.load_strategies", "Load Strategies");
-  apply("riskSavePermissionBtn", "risk.save_permission", "Save Permission");
-  applyDensityMode(state.densityMode, false);
   updateApiKeyToggleLabel();
-  updateLoginPasswordToggleLabel();
 }
 
 function updateApiKeyToggleLabel() {
   const input = document.getElementById("apiKey");
   const btn = document.getElementById("toggleApiKeyBtn");
-  if (!input || !btn) return;
-  const isHidden = input.type === "password";
-  const text = isHidden ? t("login.show", "show") : t("login.hide", "hide");
-  btn.setAttribute("aria-label", text);
-  btn.setAttribute("title", text);
-  btn.innerHTML = isHidden
-    ? '<i class="fa-solid fa-eye" aria-hidden="true"></i>'
-    : '<i class="fa-solid fa-eye-slash" aria-hidden="true"></i>';
-}
-
-function updateLoginPasswordToggleLabel() {
-  const input = document.getElementById("loginPassword");
-  const btn = document.getElementById("toggleLoginPasswordBtn");
   if (!input || !btn) return;
   const isHidden = input.type === "password";
   const text = isHidden ? t("login.show", "show") : t("login.hide", "hide");
@@ -672,7 +575,6 @@ function collectFormAccountIds() {
     parseAccountId($("changeOrderAccountId").value),
     parseAccountId($("cancelAllAccountId").value),
     parseAccountId($("positionChangeAccountId").value),
-    parseAccountId($("closePositionAccountId").value),
     parseAccountId($("closeByAccountId").value),
     parseAccountId($("riskAccountId").value),
     parseAccountId($("riskStrategyAccountId").value),
@@ -727,113 +629,6 @@ function append(table, row, max = 400) {
   if (rows.length > max) {
     table.setData(rows.slice(0, max));
   }
-}
-
-function buildTradeStrategiesColumns() {
-  return [
-    {
-      title: "",
-      field: "_save",
-      hozAlign: "center",
-      headerHozAlign: "center",
-      width: 44,
-      minWidth: 44,
-      maxWidth: 44,
-      widthGrow: 0,
-      widthShrink: 0,
-      resizable: false,
-      cssClass: "col-action",
-      headerSort: false,
-      formatter: () => '<i class="fa-solid fa-floppy-disk icon-save" title="Save" aria-hidden="true"></i>',
-      cellClick: async (_ev, cell) => {
-        const row = cell.getRow().getData();
-        try {
-          const cfg = requireConfig();
-          const out = await apiRequest(`/admin/strategies/${row.strategy_id}`, {
-            method: "PATCH",
-            body: {
-              name: String(row.name || "").trim() || null,
-              status: String(row.status || "").trim() || null,
-              client_strategy_id: parseNullablePositiveInt(row.client_strategy_id, "client_strategy_id"),
-              account_ids: parseAccountIdsValue(row.account_ids, state.availableAccountIds),
-            },
-          }, cfg);
-          eventLog("trade_update_strategy", out);
-          await loadTradeStrategies(cfg);
-          await loadStrategies(cfg);
-        } catch (err) {
-          eventLog("trade_update_strategy_error", { error: String(err), strategy_id: row.strategy_id });
-        }
-      },
-    },
-    {
-      title: "",
-      field: "_toggle",
-      hozAlign: "center",
-      headerHozAlign: "center",
-      width: 44,
-      minWidth: 44,
-      maxWidth: 44,
-      widthGrow: 0,
-      widthShrink: 0,
-      resizable: false,
-      cssClass: "col-action",
-      headerSort: false,
-      formatter: (cell) => {
-        const row = cell.getRow().getData();
-        if (row.status === "active") {
-          return '<i class="fa-solid fa-xmark icon-danger" title="Disable" aria-hidden="true"></i>';
-        }
-        return '<i class="fa-solid fa-check icon-ok" title="Enable" aria-hidden="true"></i>';
-      },
-      cellClick: async (_ev, cell) => {
-        const row = cell.getRow().getData();
-        const nextStatus = row.status === "active" ? "disabled" : "active";
-        try {
-          const cfg = requireConfig();
-          const out = await apiRequest(`/admin/strategies/${row.strategy_id}`, {
-            method: "PATCH",
-            body: { status: nextStatus },
-          }, cfg);
-          eventLog("trade_toggle_strategy_status", out);
-          await loadTradeStrategies(cfg);
-          await loadStrategies(cfg);
-        } catch (err) {
-          eventLog("trade_toggle_strategy_status_error", { error: String(err), strategy_id: row.strategy_id });
-        }
-      },
-    },
-    {
-      title: t("trade.col_client_strategy_id", "Client Strategy ID"),
-      field: "client_strategy_id",
-      editor: "input",
-      width: 145,
-      formatter: (cell) => {
-        const v = cell.getValue();
-        return v === null || v === undefined || String(v).trim() === "" ? "" : String(v);
-      },
-    },
-    { title: t("trade.col_strategy_id", "Strategy ID"), field: "strategy_id", width: 100 },
-    { title: t("trade.col_name", "Name"), field: "name", editor: "input", width: 240 },
-    {
-      title: t("trade.col_status", "Status"),
-      field: "status",
-      editor: "list",
-      editorParams: { values: ["active", "disabled"] },
-      width: 110,
-    },
-    {
-      title: t("trade.col_account_ids", "Accounts"),
-      field: "account_ids",
-      widthGrow: 1,
-      editor: "input",
-      formatter: (cell) => {
-        const arr = cell.getValue();
-        if (Array.isArray(arr)) return arr.join(", ");
-        return String(arr || "");
-      },
-    },
-  ];
 }
 
 function nowIso() {
@@ -1221,92 +1016,52 @@ async function connectWs() {
 
 function baseCols() {
   return [
-    { title: t("oms.col_id", "ID"), field: "id", width: 84 },
-    { title: t("oms.col_account_id", "Account ID"), field: "account_id", width: 96 },
-    { title: t("oms.col_symbol", "Symbol"), field: "symbol", width: 120 },
-    { title: t("oms.col_side", "Side"), field: "side", width: 90 },
-    { title: t("oms.col_qty", "Qty"), field: "qty", width: 110 },
-    { title: t("oms.col_status", "Status"), field: "status", width: 120 },
-    { title: t("oms.col_price", "Price"), field: "price", width: 110 },
-    { title: t("oms.col_updated_at", "Updated At"), field: "updated_at", width: 175 },
+    { title: "id", field: "id", width: 84 },
+    { title: "account_id", field: "account_id", width: 96 },
+    { title: "symbol", field: "symbol", width: 120 },
+    { title: "side", field: "side", width: 90 },
+    { title: "qty", field: "qty", width: 110 },
+    { title: "status/state", field: "status", width: 120 },
+    { title: "price", field: "price", width: 110 },
+    { title: "updated/at", field: "updated_at", width: 175 },
   ];
-}
-
-function riskValueBadge(value, kind = "loss") {
-  if (value === null || value === undefined || String(value).trim() === "") return "";
-  const text = String(value).trim();
-  const css = kind === "gain" ? "risk-pill-gain" : "risk-pill-loss";
-  return `<span class="risk-pill ${css}">${text}</span>`;
 }
 
 function setupTables() {
   state.tables.openPositions = makeTable("openPositionsTable", [
+    { title: "id", field: "id", width: 84 },
+    { title: "account_id", field: "account_id", width: 96 },
+    { title: "symbol", field: "symbol", width: 120 },
+    { title: "side", field: "side", width: 90 },
+    { title: "qty", field: "qty", width: 110 },
+    { title: "avg_price", field: "avg_price", width: 130 },
+    { title: "stop_loss", field: "stop_loss", width: 120, editor: "input" },
+    { title: "stop_gain", field: "stop_gain", width: 120, editor: "input" },
+    { title: "state", field: "state", width: 90 },
+    { title: "comment", field: "comment", width: 180, editor: "input" },
+    { title: "opened_at", field: "opened_at", width: 170 },
+    { title: "updated_at", field: "updated_at", width: 170 },
     {
-      title: "",
-      field: "_close",
-      width: 86,
-      hozAlign: "left",
-      headerHozAlign: "left",
-      headerSort: false,
-      formatter: () => `<button data-act='close' class='row-icon-btn' title='${t("common.close", "Close")}' aria-label='${t("common.close", "Close")}'><i class='fa-solid fa-xmark icon-danger' aria-hidden='true'></i></button> <button data-act='close_by' class='row-icon-btn' title='${t("cmd.position_close_by", "Position Close By")}' aria-label='${t("cmd.position_close_by", "Position Close By")}'><i class='fa-solid fa-right-left icon-ok' aria-hidden='true'></i></button>`,
+      title: "actions",
+      field: "_actions",
+      width: 260,
+      formatter: () => "<button data-act='apply'>Apply</button> <button data-act='close'>Close</button> <button data-act='close_by'>Close By ↔</button>",
       cellClick: async (ev, cell) => {
-        const btn = ev?.target?.closest ? ev.target.closest("[data-act]") : null;
-        const action = btn?.dataset?.act;
+        const action = ev?.target?.dataset?.act;
         if (!action) return;
         const row = cell.getRow().getData();
         try {
+          if (action === "apply") {
+            await changeOpenPositionInline(row);
+            return;
+          }
           if (action === "close") {
             await closeOpenPositionInline(row);
             return;
           }
           if (action === "close_by") {
             openCloseByModal(row);
-            return;
           }
-        } catch (err) {
-          eventLog("open_position_inline_error", { action, error: String(err), row });
-        }
-      },
-    },
-    { title: t("oms.col_id", "ID"), field: "id", width: 84 },
-    { title: t("oms.col_account_id", "Account ID"), field: "account_id", width: 96 },
-    { title: t("oms.col_symbol", "Symbol"), field: "symbol", width: 120 },
-    { title: t("oms.col_side", "Side"), field: "side", width: 90 },
-    { title: t("oms.col_qty", "Qty"), field: "qty", width: 110 },
-    { title: t("oms.col_avg_price", "Avg Price"), field: "avg_price", width: 130 },
-    {
-      title: t("oms.col_stop_loss", "Stop Loss"),
-      field: "stop_loss",
-      width: 120,
-      editor: "input",
-      formatter: (cell) => riskValueBadge(cell.getValue(), "loss"),
-    },
-    {
-      title: t("oms.col_stop_gain", "Stop Gain"),
-      field: "stop_gain",
-      width: 120,
-      editor: "input",
-      formatter: (cell) => riskValueBadge(cell.getValue(), "gain"),
-    },
-    { title: t("oms.col_state", "State"), field: "state", width: 90 },
-    { title: t("oms.col_comment", "Comment"), field: "comment", width: 180, editor: "input" },
-    { title: t("oms.col_opened_at", "Opened At"), field: "opened_at", width: 170 },
-    { title: t("oms.col_updated_at", "Updated At"), field: "updated_at", width: 170 },
-    {
-      title: "",
-      field: "_save",
-      width: 46,
-      hozAlign: "right",
-      headerHozAlign: "right",
-      headerSort: false,
-      formatter: () => `<button data-act='apply' class='row-icon-btn' title='${t("common.apply", "Apply")}' aria-label='${t("common.apply", "Apply")}'><i class='fa-solid fa-floppy-disk icon-save' aria-hidden='true'></i></button>`,
-      cellClick: async (ev, cell) => {
-        const btn = ev?.target?.closest ? ev.target.closest("[data-act]") : null;
-        const action = btn?.dataset?.act;
-        if (action !== "apply") return;
-        const row = cell.getRow().getData();
-        try {
-          await changeOpenPositionInline(row);
         } catch (err) {
           eventLog("open_position_inline_error", { action, error: String(err), row });
         }
@@ -1314,57 +1069,37 @@ function setupTables() {
     },
   ]);
   state.tables.openOrders = makeTable("openOrdersTable", [
+    { title: "id", field: "id", width: 84 },
+    { title: "account_id", field: "account_id", width: 110 },
+    { title: "symbol", field: "symbol", width: 120 },
+    { title: "side", field: "side", width: 80 },
+    { title: "order_type", field: "order_type", width: 100 },
+    { title: "status", field: "status", width: 110 },
+    { title: "qty", field: "qty", width: 100, editor: "input" },
+    { title: "price", field: "price", width: 110, editor: "input" },
+    { title: "stop_loss", field: "stop_loss", width: 120 },
+    { title: "stop_gain", field: "stop_gain", width: 120 },
+    { title: "filled_qty", field: "filled_qty", width: 100 },
+    { title: "exchange_order_id", field: "exchange_order_id", width: 140 },
+    { title: "comment", field: "comment", width: 180 },
+    { title: "updated_at", field: "updated_at", width: 170 },
     {
-      title: "",
-      field: "_close",
-      width: 46,
-      hozAlign: "left",
-      headerHozAlign: "left",
-      headerSort: false,
-      formatter: () => `<button data-act='cancel' class='row-icon-btn' title='${t("common.cancel", "Cancel")}' aria-label='${t("common.cancel", "Cancel")}'><i class='fa-solid fa-xmark icon-danger' aria-hidden='true'></i></button>`,
+      title: "actions",
+      field: "_actions",
+      width: 170,
+      formatter: () => "<button data-act='apply'>Apply</button> <button data-act='cancel'>Cancel</button>",
       cellClick: async (ev, cell) => {
-        const btn = ev?.target?.closest ? ev.target.closest("[data-act]") : null;
-        const action = btn?.dataset?.act;
+        const action = ev?.target?.dataset?.act;
         if (!action) return;
         const row = cell.getRow().getData();
         try {
+          if (action === "apply") {
+            await changeOpenOrderInline(row);
+            return;
+          }
           if (action === "cancel") {
             await cancelOpenOrderInline(row);
           }
-        } catch (err) {
-          eventLog("open_order_inline_error", { action, error: String(err), row });
-        }
-      },
-    },
-    { title: t("oms.col_id", "ID"), field: "id", width: 84 },
-    { title: t("oms.col_account_id", "Account ID"), field: "account_id", width: 110 },
-    { title: t("oms.col_symbol", "Symbol"), field: "symbol", width: 120 },
-    { title: t("oms.col_side", "Side"), field: "side", width: 80 },
-    { title: t("oms.col_order_type", "Order Type"), field: "order_type", width: 100 },
-    { title: t("oms.col_status", "Status"), field: "status", width: 110 },
-    { title: t("oms.col_qty", "Qty"), field: "qty", width: 100, editor: "input" },
-    { title: t("oms.col_price", "Price"), field: "price", width: 110, editor: "input" },
-    { title: t("oms.col_stop_loss", "Stop Loss"), field: "stop_loss", width: 120 },
-    { title: t("oms.col_stop_gain", "Stop Gain"), field: "stop_gain", width: 120 },
-    { title: t("oms.col_filled_qty", "Filled Qty"), field: "filled_qty", width: 100 },
-    { title: t("oms.col_exchange_order_id", "Exchange Order ID"), field: "exchange_order_id", width: 140 },
-    { title: t("oms.col_comment", "Comment"), field: "comment", width: 180 },
-    { title: t("oms.col_updated_at", "Updated At"), field: "updated_at", width: 170 },
-    {
-      title: "",
-      field: "_save",
-      width: 46,
-      hozAlign: "right",
-      headerHozAlign: "right",
-      headerSort: false,
-      formatter: () => `<button data-act='apply' class='row-icon-btn' title='${t("common.apply", "Apply")}' aria-label='${t("common.apply", "Apply")}'><i class='fa-solid fa-floppy-disk icon-save' aria-hidden='true'></i></button>`,
-      cellClick: async (ev, cell) => {
-        const btn = ev?.target?.closest ? ev.target.closest("[data-act]") : null;
-        const action = btn?.dataset?.act;
-        if (action !== "apply") return;
-        const row = cell.getRow().getData();
-        try {
-          await changeOpenOrderInline(row);
         } catch (err) {
           eventLog("open_order_inline_error", { action, error: String(err), row });
         }
@@ -1374,17 +1109,17 @@ function setupTables() {
   state.tables.historyPositions = makeTable("historyPositionsTable", baseCols());
   state.tables.historyOrders = makeTable("historyOrdersTable", baseCols());
   state.tables.deals = makeTable("dealsTable", [
-    { title: t("oms.col_id", "ID"), field: "id", width: 84 },
-    { title: t("oms.col_account_id", "Account ID"), field: "account_id", width: 96 },
-    { title: t("oms.col_order_id", "Order ID"), field: "order_id", width: 84 },
-    { title: t("oms.col_position_id", "Position ID"), field: "position_id", width: 90 },
-    { title: t("oms.col_symbol", "Symbol"), field: "symbol", width: 120 },
-    { title: t("oms.col_side", "Side"), field: "side", width: 80 },
-    { title: t("oms.col_qty", "Qty"), field: "qty", width: 100 },
-    { title: t("oms.col_price", "Price"), field: "price", width: 120 },
-    { title: t("oms.col_comment", "Comment"), field: "comment", width: 180 },
-    { title: t("oms.col_exchange_trade_id", "Exchange Trade ID"), field: "exchange_trade_id", width: 130 },
-    { title: t("oms.col_executed_at", "Executed At"), field: "executed_at", width: 170 },
+    { title: "id", field: "id", width: 84 },
+    { title: "account_id", field: "account_id", width: 96 },
+    { title: "order_id", field: "order_id", width: 84 },
+    { title: "position_id", field: "position_id", width: 90 },
+    { title: "symbol", field: "symbol", width: 120 },
+    { title: "side", field: "side", width: 80 },
+    { title: "qty", field: "qty", width: 100 },
+    { title: "price", field: "price", width: 120 },
+    { title: "comment", field: "comment", width: 180 },
+    { title: "exchange_trade_id", field: "exchange_trade_id", width: 130 },
+    { title: "executed_at", field: "executed_at", width: 170 },
   ]);
   state.tables.ccxtTrades = makeTable("ccxtTradesTable", [
     { title: "account_id", field: "account_id", width: 96 },
@@ -1422,39 +1157,45 @@ function setupTables() {
     { title: "message", field: "message", width: 300 },
     { title: "payload", field: "payload", widthGrow: 1 },
   ]);
-  state.tables.tradeStrategies = makeTable("tradeStrategiesTable", buildTradeStrategiesColumns());
+  state.tables.tradeStrategies = makeTable("tradeStrategiesTable", [
+    { title: "strategy_id", field: "strategy_id", width: 100 },
+    { title: "name", field: "name", width: 220 },
+    { title: "status", field: "status", width: 100 },
+    {
+      title: "account_ids",
+      field: "account_ids",
+      widthGrow: 1,
+      formatter: (cell) => {
+        const arr = cell.getValue();
+        return Array.isArray(arr) ? arr.join(", ") : "";
+      },
+    },
+  ]);
   state.tables.adminStrategies = makeTable("adminStrategiesTable", [
     { title: "strategy_id", field: "strategy_id", width: 100 },
-    { title: "client_strategy_id", field: "client_strategy_id", editor: "input", width: 140 },
     { title: "name", field: "name", editor: "input", width: 220 },
     { title: "status", field: "status", width: 110 },
     {
       title: "account_ids",
       field: "account_ids",
       widthGrow: 1,
-      editor: "input",
       formatter: (cell) => {
         const arr = cell.getValue();
-        if (Array.isArray(arr)) return arr.join(", ");
-        return String(arr || "");
+        return Array.isArray(arr) ? arr.join(", ") : "";
       },
     },
     {
       title: "save",
       field: "_save",
       hozAlign: "center",
-      formatter: () => t("common.save", "Save"),
+      formatter: () => "Save",
       cellClick: async (_ev, cell) => {
         const row = cell.getRow().getData();
         try {
           const cfg = requireConfig();
           const out = await apiRequest(`/admin/strategies/${row.strategy_id}`, {
             method: "PATCH",
-            body: {
-              name: String(row.name || "").trim() || null,
-              client_strategy_id: parseNullablePositiveInt(row.client_strategy_id, "client_strategy_id"),
-              account_ids: parseAccountIdsValue(row.account_ids, state.availableAccountIds),
-            },
+            body: { name: String(row.name || "").trim() || null },
           }, cfg);
           eventLog("admin_update_strategy_name", out);
           await loadStrategies(cfg);
@@ -1469,9 +1210,7 @@ function setupTables() {
       hozAlign: "center",
       formatter: (cell) => {
         const row = cell.getRow().getData();
-        return row.status === "active"
-          ? t("common.disable", "Disable")
-          : t("common.enable", "Enable");
+        return row.status === "active" ? "Disable" : "Enable";
       },
       cellClick: async (_ev, cell) => {
         const row = cell.getRow().getData();
@@ -1525,7 +1264,7 @@ function setupTables() {
       title: "save",
       field: "_save",
       hozAlign: "center",
-      formatter: () => t("common.save", "Save"),
+      formatter: () => "Save",
       cellClick: async (_ev, cell) => {
         const row = cell.getRow().getData();
         try {
@@ -1632,19 +1371,7 @@ async function loadAdminUsers(cfgOverride = null) {
 async function loadTradeStrategies(cfgOverride = null) {
   const cfg = cfgOverride || requireConfig();
   const res = await apiRequest("/strategies", {}, cfg);
-  const items = (res.items || []).slice().sort((a, b) => {
-    const rank = (status) => {
-      const s = String(status || "").toLowerCase();
-      if (s === "active") return 0;
-      if (s === "disabled") return 1;
-      return 2;
-    };
-    const byStatus = rank(a?.status) - rank(b?.status);
-    if (byStatus !== 0) return byStatus;
-    const aid = Number(a?.strategy_id || 0);
-    const bid = Number(b?.strategy_id || 0);
-    return aid - bid;
-  });
+  const items = res.items || [];
   state.tables.tradeStrategies.setData(items);
   renderSendStrategyOptions(items);
   for (const item of items) {
@@ -1732,7 +1459,6 @@ function bindForms() {
   bindShellControls();
   bindSidebarMenu();
   $("themeModeBtn").addEventListener("click", () => cycleThemeMode());
-  $("densityModeBtn").addEventListener("click", () => cycleDensityMode());
   window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
     if (state.themeMode === "system") applyThemeMode("system", false);
   });
@@ -1753,7 +1479,6 @@ function bindForms() {
     localStorage.setItem(STORAGE.language, next);
     applyLanguageTexts();
     applyThemeMode(state.themeMode, false);
-    applyDensityMode(state.densityMode, false);
   });
   $("loginMode").addEventListener("change", applyLoginMode);
   applyLoginMode();
@@ -1780,7 +1505,9 @@ function bindForms() {
         const userName = $("loginUserName").value.trim();
         const password = $("loginPassword").value;
         if (!userName || !password) throw new Error("user_name e password sao obrigatorios");
+        const apiKeyIdText = $("loginApiKeyId").value.trim();
         const payload = { user_name: userName, password };
+        if (apiKeyIdText) payload.api_key_id = Number(apiKeyIdText);
         const res = await fetch(`${loginBaseUrl}/auth/login-password`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -1816,12 +1543,6 @@ function bindForms() {
     input.type = nextType;
     updateApiKeyToggleLabel();
   });
-  $("toggleLoginPasswordBtn").addEventListener("click", () => {
-    const input = $("loginPassword");
-    const nextType = input.type === "password" ? "text" : "password";
-    input.type = nextType;
-    updateLoginPasswordToggleLabel();
-  });
 
   $("connectBtn").addEventListener("click", async () => {
     try {
@@ -1831,7 +1552,7 @@ function bindForms() {
     }
   });
   $("disconnectBtn").addEventListener("click", () => disconnectWs());
-  $("refreshOmsBtn").addEventListener("click", async () => {
+  $("refreshBtn").addEventListener("click", async () => {
     try {
       await refreshTables();
       eventLog("refresh_ok", {});
@@ -2077,31 +1798,6 @@ function bindForms() {
     }
   });
 
-  $("closePositionForm").addEventListener("submit", async (ev) => {
-    ev.preventDefault();
-    try {
-      const cfg = requireConfig();
-      const accountId = requireAccountId("closePositionAccountId", "close_position");
-      const fd = new FormData(ev.currentTarget);
-      const positionId = Number(fd.get("position_id"));
-      if (!Number.isFinite(positionId) || positionId <= 0) throw new Error("position_id is required");
-      const orderType = String(fd.get("order_type") || "market").trim() || "market";
-      const price = String(fd.get("price") || "").trim();
-      const comment = String(fd.get("comment") || "").trim();
-      const payload = {
-        position_id: positionId,
-        order_type: orderType,
-      };
-      if (price) payload.price = price;
-      if (comment) payload.comment = comment;
-      const body = { account_id: accountId, command: "close_position", payload };
-      const out = await apiRequest("/oms/commands", { method: "POST", body }, cfg);
-      eventLog("close_position", { account_id: accountId, position_id: positionId, out });
-    } catch (err) {
-      eventLog("close_position_error", { error: String(err) });
-    }
-  });
-
   $("closeByForm").addEventListener("submit", async (ev) => {
     ev.preventDefault();
     try {
@@ -2231,7 +1927,6 @@ function bindForms() {
         body: {
           name: String(fd.get("name") || "").trim(),
           account_ids: accountIds,
-          client_strategy_id: parseNullablePositiveInt(fd.get("client_strategy_id"), "client_strategy_id"),
         },
       }, cfg);
       eventLog("admin_create_strategy", out);
@@ -2291,7 +1986,6 @@ function bindForms() {
         body: {
           name: String(fd.get("name") || "").trim(),
           account_ids: selectedTradeStrategyAccountIds(),
-          client_strategy_id: parseNullablePositiveInt(fd.get("client_strategy_id"), "client_strategy_id"),
         },
       }, cfg);
       eventLog("trade_create_strategy", out);
@@ -2516,8 +2210,6 @@ function bootstrapDefaults() {
   const strategies = loadHistory(STORAGE.strategyIds);
   const savedTheme = String(localStorage.getItem(STORAGE.themeMode) || "system").trim();
   applyThemeMode(savedTheme, false);
-  const savedDensity = String(localStorage.getItem(STORAGE.densityMode) || "normal").trim();
-  applyDensityMode(savedDensity, false);
   const savedLanguage = String(localStorage.getItem(STORAGE.language) || "pt-BR").trim();
   state.locale = I18N[savedLanguage] ? savedLanguage : "pt-BR";
   renderLanguageOptions(state.locale);
@@ -2529,7 +2221,6 @@ function bootstrapDefaults() {
   $("sendAccountId").value = accountDefault;
   $("ccxtAccountId").value = accountDefault;
   $("cancelAllAccountId").value = accountDefault;
-  $("closePositionAccountId").value = accountDefault;
   $("riskAccountId").value = accountDefault;
   $("riskStrategyAccountId").value = accountDefault;
   $("riskPermAccountId").value = accountDefault;
@@ -2562,7 +2253,6 @@ status("ready", false);
 loadAccountsByApiKey().catch((err) => {
   eventLog("accounts_error", { error: String(err) });
 });
-
 
 
 

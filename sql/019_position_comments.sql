@@ -3,11 +3,11 @@ SET @ddl := IF(
         SELECT 1
         FROM INFORMATION_SCHEMA.COLUMNS
         WHERE TABLE_SCHEMA = DATABASE()
-          AND TABLE_NAME = 'position_orders'
+          AND TABLE_NAME = 'oms_orders'
           AND COLUMN_NAME = 'comment'
     ),
     'SELECT 1',
-    'ALTER TABLE position_orders ADD COLUMN comment VARCHAR(255) NULL AFTER reason'
+    'ALTER TABLE oms_orders ADD COLUMN comment VARCHAR(255) NULL AFTER reason'
 );
 PREPARE stmt FROM @ddl;
 EXECUTE stmt;
@@ -18,11 +18,11 @@ SET @ddl := IF(
         SELECT 1
         FROM INFORMATION_SCHEMA.COLUMNS
         WHERE TABLE_SCHEMA = DATABASE()
-          AND TABLE_NAME = 'position_deals'
+          AND TABLE_NAME = 'oms_deals'
           AND COLUMN_NAME = 'comment'
     ),
     'SELECT 1',
-    'ALTER TABLE position_deals ADD COLUMN comment VARCHAR(255) NULL AFTER reason'
+    'ALTER TABLE oms_deals ADD COLUMN comment VARCHAR(255) NULL AFTER reason'
 );
 PREPARE stmt FROM @ddl;
 EXECUTE stmt;
@@ -33,11 +33,11 @@ SET @ddl := IF(
         SELECT 1
         FROM INFORMATION_SCHEMA.COLUMNS
         WHERE TABLE_SCHEMA = DATABASE()
-          AND TABLE_NAME = 'position_positions'
+          AND TABLE_NAME = 'oms_positions'
           AND COLUMN_NAME = 'comment'
     ),
     'SELECT 1',
-    'ALTER TABLE position_positions ADD COLUMN comment VARCHAR(255) NULL AFTER reason'
+    'ALTER TABLE oms_positions ADD COLUMN comment VARCHAR(255) NULL AFTER reason'
 );
 PREPARE stmt FROM @ddl;
 EXECUTE stmt;

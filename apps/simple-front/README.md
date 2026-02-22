@@ -2,6 +2,10 @@
 
 Small Vite UI for local operations against `ccxt-position` API.
 
+Documentation:
+
+- `docs/ops/simple-front.md`
+
 ## Features
 
 - API key + base URL + account/strategy selector (with browser history)
@@ -19,6 +23,8 @@ Small Vite UI for local operations against `ccxt-position` API.
   - send order
   - cancel order
   - change order
+  - position change
+  - close by
   - direct ccxt call
 
 ## Run

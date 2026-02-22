@@ -11,7 +11,7 @@ from apps.api.app.schemas import CommandInput
 def _schema_test_app() -> FastAPI:
     app = FastAPI()
 
-    @app.post("/position/commands")
+    @app.post("/oms/commands")
     async def position_commands(commands: CommandInput | list[CommandInput]) -> dict[str, bool]:
         return {"ok": True}
 
@@ -67,7 +67,7 @@ def test_position_commands_endpoint_returns_422_for_invalid_limit_order() -> Non
     app = _schema_test_app()
     client = TestClient(app)
     response = client.post(
-        "/position/commands",
+        "/oms/commands",
         json={
             "account_id": 1,
             "command": "send_order",
@@ -86,7 +86,7 @@ def test_position_commands_endpoint_returns_422_for_invalid_change_order() -> No
     app = _schema_test_app()
     client = TestClient(app)
     response = client.post(
-        "/position/commands",
+        "/oms/commands",
         json={
             "account_id": 1,
             "command": "change_order",

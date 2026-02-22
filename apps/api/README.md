@@ -1,13 +1,13 @@
-﻿# API
+# API
 
 First vertical slice implemented:
 
 - `GET /healthz`
-- `POST /position/commands` (single command or batch)
-- `GET /position/orders/open|history`
-- `GET /position/deals`
-- `GET /position/positions/open|history`
-- `POST /position/reassign`
+- `POST /oms/commands` (single command or batch)
+- `GET /oms/orders/open|history`
+- `GET /oms/deals`
+- `GET /oms/positions/open|history`
+- `POST /oms/reassign`
 - `POST /ccxt/{account_id}/{func}`
 - `POST /ccxt/commands`
 - `WS /ws`
@@ -79,7 +79,7 @@ Dispatcher behavior in v0:
 
 - Executes `send_order`, `cancel_order`, and `change_order` through CCXT in per-account workers
 - Persists exchange raw order payloads into `ccxt_orders_raw`
-- Updates `position_orders` status and `exchange_order_id`
+- Updates `oms_orders` status and `exchange_order_id`
 - Runs reconciliation (manual and scheduled policies) and projects deals/positions
 
 ## Logging

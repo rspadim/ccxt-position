@@ -8,11 +8,11 @@ SET @drop_fk_pos_order_command := (
     EXISTS(
       SELECT 1 FROM information_schema.TABLE_CONSTRAINTS
       WHERE CONSTRAINT_SCHEMA = @db_name
-        AND TABLE_NAME = 'position_orders'
+        AND TABLE_NAME = 'oms_orders'
         AND CONSTRAINT_NAME = 'fk_pos_order_command'
         AND CONSTRAINT_TYPE = 'FOREIGN KEY'
     ),
-    'ALTER TABLE position_orders DROP FOREIGN KEY fk_pos_order_command',
+    'ALTER TABLE oms_orders DROP FOREIGN KEY fk_pos_order_command',
     'SELECT 1'
   )
 );
@@ -25,11 +25,11 @@ SET @drop_fk_pos_order_account := (
     EXISTS(
       SELECT 1 FROM information_schema.TABLE_CONSTRAINTS
       WHERE CONSTRAINT_SCHEMA = @db_name
-        AND TABLE_NAME = 'position_orders'
+        AND TABLE_NAME = 'oms_orders'
         AND CONSTRAINT_NAME = 'fk_pos_order_account'
         AND CONSTRAINT_TYPE = 'FOREIGN KEY'
     ),
-    'ALTER TABLE position_orders DROP FOREIGN KEY fk_pos_order_account',
+    'ALTER TABLE oms_orders DROP FOREIGN KEY fk_pos_order_account',
     'SELECT 1'
   )
 );
@@ -42,11 +42,11 @@ SET @drop_fk_pos_deal_account := (
     EXISTS(
       SELECT 1 FROM information_schema.TABLE_CONSTRAINTS
       WHERE CONSTRAINT_SCHEMA = @db_name
-        AND TABLE_NAME = 'position_deals'
+        AND TABLE_NAME = 'oms_deals'
         AND CONSTRAINT_NAME = 'fk_pos_deal_account'
         AND CONSTRAINT_TYPE = 'FOREIGN KEY'
     ),
-    'ALTER TABLE position_deals DROP FOREIGN KEY fk_pos_deal_account',
+    'ALTER TABLE oms_deals DROP FOREIGN KEY fk_pos_deal_account',
     'SELECT 1'
   )
 );
@@ -59,11 +59,11 @@ SET @drop_fk_pos_deal_order := (
     EXISTS(
       SELECT 1 FROM information_schema.TABLE_CONSTRAINTS
       WHERE CONSTRAINT_SCHEMA = @db_name
-        AND TABLE_NAME = 'position_deals'
+        AND TABLE_NAME = 'oms_deals'
         AND CONSTRAINT_NAME = 'fk_pos_deal_order'
         AND CONSTRAINT_TYPE = 'FOREIGN KEY'
     ),
-    'ALTER TABLE position_deals DROP FOREIGN KEY fk_pos_deal_order',
+    'ALTER TABLE oms_deals DROP FOREIGN KEY fk_pos_deal_order',
     'SELECT 1'
   )
 );
@@ -76,11 +76,11 @@ SET @drop_fk_pos_position_account := (
     EXISTS(
       SELECT 1 FROM information_schema.TABLE_CONSTRAINTS
       WHERE CONSTRAINT_SCHEMA = @db_name
-        AND TABLE_NAME = 'position_positions'
+        AND TABLE_NAME = 'oms_positions'
         AND CONSTRAINT_NAME = 'fk_pos_position_account'
         AND CONSTRAINT_TYPE = 'FOREIGN KEY'
     ),
-    'ALTER TABLE position_positions DROP FOREIGN KEY fk_pos_position_account',
+    'ALTER TABLE oms_positions DROP FOREIGN KEY fk_pos_position_account',
     'SELECT 1'
   )
 );

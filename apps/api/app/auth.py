@@ -70,4 +70,4 @@ async def validate_api_key(db: Any, raw_api_key: str) -> AuthContext | None:
         await conn.commit()
     if row is None:
         return None
-    return AuthContext(api_key_id=int(row[0]), user_id=int(row[1]), role=str(row[2] or "trade"))
+    return AuthContext(api_key_id=int(row[0]), user_id=int(row[1]), role=str(row[2] or "trader"))

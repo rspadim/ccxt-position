@@ -1,9 +1,10 @@
-﻿import asyncio
+import asyncio
 import hashlib
 import hmac
 import json
 import secrets
 import time
+from pathlib import Path
 from collections import deque
 from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass
@@ -16,7 +17,7 @@ from .app.ccxt_adapter import CCXTAdapter
 from .app.config import load_settings
 from .app.credentials_codec import CredentialsCodec
 from .app.db_mysql import DatabaseMySQL
-from .app.logging_utils import setup_application_logging
+from .app.logging_utils import build_file_logger, setup_application_logging
 from .app.repository_mysql import MySQLCommandRepository
 from .app.schemas import CommandInput
 from .app.service import process_single_command_direct
@@ -41,6 +42,8 @@ class Dispatcher:
         self.loggers = setup_application_logging(
             self.settings.disable_uvicorn_access_log, log_dir=self.settings.log_dir
         )
+        self._hint_dispatcher_loggers: dict[int, Any] = {}
+        self._hint_ccxt_loggers: dict[int, Any] = {}
         self.ccxt = CCXTAdapter(logger=self.loggers.get("ccxt"))
         self.codec = CredentialsCodec(
             self.settings.encryption_master_key,
@@ -64,6 +67,32 @@ class Dispatcher:
         self._ws_event_seq = 0
         self._ws_event_buffer_limit = 5000
 
+    def _dispatcher_logger_for_hint(self, hint_id: int) -> Any:
+        hint = int(hint_id)
+        logger = self._hint_dispatcher_loggers.get(hint)
+        if logger is not None:
+            return logger
+        base = Path(self.settings.log_dir)
+        logger = build_file_logger(
+            f"ccxt_position.dispatcher.hint.{hint}",
+            base / f"dispatcher-hint-{hint}.log",
+        )
+        self._hint_dispatcher_loggers[hint] = logger
+        return logger
+
+    def _ccxt_logger_for_hint(self, hint_id: int) -> Any:
+        hint = int(hint_id)
+        logger = self._hint_ccxt_loggers.get(hint)
+        if logger is not None:
+            return logger
+        base = Path(self.settings.log_dir)
+        logger = build_file_logger(
+            f"ccxt_position.ccxt.hint.{hint}",
+            base / f"ccxt-hint-{hint}.log",
+        )
+        self._hint_ccxt_loggers[hint] = logger
+        return logger
+
     async def _auth_from_payload(self, msg: dict[str, Any]) -> AuthContext:
         api_key = str(msg.get("x_api_key", "") or "").strip()
         if not api_key:
@@ -77,6 +106,22 @@ class Dispatcher:
     def _require_admin(auth: AuthContext) -> None:
         if not auth.is_admin:
             raise RuntimeError("admin_required")
+
+    @staticmethod
+    def _normalize_role(role: str) -> str:
+        normalized = str(role or "").strip().lower()
+        if normalized in {"admin", "trader", "portfolio_manager", "robot", "risk", "readonly"}:
+            return normalized
+        return "trader"
+
+    @classmethod
+    def _default_reason_for_role(cls, role: str) -> str:
+        normalized = cls._normalize_role(role)
+        if normalized in {"trader", "portfolio_manager", "robot", "risk"}:
+            return normalized
+        if normalized in {"readonly", "admin"}:
+            return "readonly"
+        return "trader"
 
     @staticmethod
     def _json_dumps(value: Any) -> str:
@@ -160,10 +205,13 @@ class Dispatcher:
         if not allowed:
             raise RuntimeError("strategy_permission_denied")
 
-    async def _require_position_command_permission(self, auth: AuthContext, item: CommandInput) -> int:
+    async def _require_oms_command_permission(self, auth: AuthContext, item: CommandInput) -> int:
         account_id = int(item.account_id or 0)
         payload = item.payload.model_dump(by_alias=True, exclude_none=True, mode="json")
         command = str(item.command)
+        role = self._normalize_role(auth.role)
+        if role == "admin":
+            raise RuntimeError("admin_read_only")
         def _parse_int_ids(raw: Any) -> list[int]:
             if isinstance(raw, list):
                 return [int(x) for x in raw if str(x).strip().isdigit() and int(x) > 0]
@@ -327,6 +375,11 @@ class Dispatcher:
     async def _resolve_worker_for_account(self, account_id: int) -> int:
         cached = self.account_worker.get(account_id)
         if cached is not None and 0 <= cached < self.pool_size:
+            self._dispatcher_logger_for_hint(cached).info(
+                "resolve account_id=%s source=cache worker_id=%s",
+                int(account_id),
+                int(cached),
+            )
             return cached
 
         hinted: int | None = None
@@ -337,6 +390,11 @@ class Dispatcher:
             wid = int(hinted)
             self.account_worker[account_id] = wid
             self.worker_active_accounts[wid].add(account_id)
+            self._dispatcher_logger_for_hint(wid).info(
+                "resolve account_id=%s source=hint worker_id=%s",
+                int(account_id),
+                int(wid),
+            )
             return wid
 
         # Least-loaded by (inflight + active_accounts).
@@ -349,11 +407,19 @@ class Dispatcher:
         async with self.db.connection() as conn:
             await self.repo.set_account_dispatcher_worker_hint(conn, account_id, wid)
             await conn.commit()
+        self._dispatcher_logger_for_hint(wid).info(
+            "resolve account_id=%s source=least_loaded worker_id=%s inflight=%s active_accounts=%s",
+            int(account_id),
+            int(wid),
+            int(self.worker_inflight[wid]),
+            int(len(self.worker_active_accounts[wid])),
+        )
         return wid
 
     async def _worker_loop(self, worker_id: int, queue: asyncio.Queue[_Job]) -> None:
         while True:
             job = await queue.get()
+            started_at = time.perf_counter()
             try:
                 self.worker_inflight[worker_id] += 1
                 lock = self.account_locks.setdefault(job.account_id, asyncio.Lock())
@@ -368,14 +434,42 @@ class Dispatcher:
                         {"ok": False, "error": {"code": "dispatcher_error", "message": str(exc)}}
                     )
             finally:
+                elapsed_ms = round((time.perf_counter() - started_at) * 1000, 2)
+                self._dispatcher_logger_for_hint(worker_id).info(
+                    "worker_done worker_id=%s account_id=%s op=%s elapsed_ms=%s inflight=%s queue_depth=%s",
+                    int(worker_id),
+                    int(job.account_id),
+                    str(job.payload.get("op", "")),
+                    elapsed_ms,
+                    int(self.worker_inflight[worker_id]),
+                    int(queue.qsize()),
+                )
                 self.worker_inflight[worker_id] = max(0, self.worker_inflight[worker_id] - 1)
                 queue.task_done()
 
     async def _dispatch_to_account(self, account_id: int, payload: dict[str, Any]) -> dict[str, Any]:
         fut: asyncio.Future = asyncio.get_running_loop().create_future()
         wid = await self._resolve_worker_for_account(account_id)
+        logger = self._dispatcher_logger_for_hint(wid)
+        enqueued_at = time.perf_counter()
+        logger.info(
+            "enqueue worker_id=%s account_id=%s op=%s inflight=%s queue_depth_before=%s",
+            int(wid),
+            int(account_id),
+            str(payload.get("op", "")),
+            int(self.worker_inflight[wid]),
+            int(self.worker_queues[wid].qsize()),
+        )
         await self.worker_queues[wid].put(_Job(account_id=account_id, payload=payload, future=fut))
         out = await fut
+        logger.info(
+            "result worker_id=%s account_id=%s op=%s elapsed_ms=%s ok=%s",
+            int(wid),
+            int(account_id),
+            str(payload.get("op", "")),
+            round((time.perf_counter() - enqueued_at) * 1000, 2),
+            bool(isinstance(out, dict) and out.get("ok")),
+        )
         if isinstance(out, dict):
             return out
         return {"ok": False, "error": {"code": "dispatcher_error", "message": "invalid_worker_response"}}
@@ -405,7 +499,7 @@ class Dispatcher:
                     break
         return out
 
-    async def _execute_position_commands_batch(self, msg: dict[str, Any]) -> dict[str, Any]:
+    async def _execute_oms_commands_batch(self, msg: dict[str, Any]) -> dict[str, Any]:
         items = msg.get("items")
         if not isinstance(items, list):
             return {"ok": False, "error": {"code": "validation_error", "message": "items must be a list"}}
@@ -434,7 +528,7 @@ class Dispatcher:
                     "index": index,
                     "account_id": int(item["account_id"]),
                     "payload": {
-                        "op": "position_command",
+                        "op": "oms_command",
                         "x_api_key": x_api_key,
                         "account_id": int(item["account_id"]),
                         "index": index,
@@ -536,12 +630,18 @@ class Dispatcher:
     async def _execute(self, msg: dict[str, Any]) -> dict[str, Any]:
         op = str(msg.get("op", "")).strip()
         self.op_counts[op] = self.op_counts.get(op, 0) + 1
-        if op == "position_command":
+        if op == "oms_command":
             auth = await self._auth_from_payload(msg)
             index = int(msg.get("index", 0) or 0)
             raw_item = msg.get("item") if isinstance(msg.get("item"), dict) else {}
+            command = str(raw_item.get("command", "")).strip()
+            payload_raw = raw_item.get("payload")
+            if command in {"send_order", "close_position"} and isinstance(payload_raw, dict):
+                reason_raw = payload_raw.get("reason")
+                if reason_raw is None or not str(reason_raw).strip():
+                    payload_raw["reason"] = self._default_reason_for_role(auth.role)
             item = COMMAND_INPUT_ADAPTER.validate_python(raw_item)
-            resolved_account_id = await self._require_position_command_permission(auth, item)
+            resolved_account_id = await self._require_oms_command_permission(auth, item)
             item = item.model_copy(update={"account_id": resolved_account_id})
             result = await process_single_command_direct(
                 db=self.db,
@@ -570,6 +670,8 @@ class Dispatcher:
             func = str(msg.get("func", "")).strip()
             args = msg.get("args") if isinstance(msg.get("args"), list) else []
             kwargs = msg.get("kwargs") if isinstance(msg.get("kwargs"), dict) else {}
+            if self._normalize_role(auth.role) == "admin" and self._ccxt_requires_trade(func):
+                return {"ok": False, "error": {"code": "permission_denied", "message": "admin_read_only"}}
             account = await self._require_account_permission(
                 auth, account_id, require_trade=self._ccxt_requires_trade(func)
             )
@@ -581,6 +683,9 @@ class Dispatcher:
             api_key = self.codec.decrypt_maybe(api_key_enc)
             secret = self.codec.decrypt_maybe(secret_enc)
             passphrase = self.codec.decrypt_maybe(passphrase_enc)
+            hint_id = self.account_worker.get(account_id)
+            if hint_id is None or not (0 <= int(hint_id) < self.pool_size):
+                hint_id = await self._resolve_worker_for_account(account_id)
             result = await self.ccxt.execute_method(
                 exchange_id=account["exchange_id"],
                 use_testnet=is_testnet,
@@ -591,10 +696,11 @@ class Dispatcher:
                 method=func,
                 args=args,
                 kwargs=kwargs,
+                logger=self._ccxt_logger_for_hint(int(hint_id)),
             )
             return {"ok": True, "result": result}
 
-        if op == "position_query":
+        if op == "oms_query":
             auth = await self._auth_from_payload(msg)
             query = str(msg.get("query", "")).strip()
             account_id = int(msg.get("account_id", 0) or 0)
@@ -638,7 +744,7 @@ class Dispatcher:
                 await conn.commit()
             return {"ok": True, "result": rows}
 
-        if op == "position_reassign":
+        if op == "oms_reassign":
             auth = await self._auth_from_payload(msg)
             account_id = int(msg.get("account_id", 0) or 0)
             deal_ids = msg.get("deal_ids") if isinstance(msg.get("deal_ids"), list) else []
@@ -761,6 +867,9 @@ class Dispatcher:
             auth = await self._auth_from_payload(msg)
             account_id = int(msg.get("account_id", 0) or 0)
             allow = bool(msg.get("allow_new_positions", True))
+            comment = str(msg.get("comment", "") or "").strip()
+            if not comment:
+                return {"ok": False, "error": {"code": "validation_error", "message": "comment is required"}}
             await self._require_account_permission(
                 auth,
                 account_id,
@@ -769,6 +878,19 @@ class Dispatcher:
             )
             async with self.db.connection() as conn:
                 changed = await self.repo.set_allow_new_positions(conn, account_id, allow)
+                await self.repo.insert_event(
+                    conn=conn,
+                    account_id=account_id,
+                    namespace="risk",
+                    event_type="account_allow_new_positions_changed",
+                    payload={
+                        "account_id": account_id,
+                        "allow_new_positions": allow,
+                        "comment": comment,
+                        "actor_user_id": auth.user_id,
+                        "actor_api_key_id": auth.api_key_id,
+                    },
+                )
                 await conn.commit()
             return {"ok": True, "result": {"account_id": account_id, "allow_new_positions": allow, "rows": changed}}
 
@@ -777,6 +899,9 @@ class Dispatcher:
             account_id = int(msg.get("account_id", 0) or 0)
             strategy_id = int(msg.get("strategy_id", 0) or 0)
             allow = bool(msg.get("allow_new_positions", True))
+            comment = str(msg.get("comment", "") or "").strip()
+            if not comment:
+                return {"ok": False, "error": {"code": "validation_error", "message": "comment is required"}}
             await self._require_account_permission(
                 auth,
                 account_id,
@@ -786,6 +911,20 @@ class Dispatcher:
             async with self.db.connection() as conn:
                 changed = await self.repo.set_allow_new_positions_for_strategy(
                     conn, account_id, strategy_id, allow
+                )
+                await self.repo.insert_event(
+                    conn=conn,
+                    account_id=account_id,
+                    namespace="risk",
+                    event_type="strategy_allow_new_positions_changed",
+                    payload={
+                        "account_id": account_id,
+                        "strategy_id": strategy_id,
+                        "allow_new_positions": allow,
+                        "comment": comment,
+                        "actor_user_id": auth.user_id,
+                        "actor_api_key_id": auth.api_key_id,
+                    },
                 )
                 await conn.commit()
             return {
@@ -802,8 +941,11 @@ class Dispatcher:
             auth = await self._auth_from_payload(msg)
             account_id = int(msg.get("account_id", 0) or 0)
             status = str(msg.get("status", "active")).strip().lower()
+            comment = str(msg.get("comment", "") or "").strip()
             if status not in {"active", "blocked"}:
                 return {"ok": False, "error": {"code": "validation_error", "message": "status must be active|blocked"}}
+            if not comment:
+                return {"ok": False, "error": {"code": "validation_error", "message": "comment is required"}}
             await self._require_account_permission(
                 auth,
                 account_id,
@@ -812,6 +954,19 @@ class Dispatcher:
             )
             async with self.db.connection() as conn:
                 changed = await self.repo.set_account_status(conn, account_id, status)
+                await self.repo.insert_event(
+                    conn=conn,
+                    account_id=account_id,
+                    namespace="risk",
+                    event_type="account_status_changed",
+                    payload={
+                        "account_id": account_id,
+                        "status": status,
+                        "comment": comment,
+                        "actor_user_id": auth.user_id,
+                        "actor_api_key_id": auth.api_key_id,
+                    },
+                )
                 await conn.commit()
             return {"ok": True, "result": {"account_id": account_id, "status": status, "rows": changed}}
 
@@ -918,13 +1073,20 @@ class Dispatcher:
             auth = await self._auth_from_payload(msg)
             self._require_admin(auth)
             user_name = str(msg.get("user_name", "")).strip()
-            role = str(msg.get("role", "trade")).strip().lower()
-            if role not in {"admin", "trade"}:
-                return {"ok": False, "error": {"code": "validation_error", "message": "role must be admin|trade"}}
+            role = str(msg.get("role", "trader")).strip().lower()
+            if role not in {"admin", "trader", "portfolio_manager", "robot", "risk", "readonly"}:
+                return {
+                    "ok": False,
+                    "error": {
+                        "code": "validation_error",
+                        "message": "role must be admin|trader|portfolio_manager|robot|risk|readonly",
+                    },
+                }
             if not user_name:
                 return {"ok": False, "error": {"code": "validation_error", "message": "user_name is required"}}
             password_raw = msg.get("password")
             password = None if password_raw is None else str(password_raw)
+            role = self._normalize_role(role)
             api_key_plain = str(msg.get("api_key") or secrets.token_urlsafe(32))
             api_key_hash = hashlib.sha256(api_key_plain.encode("utf-8")).hexdigest()
             permissions = msg.get("permissions") if isinstance(msg.get("permissions"), list) else []
@@ -1129,10 +1291,22 @@ class Dispatcher:
             self._require_admin(auth)
             name = str(msg.get("name", "")).strip()
             account_ids = msg.get("account_ids") if isinstance(msg.get("account_ids"), list) else []
+            raw_client_strategy_id = msg.get("client_strategy_id")
+            client_strategy_id: int | None = None
+            if raw_client_strategy_id is not None and str(raw_client_strategy_id).strip() != "":
+                parsed_client_strategy_id = int(raw_client_strategy_id)
+                if parsed_client_strategy_id <= 0:
+                    return {
+                        "ok": False,
+                        "error": {"code": "validation_error", "message": "client_strategy_id must be >= 1"},
+                    }
+                client_strategy_id = parsed_client_strategy_id
             if not name:
                 return {"ok": False, "error": {"code": "validation_error", "message": "name is required"}}
             async with self.db.connection() as conn:
-                strategy_id = await self.repo.create_strategy(conn, name=name)
+                strategy_id = await self.repo.create_strategy(
+                    conn, name=name, client_strategy_id=client_strategy_id
+                )
                 for raw in account_ids:
                     aid = int(raw or 0)
                     if aid > 0:
@@ -1159,6 +1333,16 @@ class Dispatcher:
             auth = await self._auth_from_payload(msg)
             name = str(msg.get("name", "")).strip()
             account_ids = msg.get("account_ids") if isinstance(msg.get("account_ids"), list) else []
+            raw_client_strategy_id = msg.get("client_strategy_id")
+            client_strategy_id: int | None = None
+            if raw_client_strategy_id is not None and str(raw_client_strategy_id).strip() != "":
+                parsed_client_strategy_id = int(raw_client_strategy_id)
+                if parsed_client_strategy_id <= 0:
+                    return {
+                        "ok": False,
+                        "error": {"code": "validation_error", "message": "client_strategy_id must be >= 1"},
+                    }
+                client_strategy_id = parsed_client_strategy_id
             if not name:
                 return {"ok": False, "error": {"code": "validation_error", "message": "name is required"}}
             normalized_account_ids: list[int] = []
@@ -1171,7 +1355,9 @@ class Dispatcher:
             if not normalized_account_ids:
                 return {"ok": False, "error": {"code": "validation_error", "message": "account_ids is required"}}
             async with self.db.connection() as conn:
-                strategy_id = await self.repo.create_strategy(conn, name=name)
+                strategy_id = await self.repo.create_strategy(
+                    conn, name=name, client_strategy_id=client_strategy_id
+                )
                 for aid in normalized_account_ids:
                     await self.repo.link_strategy_to_account(conn, strategy_id, aid)
                 await conn.commit()
@@ -1185,12 +1371,54 @@ class Dispatcher:
                 return {"ok": False, "error": {"code": "validation_error", "message": "strategy_id is required"}}
             name_raw = msg.get("name")
             status_raw = msg.get("status")
+            account_ids_raw = msg.get("account_ids")
+            has_client_strategy_id = "client_strategy_id" in msg
+            raw_client_strategy_id = msg.get("client_strategy_id")
             name = None if name_raw is None else str(name_raw).strip()
             status = None if status_raw is None else str(status_raw).strip().lower()
+            has_account_ids = account_ids_raw is not None
+            client_strategy_id: int | None = None
+            if has_client_strategy_id and raw_client_strategy_id is not None and str(raw_client_strategy_id).strip() != "":
+                client_strategy_id = int(raw_client_strategy_id)
+                if int(client_strategy_id) <= 0:
+                    return {
+                        "ok": False,
+                        "error": {"code": "validation_error", "message": "client_strategy_id must be >= 1"},
+                    }
             if status is not None and status not in {"active", "disabled"}:
                 return {"ok": False, "error": {"code": "validation_error", "message": "status must be active|disabled"}}
+            normalized_account_ids: list[int] = []
+            if has_account_ids:
+                if not isinstance(account_ids_raw, list):
+                    return {"ok": False, "error": {"code": "validation_error", "message": "account_ids must be a list"}}
+                for raw in account_ids_raw:
+                    aid = int(raw or 0)
+                    if aid <= 0:
+                        continue
+                    normalized_account_ids.append(aid)
+                normalized_account_ids = sorted(set(normalized_account_ids))
             async with self.db.connection() as conn:
-                rows = await self.repo.update_strategy(conn, strategy_id, name=name, status=status)
+                rows = await self.repo.update_strategy(
+                    conn,
+                    strategy_id,
+                    name=name,
+                    status=status,
+                    client_strategy_id=client_strategy_id,
+                    update_client_strategy_id=has_client_strategy_id,
+                )
+                if has_account_ids:
+                    for aid in normalized_account_ids:
+                        account = await self.repo.fetch_account_by_id(conn, aid)
+                        if account is None or str(account.get("status")) != "active":
+                            await conn.commit()
+                            return {
+                                "ok": False,
+                                "error": {
+                                    "code": "validation_error",
+                                    "message": f"account_id={aid} not found or inactive",
+                                },
+                            }
+                    rows += await self.repo.sync_strategy_accounts(conn, strategy_id, normalized_account_ids)
                 await conn.commit()
             return {"ok": True, "result": {"strategy_id": strategy_id, "rows": rows}}
 
@@ -1256,8 +1484,8 @@ class Dispatcher:
                 writer.write((self._json_dumps(out) + "\n").encode("utf-8"))
                 await writer.drain()
                 return
-            if op == "position_commands_batch":
-                out = await self._execute_position_commands_batch(msg)
+            if op == "oms_commands_batch":
+                out = await self._execute_oms_commands_batch(msg)
                 writer.write((self._json_dumps(out) + "\n").encode("utf-8"))
                 await writer.drain()
                 return
@@ -1271,8 +1499,8 @@ class Dispatcher:
                 "authorize_account",
                 "ccxt_call",
                 "reconcile_now",
-                "position_query",
-                "position_reassign",
+                "oms_query",
+                "oms_reassign",
                 "ws_pull_events",
                 "ws_tail_id",
                 "risk_set_allow_new_positions",

@@ -1,4 +1,4 @@
-﻿import hashlib
+import hashlib
 import json
 from datetime import datetime, timezone
 from typing import Any
@@ -70,7 +70,7 @@ class MySQLCommandRepository:
             )
             return int(cur.lastrowid)
 
-    async def create_user(self, conn: Any, name: str, role: str = "trade") -> int:
+    async def create_user(self, conn: Any, name: str, role: str = "trader") -> int:
         async with conn.cursor() as cur:
             await cur.execute(
                 """
@@ -270,14 +270,16 @@ class MySQLCommandRepository:
             )
             return int(cur.rowcount or 0)
 
-    async def create_strategy(self, conn: Any, name: str) -> int:
+    async def create_strategy(
+        self, conn: Any, name: str, client_strategy_id: int | None = None
+    ) -> int:
         async with conn.cursor() as cur:
             await cur.execute(
                 """
-                INSERT INTO strategies (name, status)
-                VALUES (%s, 'active')
+                INSERT INTO strategies (name, client_strategy_id, status)
+                VALUES (%s, %s, 'active')
                 """,
-                (name,),
+                (name, client_strategy_id),
             )
             return int(cur.lastrowid)
 
@@ -293,12 +295,56 @@ class MySQLCommandRepository:
             )
             return int(cur.rowcount or 0)
 
+    async def sync_strategy_accounts(
+        self, conn: Any, strategy_id: int, account_ids: list[int]
+    ) -> int:
+        normalized_ids = sorted({int(x) for x in account_ids if int(x) > 0})
+        changed_rows = 0
+        async with conn.cursor() as cur:
+            if normalized_ids:
+                placeholders = ",".join(["%s"] * len(normalized_ids))
+                await cur.execute(
+                    f"""
+                    UPDATE strategy_accounts
+                    SET status = 'disabled'
+                    WHERE strategy_id = %s
+                      AND account_id NOT IN ({placeholders})
+                      AND status <> 'disabled'
+                    """,
+                    (strategy_id, *normalized_ids),
+                )
+                changed_rows += int(cur.rowcount or 0)
+            else:
+                await cur.execute(
+                    """
+                    UPDATE strategy_accounts
+                    SET status = 'disabled'
+                    WHERE strategy_id = %s
+                      AND status <> 'disabled'
+                    """,
+                    (strategy_id,),
+                )
+                changed_rows += int(cur.rowcount or 0)
+
+            for aid in normalized_ids:
+                await cur.execute(
+                    """
+                    INSERT INTO strategy_accounts (strategy_id, account_id, status)
+                    VALUES (%s, %s, 'active')
+                    ON DUPLICATE KEY UPDATE status = 'active'
+                    """,
+                    (strategy_id, aid),
+                )
+                changed_rows += int(cur.rowcount or 0)
+        return changed_rows
+
     async def list_strategies(self, conn: Any) -> list[dict[str, Any]]:
         async with conn.cursor() as cur:
             await cur.execute(
                 """
                 SELECT
                   s.id,
+                  s.client_strategy_id,
                   s.name,
                   s.status,
                   COALESCE(GROUP_CONCAT(sa.account_id ORDER BY sa.account_id SEPARATOR ','), '') AS account_ids_csv
@@ -306,20 +352,21 @@ class MySQLCommandRepository:
                 LEFT JOIN strategy_accounts sa
                   ON sa.strategy_id = s.id
                  AND sa.status = 'active'
-                GROUP BY s.id, s.name, s.status
+                GROUP BY s.id, s.client_strategy_id, s.name, s.status
                 ORDER BY s.id ASC
                 """
             )
             rows = await cur.fetchall()
         out: list[dict[str, Any]] = []
         for row in rows:
-            csv = str(row[3] or "")
+            csv = str(row[4] or "")
             account_ids = [int(x) for x in csv.split(",") if x.strip().isdigit()]
             out.append(
                 {
                     "strategy_id": int(row[0]),
-                    "name": str(row[1]),
-                    "status": str(row[2]),
+                    "client_strategy_id": None if row[1] is None else int(row[1]),
+                    "name": str(row[2]),
+                    "status": str(row[3]),
                     "account_ids": account_ids,
                 }
             )
@@ -332,6 +379,8 @@ class MySQLCommandRepository:
         *,
         name: str | None = None,
         status: str | None = None,
+        client_strategy_id: int | None = None,
+        update_client_strategy_id: bool = False,
     ) -> int:
         sets: list[str] = []
         params: list[Any] = []
@@ -341,6 +390,9 @@ class MySQLCommandRepository:
         if status is not None:
             sets.append("status = %s")
             params.append(status)
+        if update_client_strategy_id:
+            sets.append("client_strategy_id = %s")
+            params.append(client_strategy_id)
         if not sets:
             return 0
         params.append(strategy_id)
@@ -648,7 +700,7 @@ class MySQLCommandRepository:
             await cur.execute(
                 """
                 SELECT id
-                FROM position_positions
+                FROM oms_positions
                 WHERE id = %s AND account_id = %s AND symbol = %s AND state = 'open'
                 LIMIT 1
                 """,
@@ -669,7 +721,7 @@ class MySQLCommandRepository:
         async with conn.cursor() as cur:
             await cur.execute(
                 """
-                INSERT INTO position_commands (account_id, command_type, request_id, payload_json, status)
+                INSERT INTO oms_commands (account_id, command_type, request_id, payload_json, status)
                 VALUES (%s, %s, %s, %s, 'accepted')
                 """,
                 (account_id, command_type, request_id, payload_json),
@@ -697,7 +749,7 @@ class MySQLCommandRepository:
         async with conn.cursor() as cur:
             await cur.execute(
                 """
-                INSERT INTO position_orders (
+                INSERT INTO oms_orders (
                     command_id, account_id, symbol, side, order_type, status,
                     strategy_id, position_id, reason, comment, client_order_id,
                     qty, price, stop_loss, stop_gain
@@ -733,7 +785,7 @@ class MySQLCommandRepository:
             await cur.execute(
                 """
                 SELECT id, symbol, strategy_id, side, qty, avg_price
-                FROM position_positions
+                FROM oms_positions
                 WHERE id = %s AND account_id = %s AND state IN ('open', 'close_requested')
                 LIMIT 1
                 """,
@@ -751,7 +803,7 @@ class MySQLCommandRepository:
             await cur.execute(
                 """
                 SELECT id, status, order_type
-                FROM position_orders
+                FROM oms_orders
                 WHERE id = %s AND account_id = %s
                 LIMIT 1
                 """,
@@ -767,7 +819,7 @@ class MySQLCommandRepository:
             await cur.execute(
                 """
                 SELECT strategy_id
-                FROM position_orders
+                FROM oms_orders
                 WHERE id = %s AND account_id = %s
                 LIMIT 1
                 """,
@@ -783,7 +835,7 @@ class MySQLCommandRepository:
             await cur.execute(
                 """
                 SELECT account_id
-                FROM position_orders
+                FROM oms_orders
                 WHERE id = %s
                 LIMIT 1
                 """,
@@ -799,7 +851,7 @@ class MySQLCommandRepository:
             await cur.execute(
                 """
                 SELECT strategy_id
-                FROM position_positions
+                FROM oms_positions
                 WHERE id = %s AND account_id = %s
                 LIMIT 1
                 """,
@@ -815,7 +867,7 @@ class MySQLCommandRepository:
             await cur.execute(
                 """
                 SELECT account_id
-                FROM position_positions
+                FROM oms_positions
                 WHERE id = %s
                 LIMIT 1
                 """,
@@ -830,7 +882,7 @@ class MySQLCommandRepository:
         async with conn.cursor() as cur:
             await cur.execute(
                 """
-                DELETE FROM position_close_locks
+                DELETE FROM oms_close_locks
                 WHERE position_id = %s AND expires_at <= NOW()
                 """,
                 (position_id,),
@@ -849,7 +901,7 @@ class MySQLCommandRepository:
             async with conn.cursor() as cur:
                 await cur.execute(
                     """
-                    INSERT INTO position_close_locks (
+                    INSERT INTO oms_close_locks (
                         account_id, position_id, request_id, lock_reason, expires_at
                     ) VALUES (
                         %s, %s, %s, 'close_position', DATE_ADD(NOW(), INTERVAL %s SECOND)
@@ -868,7 +920,7 @@ class MySQLCommandRepository:
             await cur.execute(
                 """
                 SELECT account_id, command_type, payload_json
-                FROM position_commands
+                FROM oms_commands
                 WHERE id = %s
                 LIMIT 1
                 """,
@@ -884,7 +936,7 @@ class MySQLCommandRepository:
         async with conn.cursor() as cur:
             await cur.execute(
                 """
-                UPDATE position_commands
+                UPDATE oms_commands
                 SET status = 'completed', updated_at = NOW()
                 WHERE id = %s
                 """,
@@ -895,7 +947,7 @@ class MySQLCommandRepository:
         async with conn.cursor() as cur:
             await cur.execute(
                 """
-                UPDATE position_commands
+                UPDATE oms_commands
                 SET status = 'failed', updated_at = NOW()
                 WHERE id = %s
                 """,
@@ -907,7 +959,7 @@ class MySQLCommandRepository:
             await cur.execute(
                 """
                 SELECT id
-                FROM position_orders
+                FROM oms_orders
                 WHERE command_id = %s
                 LIMIT 1
                 """,
@@ -922,7 +974,7 @@ class MySQLCommandRepository:
         async with conn.cursor() as cur:
             await cur.execute(
                 """
-                UPDATE position_orders
+                UPDATE oms_orders
                 SET status = 'SUBMITTED', updated_at = NOW()
                 WHERE id = %s
                 """,
@@ -935,7 +987,7 @@ class MySQLCommandRepository:
         async with conn.cursor() as cur:
             await cur.execute(
                 """
-                UPDATE position_orders
+                UPDATE oms_orders
                 SET status = 'SUBMITTED',
                     exchange_order_id = %s,
                     updated_at = NOW()
@@ -948,7 +1000,7 @@ class MySQLCommandRepository:
         async with conn.cursor() as cur:
             await cur.execute(
                 """
-                UPDATE position_orders
+                UPDATE oms_orders
                 SET status = 'REJECTED', updated_at = NOW()
                 WHERE id = %s
                 """,
@@ -959,7 +1011,7 @@ class MySQLCommandRepository:
         async with conn.cursor() as cur:
             await cur.execute(
                 """
-                UPDATE position_orders
+                UPDATE oms_orders
                 SET status = 'CANCELED', closed_at = NOW(), updated_at = NOW()
                 WHERE id = %s
                 """,
@@ -1011,7 +1063,7 @@ class MySQLCommandRepository:
                 """
                 SELECT id, symbol, side, order_type, status, qty, price, stop_loss, stop_gain, filled_qty,
                        strategy_id, position_id, reason, comment, client_order_id, exchange_order_id
-                FROM position_orders
+                FROM oms_orders
                 WHERE id = %s AND account_id = %s
                 LIMIT 1
                 """,
@@ -1052,7 +1104,7 @@ class MySQLCommandRepository:
             await cur.execute(
                 f"""
                 SELECT id, symbol, status, strategy_id, client_order_id, exchange_order_id
-                FROM position_orders
+                FROM oms_orders
                 WHERE account_id = %s
                   AND status IN ('PENDING_SUBMIT','SUBMITTED','PARTIALLY_FILLED')
                   {strategy_sql}
@@ -1080,7 +1132,7 @@ class MySQLCommandRepository:
             await cur.execute(
                 """
                 SELECT id, account_id, symbol, side, order_type, qty, price, stop_loss, stop_gain, comment, client_order_id
-                FROM position_orders
+                FROM oms_orders
                 WHERE command_id = %s
                 LIMIT 1
                 """,
@@ -1107,7 +1159,7 @@ class MySQLCommandRepository:
         async with conn.cursor() as cur:
             await cur.execute(
                 """
-                DELETE FROM position_close_locks
+                DELETE FROM oms_close_locks
                 WHERE position_id = %s
                 """,
                 (position_id,),
@@ -1164,7 +1216,7 @@ class MySQLCommandRepository:
             await cur.execute(
                 """
                 SELECT id, qty, avg_price, side, strategy_id, stop_loss, stop_gain, comment
-                FROM position_positions
+                FROM oms_positions
                 WHERE account_id = %s AND symbol = %s AND side = %s AND state = 'open'
                 ORDER BY id DESC
                 LIMIT 1
@@ -1192,7 +1244,7 @@ class MySQLCommandRepository:
             await cur.execute(
                 """
                 SELECT id, qty, avg_price, side, strategy_id, stop_loss, stop_gain, comment
-                FROM position_positions
+                FROM oms_positions
                 WHERE account_id = %s AND symbol = %s AND state = 'open'
                 ORDER BY id DESC
                 LIMIT 1
@@ -1220,7 +1272,7 @@ class MySQLCommandRepository:
             await cur.execute(
                 """
                 SELECT id, qty, avg_price, side, strategy_id, stop_loss, stop_gain, comment
-                FROM position_positions
+                FROM oms_positions
                 WHERE account_id = %s
                   AND symbol = %s
                   AND strategy_id = %s
@@ -1261,7 +1313,7 @@ class MySQLCommandRepository:
         async with conn.cursor() as cur:
             await cur.execute(
                 """
-                INSERT INTO position_positions (
+                INSERT INTO oms_positions (
                     account_id, symbol, strategy_id, side, qty, avg_price, stop_loss, stop_gain, state, reason, comment
                 )
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'open', %s, %s)
@@ -1276,7 +1328,7 @@ class MySQLCommandRepository:
         async with conn.cursor() as cur:
             await cur.execute(
                 """
-                UPDATE position_positions
+                UPDATE oms_positions
                 SET qty = %s,
                     avg_price = %s,
                     updated_at = NOW()
@@ -1289,7 +1341,7 @@ class MySQLCommandRepository:
         async with conn.cursor() as cur:
             await cur.execute(
                 """
-                UPDATE position_positions
+                UPDATE oms_positions
                 SET state = 'closed', qty = 0, closed_at = NOW(), updated_at = NOW()
                 WHERE id = %s
                 """,
@@ -1302,7 +1354,7 @@ class MySQLCommandRepository:
         async with conn.cursor() as cur:
             await cur.execute(
                 """
-                UPDATE position_positions
+                UPDATE oms_positions
                 SET state = 'close_requested',
                     updated_at = NOW()
                 WHERE id = %s
@@ -1319,7 +1371,7 @@ class MySQLCommandRepository:
         async with conn.cursor() as cur:
             await cur.execute(
                 """
-                UPDATE position_positions
+                UPDATE oms_positions
                 SET state = 'open',
                     updated_at = NOW()
                 WHERE id = %s
@@ -1361,7 +1413,7 @@ class MySQLCommandRepository:
         async with conn.cursor() as cur:
             await cur.execute(
                 f"""
-                UPDATE position_positions
+                UPDATE oms_positions
                 SET {", ".join(sets)}
                 WHERE account_id = %s
                   AND id = %s
@@ -1380,7 +1432,7 @@ class MySQLCommandRepository:
             await cur.execute(
                 """
                 SELECT id
-                FROM position_deals
+                FROM oms_deals
                 WHERE account_id = %s AND exchange_trade_id = %s
                 LIMIT 1
                 """,
@@ -1411,7 +1463,7 @@ class MySQLCommandRepository:
         async with conn.cursor() as cur:
             await cur.execute(
                 """
-                INSERT INTO position_deals (
+                INSERT INTO oms_deals (
                     account_id, order_id, position_id, symbol, side, qty, price, fee, fee_currency, pnl,
                     strategy_id, reason, comment, reconciled, exchange_trade_id
                 ) VALUES (
@@ -1452,7 +1504,7 @@ class MySQLCommandRepository:
             await cur.execute(
                 """
                 SELECT id, strategy_id, position_id, stop_loss, stop_gain, comment
-                FROM position_orders
+                FROM oms_orders
                 WHERE account_id = %s
                   AND (
                     (%s IS NOT NULL AND %s <> '' AND exchange_order_id = %s)
@@ -1982,6 +2034,7 @@ class MySQLCommandRepository:
                 """
                 SELECT
                   s.id,
+                  s.client_strategy_id,
                   s.name,
                   s.status,
                   COALESCE(GROUP_CONCAT(DISTINCT sa.account_id ORDER BY sa.account_id SEPARATOR ','), '') AS account_ids_csv
@@ -2000,42 +2053,59 @@ class MySQLCommandRepository:
                  AND asp.strategy_id = s.id
                  AND asp.status = 'active'
                  AND asp.can_read = TRUE
-                WHERE s.status = 'active'
-                  AND (akap.restrict_to_strategies = FALSE OR asp.strategy_id IS NOT NULL)
-                GROUP BY s.id, s.name, s.status
-                ORDER BY s.id ASC
+                WHERE (akap.restrict_to_strategies = FALSE OR asp.strategy_id IS NOT NULL)
+                GROUP BY s.id, s.client_strategy_id, s.name, s.status
+                ORDER BY
+                  CASE WHEN s.status = 'active' THEN 0 ELSE 1 END ASC,
+                  s.name ASC,
+                  s.id ASC
                 """,
                 (api_key_id,),
             )
             rows = await cur.fetchall()
         out: list[dict[str, Any]] = []
         for row in rows:
-            csv = str(row[3] or "")
+            csv = str(row[4] or "")
             account_ids = [int(x) for x in csv.split(",") if x.strip().isdigit()]
             out.append(
                 {
                     "strategy_id": int(row[0]),
-                    "name": str(row[1]),
-                    "status": str(row[2]),
+                    "client_strategy_id": None if row[1] is None else int(row[1]),
+                    "name": str(row[2]),
+                    "status": str(row[3]),
                     "account_ids": account_ids,
                 }
             )
         return out
 
     async def list_orders(
-        self, conn: Any, account_id: int, open_only: bool, strategy_id: int | None = None
+        self,
+        conn: Any,
+        account_id: int,
+        open_only: bool,
+        strategy_id: int | None = None,
+        date_from: str | None = None,
+        date_to: str | None = None,
     ) -> list[dict[str, Any]]:
         status_filter = "AND status IN ('PENDING_SUBMIT','SUBMITTED','PARTIALLY_FILLED')" if open_only else ""
         strategy_filter = "AND strategy_id = %s" if strategy_id is not None else ""
-        params: tuple[Any, ...] = (account_id,) if strategy_id is None else (account_id, int(strategy_id))
+        date_filter = ""
+        params_list: list[Any] = [account_id]
+        if strategy_id is not None:
+            params_list.append(int(strategy_id))
+        if (not open_only) and date_from and date_to:
+            date_filter = "AND updated_at >= %s AND updated_at < DATE_ADD(%s, INTERVAL 1 DAY)"
+            params_list.append(str(date_from))
+            params_list.append(str(date_to))
+        params: tuple[Any, ...] = tuple(params_list)
         async with conn.cursor() as cur:
             await cur.execute(
                 f"""
                 SELECT id, symbol, side, order_type, status, strategy_id, position_id, reason,
                        comment, client_order_id, exchange_order_id, qty, price, stop_loss, stop_gain, filled_qty, avg_fill_price,
                        created_at, updated_at, closed_at
-                FROM position_orders
-                WHERE account_id = %s {status_filter} {strategy_filter}
+                FROM oms_orders
+                WHERE account_id = %s {status_filter} {strategy_filter} {date_filter}
                 ORDER BY id DESC
                 LIMIT 500
                 """,
@@ -2072,17 +2142,30 @@ class MySQLCommandRepository:
         return out
 
     async def list_deals(
-        self, conn: Any, account_id: int, strategy_id: int | None = None
+        self,
+        conn: Any,
+        account_id: int,
+        strategy_id: int | None = None,
+        date_from: str | None = None,
+        date_to: str | None = None,
     ) -> list[dict[str, Any]]:
         strategy_filter = "AND strategy_id = %s" if strategy_id is not None else ""
-        params: tuple[Any, ...] = (account_id,) if strategy_id is None else (account_id, int(strategy_id))
+        date_filter = ""
+        params_list: list[Any] = [account_id]
+        if strategy_id is not None:
+            params_list.append(int(strategy_id))
+        if date_from and date_to:
+            date_filter = "AND executed_at >= %s AND executed_at < DATE_ADD(%s, INTERVAL 1 DAY)"
+            params_list.append(str(date_from))
+            params_list.append(str(date_to))
+        params: tuple[Any, ...] = tuple(params_list)
         async with conn.cursor() as cur:
             await cur.execute(
                 f"""
                 SELECT id, order_id, position_id, symbol, side, qty, price, fee, fee_currency,
                        pnl, strategy_id, reason, comment, reconciled, exchange_trade_id, created_at, executed_at
-                FROM position_deals
-                WHERE account_id = %s {strategy_filter}
+                FROM oms_deals
+                WHERE account_id = %s {strategy_filter} {date_filter}
                 ORDER BY id DESC
                 LIMIT 1000
                 """,
@@ -2116,17 +2199,31 @@ class MySQLCommandRepository:
         return out
 
     async def list_positions(
-        self, conn: Any, account_id: int, open_only: bool, strategy_id: int | None = None
+        self,
+        conn: Any,
+        account_id: int,
+        open_only: bool,
+        strategy_id: int | None = None,
+        date_from: str | None = None,
+        date_to: str | None = None,
     ) -> list[dict[str, Any]]:
         state_filter = "AND state IN ('open', 'close_requested')" if open_only else ""
         strategy_filter = "AND strategy_id = %s" if strategy_id is not None else ""
-        params: tuple[Any, ...] = (account_id,) if strategy_id is None else (account_id, int(strategy_id))
+        date_filter = ""
+        params_list: list[Any] = [account_id]
+        if strategy_id is not None:
+            params_list.append(int(strategy_id))
+        if (not open_only) and date_from and date_to:
+            date_filter = "AND updated_at >= %s AND updated_at < DATE_ADD(%s, INTERVAL 1 DAY)"
+            params_list.append(str(date_from))
+            params_list.append(str(date_to))
+        params: tuple[Any, ...] = tuple(params_list)
         async with conn.cursor() as cur:
             await cur.execute(
                 f"""
                 SELECT id, symbol, strategy_id, side, qty, avg_price, stop_loss, stop_gain, state, reason, comment, opened_at, updated_at, closed_at
-                FROM position_positions
-                WHERE account_id = %s {state_filter} {strategy_filter}
+                FROM oms_positions
+                WHERE account_id = %s {state_filter} {strategy_filter} {date_filter}
                 ORDER BY id DESC
                 LIMIT 500
                 """,
@@ -2165,12 +2262,12 @@ class MySQLCommandRepository:
                 """
                 SELECT symbol FROM (
                     SELECT symbol, MAX(created_at) AS ts
-                    FROM position_orders
+                    FROM oms_orders
                     WHERE account_id = %s
                     GROUP BY symbol
                     UNION ALL
                     SELECT symbol, MAX(executed_at) AS ts
-                    FROM position_deals
+                    FROM oms_deals
                     WHERE account_id = %s
                     GROUP BY symbol
                 ) s
@@ -2198,7 +2295,7 @@ class MySQLCommandRepository:
         async with conn.cursor() as cur:
             await cur.execute(
                 f"""
-                UPDATE position_deals
+                UPDATE oms_deals
                 SET strategy_id = %s,
                     position_id = %s,
                     reconciled = TRUE
@@ -2224,7 +2321,7 @@ class MySQLCommandRepository:
         async with conn.cursor() as cur:
             await cur.execute(
                 f"""
-                UPDATE position_orders
+                UPDATE oms_orders
                 SET strategy_id = %s,
                     position_id = %s
                 WHERE account_id = %s

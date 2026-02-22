@@ -60,6 +60,12 @@ def setup_application_logging(
     return loggers
 
 
+def build_file_logger(name: str, file_path: str | Path) -> logging.Logger:
+    path = Path(file_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return _build_logger(name, path)
+
+
 def http_log_payload(
     method: str, path: str, status_code: int, elapsed_s: float, account_id: str | None
 ) -> dict[str, Any]:

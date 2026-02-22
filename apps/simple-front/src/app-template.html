@@ -1,0 +1,495 @@
+﻿      <wa-button id="menuToggleBtn" class="menu-toggle" variant="neutral" type="button" aria-label="Menu">
+        <span class="hamburger-icon" aria-hidden="true"><i></i><i></i><i></i></span>
+      </wa-button>
+      <div class="layout">
+      <aside class="card sidebar">
+        <div class="sidebar-head">
+          <h1 class="brand-title">CCXT OMS</h1>
+          <wa-button id="sidebarCollapseBtn" class="sidebar-collapse" variant="neutral" type="button" aria-label="Recolher menu">
+            <span class="hamburger-icon" aria-hidden="true"><i></i><i></i><i></i></span>
+          </wa-button>
+        </div>
+        <div class="menu">
+          <wa-button id="tabLoginBtn" class="tab" variant="neutral"><i class="fa-solid fa-sliders" aria-hidden="true"></i><span>Login / Config</span></wa-button>
+          <wa-button id="tabStrategiesBtn" class="tab" variant="neutral"><i class="fa-solid fa-diagram-project" aria-hidden="true"></i><span>Strategies</span></wa-button>
+          <wa-button id="tabPositionsBtn" class="tab" variant="neutral"><i class="fa-solid fa-layer-group" aria-hidden="true"></i><span>OMS</span></wa-button>
+          <wa-button id="tabCommandsBtn" class="tab active" variant="brand"><i class="fa-solid fa-terminal" aria-hidden="true"></i><span>CCXT Commands</span></wa-button>
+          <wa-button id="tabSystemBtn" class="tab" variant="neutral"><i class="fa-solid fa-wave-square" aria-hidden="true"></i><span>System Monitor</span></wa-button>
+          <wa-button id="tabRiskBtn" class="tab" variant="neutral"><i class="fa-solid fa-shield-halved" aria-hidden="true"></i><span>Risk</span></wa-button>
+          <wa-button id="tabAdminBtn" class="tab" variant="neutral"><i class="fa-solid fa-user-gear" aria-hidden="true"></i><span>Admin</span></wa-button>
+        </div>
+        <div class="theme-row">
+          <wa-button id="themeModeBtn" variant="neutral" type="button" aria-label="Alternar tema">
+            <span class="theme-icon-dual" aria-hidden="true">
+              <i class="fa-solid fa-sun"></i>
+              <span>/</span>
+              <i class="fa-solid fa-moon"></i>
+            </span>
+            <span>Sistema</span>
+          </wa-button>
+          <wa-button id="densityModeBtn" variant="neutral" type="button" aria-label="Alternar densidade">
+            <i class="fa-solid fa-table-cells-large" aria-hidden="true"></i>
+            <span>Normal</span>
+          </wa-button>
+          <div id="status" class="status status-idle">disconnected</div>
+        </div>
+      </aside>
+
+      <main class="main-content">
+      <div class="is-hidden" id="loginPanel">
+        <section class="card forms">
+          <h2 data-i18n="login.title">Login</h2>
+          <div id="loginMessage" class="notice notice-info is-hidden"></div>
+          <div class="grid cols-2">
+            <form id="loginForm">
+            <label>Base URL<input id="baseUrl" list="baseUrlHistory" placeholder="http://127.0.0.1:8000" /></label>
+            <datalist id="baseUrlHistory"></datalist>
+            <label>Idioma
+              <select id="loginLanguage" name="language"></select>
+            </label>
+            <label><span id="loginModeLabel">Método de Autenticação</span>
+              <select id="loginMode" name="mode">
+                <option id="loginModeApiKeyOption" value="api_key">API Key</option>
+                <option id="loginModeUserPassOption" value="user_password">Usuário + Senha</option>
+              </select>
+            </label>
+            <div id="loginApiKeyFields">
+              <label>API Key
+                <div class="inline-input">
+                  <input id="apiKey" class="with-icon-right" list="apiKeyHistory" type="password" placeholder="x-api-key ou tok_*" />
+                  <button id="toggleApiKeyBtn" type="button" class="input-icon-btn" aria-label="Mostrar API key" title="Mostrar API key">
+                    <i class="fa-solid fa-eye" aria-hidden="true"></i>
+                  </button>
+                </div>
+              </label>
+              <datalist id="apiKeyHistory"></datalist>
+            </div>
+            <div id="loginUserPassFields" class="is-hidden">
+              <label><span data-i18n="login.user_name">User Name</span><input id="loginUserName" placeholder="trader-bot-01" /></label>
+              <label><span data-i18n="login.password">Password</span>
+                <div class="inline-input">
+                  <input id="loginPassword" class="with-icon-right" type="password" placeholder="senha" />
+                  <button id="toggleLoginPasswordBtn" type="button" class="input-icon-btn" aria-label="Mostrar senha" title="Mostrar senha">
+                    <i class="fa-solid fa-eye" aria-hidden="true"></i>
+                  </button>
+                </div>
+              </label>
+            </div>
+              <wa-button id="loginAuthBtn" type="submit" variant="brand">Authenticate</wa-button>
+            </form>
+          </div>
+        </section>
+
+        <section class="card forms connection">
+          <div class="connection-head">
+            <h2 data-i18n="trade.connection">Connection</h2>
+            <div class="status-row">
+              <span class="status-label">WebSocket</span>
+              <span id="loginStatus" class="status status-idle">disconnected</span>
+            </div>
+          </div>
+          <div class="actions">
+            <wa-button id="connectBtn" variant="brand">Connect WS</wa-button>
+            <wa-button id="disconnectBtn" variant="neutral">Disconnect</wa-button>
+            <wa-button id="accountsBtn" variant="neutral">Reload Accounts</wa-button>
+          </div>
+
+          <div class="connection-accounts">
+            <label><span id="viewAccountsLabel">Filtrar Contas</span>
+              <select id="viewAccountsSelect" multiple size="20"></select>
+            </label>
+            <div class="mini-actions">
+              <wa-button id="selectAllAccountsBtn" type="button" variant="neutral">Selecionar Todas</wa-button>
+              <wa-button id="clearAccountsBtn" type="button" variant="neutral">Limpar</wa-button>
+            </div>
+          </div>
+          <datalist id="accountHistory"></datalist>
+          <datalist id="strategyHistory"></datalist>
+        </section>
+      </div>
+
+      <section class="card forms" id="commandsPanel">
+        <h2 data-i18n="trade.commands">Commands</h2>
+        <div class="grid cols-2">
+          <form id="sendOrderForm">
+            <h3 data-i18n="cmd.send_order">Send Order</h3>
+            <label>Account ID<input id="sendAccountId" list="accountHistory" placeholder="9 ou 9 - binance-testnet" /></label>
+            <label>Strategy
+              <div class="inline-input">
+                <select id="sendStrategyId"></select>
+                <input id="sendNewStrategyName" placeholder="novo nome (opcional)" />
+                <wa-button id="createSendStrategyBtn" type="button" class="ghost inline-btn" data-i18n="common.create">Criar</wa-button>
+              </div>
+            </label>
+            <label>Symbol
+              <div class="inline-input">
+                <input id="sendSymbol" name="symbol" list="symbolHistory" value="BTC/USDT" />
+                <wa-button id="loadSymbolsBtn" type="button" class="ghost inline-btn" data-i18n="cmd.load_symbols">Load Symbols</wa-button>
+              </div>
+            </label>
+            <datalist id="symbolHistory"></datalist>
+            <label>Side
+              <select name="side">
+                <option value="buy">buy</option>
+                <option value="sell">sell</option>
+              </select>
+            </label>
+            <label>Type
+              <select name="order_type">
+                <option value="market">market</option>
+                <option value="limit">limit</option>
+              </select>
+            </label>
+            <label>Qty<input name="qty" value="0.001" /></label>
+            <label>Price<input name="price" placeholder="required for limit" /></label>
+            <label>Stop Loss<input name="stop_loss" placeholder="opcional" /></label>
+            <label>Stop Gain<input name="stop_gain" placeholder="opcional" /></label>
+            <label>Comment<input name="comment" placeholder="opcional" /></label>
+            <label class="inline"><input name="reduce_only" type="checkbox" /> reduce_only</label>
+            <wa-button type="submit" data-i18n="common.send">Send</wa-button>
+          </form>
+
+          <form id="cancelOrderForm">
+            <h3 data-i18n="cmd.cancel_order">Cancel Order</h3>
+            <label>Account ID<input id="cancelOrderAccountId" list="accountHistory" placeholder="9 ou 9 - binance-testnet" /></label>
+            <label>Order IDs (1 ou CSV)<input name="order_ids_csv" placeholder="123 ou 123,124,125" /></label>
+            <label>Account ID (Cancel All)<input id="cancelAllAccountId" list="accountHistory" placeholder="obrigatorio para cancel all" /></label>
+            <label>Strategy IDs CSV (Cancel All, opcional)<input id="cancelAllStrategyIdsCsv" placeholder="vazio = todas (ex: 1,2,3)" /></label>
+            <div class="actions">
+              <wa-button id="cancelByIdsBtn" type="submit" data-i18n="cmd.cancel_ids">Cancel IDs</wa-button>
+              <wa-button id="cancelAllBtn" type="button" variant="neutral" data-i18n="cmd.cancel_all_open">Cancel All Open</wa-button>
+            </div>
+          </form>
+
+          <form id="changeOrderForm">
+            <h3 data-i18n="cmd.change_order">Change Order</h3>
+            <label>Account ID<input id="changeOrderAccountId" list="accountHistory" placeholder="9 ou 9 - binance-testnet" /></label>
+            <label>Order ID<input name="order_id" type="number" min="1" /></label>
+            <label>New Qty<input name="new_qty" /></label>
+            <label>New Price<input name="new_price" /></label>
+            <wa-button type="submit" data-i18n="common.change">Change</wa-button>
+          </form>
+
+          <form id="positionChangeForm">
+            <h3 data-i18n="cmd.position_change">Position Change</h3>
+            <label>Account ID<input id="positionChangeAccountId" list="accountHistory" placeholder="9 ou 9 - binance-testnet" /></label>
+            <label>Position ID<input name="position_id" type="number" min="1" /></label>
+            <label class="inline"><input id="positionChangeUseStopLoss" type="checkbox" /> Alterar Stop Loss</label>
+            <label>Stop Loss<input name="stop_loss" placeholder="valor ou null" /></label>
+            <label class="inline"><input id="positionChangeUseStopGain" type="checkbox" /> Alterar Stop Gain</label>
+            <label>Stop Gain<input name="stop_gain" placeholder="valor ou null" /></label>
+            <label class="inline"><input id="positionChangeUseComment" type="checkbox" /> Alterar Comment</label>
+            <label>Comment<input name="comment" placeholder="texto ou null" /></label>
+            <wa-button type="submit" data-i18n="common.apply">Apply</wa-button>
+          </form>
+
+          <form id="closePositionForm">
+            <h3 data-i18n="cmd.position_close">Position Close</h3>
+            <label>Account ID<input id="closePositionAccountId" list="accountHistory" placeholder="9 ou 9 - binance-testnet" /></label>
+            <label>Position ID<input name="position_id" type="number" min="1" /></label>
+            <label>Order Type
+              <select name="order_type">
+                <option value="market">market</option>
+                <option value="limit">limit</option>
+              </select>
+            </label>
+            <label>Price<input name="price" placeholder="required for limit" /></label>
+            <label>Comment<input name="comment" placeholder="opcional" /></label>
+            <wa-button type="submit" data-i18n="cmd.position_close">Close Position</wa-button>
+          </form>
+
+          <form id="closeByForm">
+            <h3 data-i18n="cmd.position_close_by">Position Close By</h3>
+            <label>Account ID<input id="closeByAccountId" list="accountHistory" placeholder="9 ou 9 - binance-testnet" /></label>
+            <label>Position ID A<input name="position_id_a" type="number" min="1" /></label>
+            <label>Position ID B<input name="position_id_b" type="number" min="1" /></label>
+            <wa-button type="submit" data-i18n="cmd.position_close_by">Position Close By</wa-button>
+          </form>
+
+          <form id="ccxtCallForm">
+            <h3 data-i18n="cmd.direct_ccxt">Direct CCXT Call</h3>
+            <label>Account ID<input id="ccxtAccountId" list="accountHistory" placeholder="9 ou 9 - binance-testnet" /></label>
+            <label>Strategy ID<input id="ccxtStrategyId" list="strategyHistory" type="number" min="0" value="0" /></label>
+            <label>Mode
+              <select id="ccxtMode">
+                <option value="generic">generic</option>
+                <option value="core">core comuns</option>
+              </select>
+            </label>
+            <div id="ccxtGenericFields">
+              <label>Func<input name="func" value="fetch_ticker" /></label>
+              <label>Args JSON<textarea name="args">["BTC/USDT"]</textarea></label>
+              <label>Kwargs JSON<textarea name="kwargs">{}</textarea></label>
+            </div>
+            <div id="ccxtCoreFields" class="is-hidden">
+              <label>Core Func
+                <select id="ccxtCoreFunc" name="core_func">
+                  <option value="fetch_balance">fetch_balance</option>
+                  <option value="fetch_open_orders">fetch_open_orders</option>
+                  <option value="fetch_order">fetch_order</option>
+                  <option value="cancel_order">cancel_order</option>
+                  <option value="create_order">create_order</option>
+                </select>
+              </label>
+              <label>Body JSON<textarea id="ccxtCoreBody" name="core_body">{}</textarea></label>
+            </div>
+            <label>Result JSON<textarea id="ccxtResultBox" readonly placeholder="resultado do Run CCXT"></textarea></label>
+            <wa-button type="submit" data-i18n="cmd.run_ccxt">Run CCXT</wa-button>
+          </form>
+        </div>
+      </section>
+
+      <section class="card is-hidden" id="strategiesPanel">
+        <h2 data-i18n="menu.strategies">Strategies</h2>
+        <div class="card forms">
+          <form id="tradeCreateStrategyForm">
+            <h3 id="tradeCreateStrategyTitle">Create Strategy</h3>
+            <label><span id="tradeStrategyNameLabel">Name</span><input name="name" placeholder="alpha-user-strategy" /></label>
+            <label><span id="tradeClientStrategyIdLabel" data-i18n="trade.client_strategy_id">Client Strategy ID</span><input id="tradeClientStrategyId" name="client_strategy_id" type="number" min="1" step="1" placeholder="1001" /></label>
+            <label><span id="tradeStrategyAccountsLabel">Accounts</span>
+              <select id="tradeStrategyAccountIds" multiple size="6"></select>
+            </label>
+            <div class="mini-actions">
+              <wa-button id="tradeStrategyAccountsAllBtn" type="button" variant="neutral" data-i18n="common.select_all">Selecionar Todas</wa-button>
+              <wa-button id="tradeStrategyAccountsClearBtn" type="button" variant="neutral" data-i18n="common.clear">Limpar</wa-button>
+            </div>
+            <wa-button id="tradeCreateStrategyBtn" type="submit" variant="brand">Create Strategy</wa-button>
+          </form>
+        </div>
+        <div class="card">
+          <h3 id="tradeMyStrategiesTitle">My Strategies</h3>
+          <div class="actions">
+            <wa-button id="loadTradeStrategiesBtn" type="button" variant="neutral">Load Strategies</wa-button>
+          </div>
+          <div id="tradeStrategiesTable"></div>
+        </div>
+      </section>
+
+      <section class="card is-hidden" id="positionsPanel">
+        <h2 data-i18n="positions.title">Position Monitor</h2>
+        <div class="actions">
+          <wa-button id="refreshOmsBtn" variant="neutral" data-i18n="trade.refresh_tables">Refresh Tables</wa-button>
+        </div>
+        <wa-tab-group id="positionTabs" class="primary-tabs" active="openPositions" placement="top" activation="auto">
+          <wa-tab slot="nav" panel="openPositions" data-i18n="positions.open_positions">Open Positions</wa-tab>
+          <wa-tab slot="nav" panel="openOrders" data-i18n="positions.open_orders">Open Orders</wa-tab>
+          <wa-tab slot="nav" panel="deals" data-i18n="positions.deals">Deals</wa-tab>
+          <wa-tab slot="nav" panel="historyPositions" data-i18n="positions.history_positions">History Positions</wa-tab>
+          <wa-tab slot="nav" panel="historyOrders" data-i18n="positions.history_orders">History Orders</wa-tab>
+
+          <wa-tab-panel name="openPositions">
+            <div class="actions">
+              <wa-button id="refreshOpenPositionsBtn" variant="neutral" data-i18n="common.refresh">Refresh</wa-button>
+              <wa-button id="clearOpenPositionsBtn" variant="neutral" data-i18n="common.clear">Clear</wa-button>
+            </div>
+            <div id="openPositionsTable"></div>
+          </wa-tab-panel>
+
+          <wa-tab-panel name="openOrders">
+            <div class="actions">
+              <wa-button id="refreshOpenOrdersBtn" variant="neutral" data-i18n="common.refresh">Refresh</wa-button>
+              <wa-button id="clearOpenOrdersBtn" variant="neutral" data-i18n="common.clear">Clear</wa-button>
+            </div>
+            <div id="openOrdersTable"></div>
+          </wa-tab-panel>
+
+          <wa-tab-panel name="deals">
+            <div class="actions"><wa-button id="clearDealsBtn" variant="neutral" data-i18n="common.clear">Clear</wa-button></div>
+            <div id="dealsTable"></div>
+          </wa-tab-panel>
+
+          <wa-tab-panel name="historyPositions">
+            <div class="actions"><wa-button id="clearHistoryPositionsBtn" variant="neutral" data-i18n="common.clear">Clear</wa-button></div>
+            <div id="historyPositionsTable"></div>
+          </wa-tab-panel>
+
+          <wa-tab-panel name="historyOrders">
+            <div class="actions"><wa-button id="clearHistoryOrdersBtn" variant="neutral" data-i18n="common.clear">Clear</wa-button></div>
+            <div id="historyOrdersTable"></div>
+          </wa-tab-panel>
+        </wa-tab-group>
+      </section>
+
+      <section class="card is-hidden" id="systemPanel">
+        <h2 data-i18n="menu.system_monitor">System Monitor</h2>
+        <wa-tab-group id="systemTabs" active="ccxtOrders">
+          <wa-tab slot="nav" panel="ccxtOrders" data-i18n="system.ccxt_orders">CCXT Orders</wa-tab>
+          <wa-tab slot="nav" panel="ccxtTrades" data-i18n="system.ccxt_trades">CCXT Trades</wa-tab>
+          <wa-tab slot="nav" panel="wsEvents" data-i18n="system.ws_events">WS Events</wa-tab>
+          <wa-tab slot="nav" panel="uiLogs" data-i18n="system.ui_logs">UI Logs</wa-tab>
+
+          <wa-tab-panel name="ccxtOrders">
+            <div class="actions"><wa-button id="clearCcxtOrdersBtn" variant="neutral" data-i18n="common.clear">Clear</wa-button></div>
+            <div id="ccxtOrdersTable"></div>
+          </wa-tab-panel>
+
+          <wa-tab-panel name="ccxtTrades">
+            <div class="actions"><wa-button id="clearCcxtTradesBtn" variant="neutral" data-i18n="common.clear">Clear</wa-button></div>
+            <div id="ccxtTradesTable"></div>
+          </wa-tab-panel>
+
+          <wa-tab-panel name="wsEvents">
+            <div class="actions"><wa-button id="clearEventsBtn" variant="neutral" data-i18n="common.clear">Clear</wa-button></div>
+            <div id="eventsTable"></div>
+          </wa-tab-panel>
+
+          <wa-tab-panel name="uiLogs">
+            <div class="actions"><wa-button id="clearUiLogsBtn" variant="neutral" data-i18n="common.clear">Clear</wa-button></div>
+            <div id="uiLogsTable"></div>
+          </wa-tab-panel>
+        </wa-tab-group>
+      </section>
+
+      <wa-dialog id="closeByModal" label="Close By" light-dismiss>
+        <div class="closeby-card">
+          <label>Source Position ID
+            <input id="closeBySourceId" readonly />
+          </label>
+          <div id="closeBySourceInfo" class="modal-muted"></div>
+          <label>Target Open Position
+            <select id="closeByTargetSelect"></select>
+          </label>
+        </div>
+        <wa-button id="closeByModalCancelBtn" slot="footer" variant="neutral" data-i18n="common.cancel">Cancel</wa-button>
+        <wa-button id="closeByModalConfirmBtn" slot="footer" variant="brand" data-i18n="common.close">Close</wa-button>
+      </wa-dialog>
+
+      <section class="card forms is-hidden" id="adminPanel">
+        <h2 data-i18n="menu.admin">Admin</h2>
+        <div class="grid cols-2">
+          <form id="adminCreateAccountForm">
+            <h3 data-i18n="admin.create_account">Create Account</h3>
+            <label>Exchange ID
+              <div class="inline-input">
+                <select id="adminExchangeIdSelect" name="exchange_id"></select>
+                <wa-button id="loadCcxtExchangesBtn" type="button" class="ghost inline-btn" data-i18n="common.load">Load</wa-button>
+              </div>
+            </label>
+            <label>Label<input name="label" placeholder="binance-testnet-01" /></label>
+            <label>Position Mode
+              <select name="position_mode">
+                <option value="hedge">hedge</option>
+                <option value="netting">netting</option>
+                <option value="strategy_netting">strategy_netting</option>
+              </select>
+            </label>
+            <label>Is Testnet<input name="is_testnet" type="checkbox" checked /></label>
+            <label>Extra Config JSON<textarea name="extra_config_json">{}</textarea></label>
+            <wa-button type="submit" data-i18n="admin.create_account">Create Account</wa-button>
+          </form>
+
+          <form id="adminCreateUserApiKeyForm">
+            <h3 data-i18n="admin.create_user_key">Create User + API Key</h3>
+            <label>User Name<input name="user_name" placeholder="trader-bot-01" /></label>
+            <label>Role
+              <select name="role">
+                <option value="admin">admin</option>
+                <option value="trader" selected>trader</option>
+                <option value="portfolio_manager">portfolio_manager</option>
+                <option value="robot">robot</option>
+                <option value="risk">risk</option>
+                <option value="readonly">readonly</option>
+              </select>
+            </label>
+            <label>Password (opcional)<input name="password" type="password" placeholder="senha para login user+senha" /></label>
+            <label>Permissions JSON<textarea name="permissions">[{"account_id":1,"can_read":true,"can_trade":true,"can_close_position":true,"can_risk_manage":false,"can_block_new_positions":false,"can_block_account":false,"restrict_to_strategies":false,"strategy_ids":[]}]</textarea></label>
+            <wa-button type="submit" data-i18n="admin.create_user_key">Create User + Key</wa-button>
+          </form>
+
+          <form id="adminCreateStrategyForm">
+            <h3 id="adminCreateStrategyTitle">Create Strategy</h3>
+            <label>Name<input name="name" placeholder="alpha-mean-reversion" /></label>
+            <label><span id="adminClientStrategyIdLabel" data-i18n="trade.client_strategy_id">Client Strategy ID</span><input id="adminClientStrategyId" name="client_strategy_id" type="number" min="1" step="1" placeholder="1001" /></label>
+            <label><span id="adminStrategyAccountsLabel">Accounts</span>
+              <select id="strategyAccountIds" multiple size="6"></select>
+            </label>
+            <div class="mini-actions">
+              <wa-button id="strategyAccountsAllBtn" type="button" variant="neutral" data-i18n="common.select_all">Selecionar Todas</wa-button>
+              <wa-button id="strategyAccountsClearBtn" type="button" variant="neutral" data-i18n="common.clear">Limpar</wa-button>
+            </div>
+            <wa-button id="adminCreateStrategyBtn" type="submit">Create Strategy</wa-button>
+          </form>
+        </div>
+        <div class="card">
+          <h3 data-i18n="admin.accounts">Accounts</h3>
+          <div class="actions">
+            <wa-button id="loadAdminAccountsBtn" type="button" variant="neutral" data-i18n="admin.load_accounts">Load Accounts</wa-button>
+          </div>
+          <div id="adminAccountsTable"></div>
+        </div>
+        <div class="card">
+          <h3 data-i18n="admin.users">Users</h3>
+          <div class="actions">
+            <wa-button id="loadAdminUsersBtn" type="button" variant="neutral" data-i18n="admin.load_users">Load Users</wa-button>
+          </div>
+          <div id="adminUsersTable"></div>
+        </div>
+        <div class="card">
+          <h3 data-i18n="admin.users_keys">Users / API Keys</h3>
+          <div class="actions">
+            <wa-button id="loadAdminUsersKeysBtn" type="button" variant="neutral" data-i18n="admin.load_users_keys">Load Users+Keys</wa-button>
+          </div>
+          <div id="adminUsersKeysTable"></div>
+        </div>
+        <div class="card">
+          <h3 data-i18n="menu.strategies">Strategies</h3>
+          <div class="actions">
+            <wa-button id="loadStrategiesBtn" type="button" variant="neutral" data-i18n="trade.load_strategies">Load Strategies</wa-button>
+          </div>
+          <div id="adminStrategiesTable"></div>
+        </div>
+      </section>
+
+      <section class="card forms is-hidden" id="riskPanel">
+        <h2 data-i18n="menu.risk">Risk</h2>
+        <div class="grid cols-2">
+          <form id="riskAccountForm">
+            <h3 data-i18n="risk.account_controls">Account Risk Controls</h3>
+            <label>Account ID<input id="riskAccountId" list="accountHistory" /></label>
+            <label>Comment<input id="riskAccountComment" placeholder="motivo obrigatorio" /></label>
+            <div class="actions">
+              <wa-button id="riskAllowNewPositionsBtn" type="button" data-i18n="risk.allow_new_positions">Allow New Positions</wa-button>
+              <wa-button id="riskBlockNewPositionsBtn" type="button" variant="neutral" data-i18n="risk.block_new_positions">Block New Positions</wa-button>
+            </div>
+            <div class="actions">
+              <wa-button id="riskSetAccountActiveBtn" type="button" data-i18n="risk.set_active">Set Active</wa-button>
+              <wa-button id="riskSetAccountBlockedBtn" type="button" variant="neutral" data-i18n="risk.block_account">Block Account</wa-button>
+            </div>
+          </form>
+
+          <form id="riskStrategyForm">
+            <h3 data-i18n="risk.strategy_controls">Strategy Risk Controls</h3>
+            <label>Account ID<input id="riskStrategyAccountId" list="accountHistory" /></label>
+            <label>Strategy ID<input id="riskStrategyId" type="number" min="0" value="0" /></label>
+            <label>Comment<input id="riskStrategyComment" placeholder="motivo obrigatorio" /></label>
+            <div class="actions">
+              <wa-button id="riskAllowStrategyBtn" type="button" data-i18n="risk.allow_strategy_opens">Allow Strategy Opens</wa-button>
+              <wa-button id="riskBlockStrategyBtn" type="button" variant="neutral" data-i18n="risk.block_strategy_opens">Block Strategy Opens</wa-button>
+            </div>
+          </form>
+
+          <form id="riskPermissionForm">
+            <h3 data-i18n="risk.api_permissions">API Key Permissions</h3>
+            <label>API Key ID<input id="riskApiKeyId" type="number" min="1" /></label>
+            <label>Account ID<input id="riskPermAccountId" list="accountHistory" /></label>
+            <label class="inline"><input id="riskCanRead" type="checkbox" checked /> can_read</label>
+            <label class="inline"><input id="riskCanTrade" type="checkbox" /> can_trade</label>
+            <label class="inline"><input id="riskCanClosePosition" type="checkbox" /> can_close_position</label>
+            <label class="inline"><input id="riskCanRiskManage" type="checkbox" /> can_risk_manage</label>
+            <label class="inline"><input id="riskCanBlockNewPositions" type="checkbox" /> can_block_new_positions</label>
+            <label class="inline"><input id="riskCanBlockAccount" type="checkbox" /> can_block_account</label>
+            <label class="inline"><input id="riskRestrictStrategies" type="checkbox" /> restrict_to_strategies</label>
+            <label>Strategy IDs CSV<input id="riskStrategyIdsCsv" placeholder="1,2,3" /></label>
+            <div class="actions">
+              <wa-button id="riskLoadPermissionsBtn" type="button" variant="neutral" data-i18n="risk.load_permissions">Load Permissions</wa-button>
+              <wa-button id="riskSavePermissionBtn" type="button" data-i18n="risk.save_permission">Save Permission</wa-button>
+            </div>
+          </form>
+        </div>
+        <div class="card">
+          <h3 data-i18n="risk.permission_rows">API Key Permission Rows</h3>
+          <div id="riskPermissionsTable"></div>
+        </div>
+      </section>
+      </main>
+      </div>

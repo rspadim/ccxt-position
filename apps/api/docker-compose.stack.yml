@@ -38,7 +38,7 @@ services:
       DISPATCHER_HOST: dispatcher
     volumes:
       - ../..:/app
-      - logs_data:/app/logs
+      - ../../logs:/app/logs
     ports:
       - "8000:8000"
 
@@ -57,8 +57,7 @@ services:
       DISPATCHER_HOST: 0.0.0.0
     volumes:
       - ../..:/app
-      - logs_data:/app/logs
+      - ../../logs:/app/logs
 
 volumes:
   mysql_data:
-  logs_data:

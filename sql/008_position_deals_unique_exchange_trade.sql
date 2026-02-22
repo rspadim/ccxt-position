@@ -7,11 +7,11 @@ SET @add_uq_exchange_trade := (
       SELECT 1
       FROM information_schema.STATISTICS
       WHERE TABLE_SCHEMA = @db_name
-        AND TABLE_NAME = 'position_deals'
-        AND INDEX_NAME = 'uq_position_deals_exchange_trade'
+        AND TABLE_NAME = 'oms_deals'
+        AND INDEX_NAME = 'uq_oms_deals_exchange_trade'
     ),
     'SELECT 1',
-    'CREATE UNIQUE INDEX uq_position_deals_exchange_trade ON position_deals (account_id, exchange_trade_id)'
+    'CREATE UNIQUE INDEX uq_oms_deals_exchange_trade ON oms_deals (account_id, exchange_trade_id)'
   )
 );
 PREPARE stmt1 FROM @add_uq_exchange_trade;

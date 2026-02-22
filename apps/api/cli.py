@@ -1,4 +1,4 @@
-﻿import argparse
+import argparse
 import asyncio
 import hashlib
 import json
@@ -455,7 +455,7 @@ def _post_position_command(
     command: str,
     payload: dict[str, Any],
 ) -> None:
-    url = f"{base_url.rstrip('/')}/position/commands"
+    url = f"{base_url.rstrip('/')}/oms/commands"
     req = {"account_id": account_id, "command": command, "payload": payload}
     out = _http_json("POST", url, _default_headers(api_key), req)
     _print_json(out)
@@ -512,7 +512,7 @@ def cmd_close_by(args: argparse.Namespace) -> None:
 
 
 def cmd_reassign_position(args: argparse.Namespace) -> None:
-    url = f"{args.base_url.rstrip('/')}/position/reassign"
+    url = f"{args.base_url.rstrip('/')}/oms/reassign"
     req = {
         "account_id": args.account_id,
         "deal_ids": args.deal_ids,

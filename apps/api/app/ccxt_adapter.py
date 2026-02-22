@@ -54,6 +54,7 @@ class CCXTAdapter:
         method: str,
         args: list[Any] | None = None,
         kwargs: dict[str, Any] | None = None,
+        logger: Any | None = None,
     ) -> Any:
         exchange = self._build_exchange(
             exchange_id=exchange_id,
@@ -67,8 +68,9 @@ class CCXTAdapter:
             fn = getattr(exchange, method, None)
             if fn is None:
                 raise RuntimeError(f"unsupported ccxt method: {method}")
-            if self.logger is not None:
-                self.logger.info(
+            active_logger = logger or self.logger
+            if active_logger is not None:
+                active_logger.info(
                     "ccxt_call %s",
                     {"exchange_id": exchange_id, "method": method},
                 )

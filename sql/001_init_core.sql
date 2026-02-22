@@ -1,4 +1,4 @@
-﻿CREATE TABLE IF NOT EXISTS users (
+CREATE TABLE IF NOT EXISTS users (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
   name VARCHAR(128) NOT NULL,
   status VARCHAR(32) NOT NULL DEFAULT 'active',
@@ -63,7 +63,7 @@ CREATE TABLE IF NOT EXISTS account_risk_state (
   CONSTRAINT fk_ars_account FOREIGN KEY (account_id) REFERENCES accounts(id)
 );
 
-CREATE TABLE IF NOT EXISTS position_commands (
+CREATE TABLE IF NOT EXISTS oms_commands (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
   account_id BIGINT NOT NULL,
   command_type VARCHAR(32) NOT NULL,
@@ -75,7 +75,7 @@ CREATE TABLE IF NOT EXISTS position_commands (
   CONSTRAINT fk_pos_cmd_account FOREIGN KEY (account_id) REFERENCES accounts(id)
 );
 
-CREATE TABLE IF NOT EXISTS position_orders (
+CREATE TABLE IF NOT EXISTS oms_orders (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
   command_id BIGINT NULL,
   account_id BIGINT NOT NULL,
@@ -98,10 +98,10 @@ CREATE TABLE IF NOT EXISTS position_orders (
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   closed_at TIMESTAMP NULL,
-  KEY idx_position_orders_command_id (command_id)
+  KEY idx_oms_orders_command_id (command_id)
 );
 
-CREATE TABLE IF NOT EXISTS position_deals (
+CREATE TABLE IF NOT EXISTS oms_deals (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
   account_id BIGINT NOT NULL,
   order_id BIGINT NULL,
@@ -122,7 +122,7 @@ CREATE TABLE IF NOT EXISTS position_deals (
   executed_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE TABLE IF NOT EXISTS position_positions (
+CREATE TABLE IF NOT EXISTS oms_positions (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
   account_id BIGINT NOT NULL,
   symbol VARCHAR(64) NOT NULL,

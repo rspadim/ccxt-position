@@ -25,6 +25,15 @@ Specification-first bootstrap with first implementation slice available in `apps
 - `position`: MT5-like tracked exposure
 - `strategy_id`: strategy/robot identifier (`0` = automatic/default)
 
+## User Profiles
+
+- `admin`: admin/backoffice only (can manage users/accounts/permissions; cannot place trades)
+- `trader`: discretionary trader permissions
+- `portfolio_manager`: portfolio/manager trading permissions
+- `robot`: automated strategy/robot permissions
+- `risk`: risk controls (close/block/unblock) with mandatory action comment
+- `readonly`: read-only visibility
+
 ## API Surfaces
 
 - `POST /position/commands`: unified MT5-like command entrypoint
@@ -44,6 +53,7 @@ Specification-first bootstrap with first implementation slice available in `apps
 - Schema catalog: `docs/data/table-catalog.md`
 - Security model: `docs/security/authentication.md`
 - Operations: `docs/ops/deployment-single-host.md`
+- Simple Front: `docs/ops/simple-front.md`
 - Roadmap: `docs/roadmap/mvp-scope.md`
 - Testnet bootstrap: `test/testnet/README.md`
   - Includes `run.py` (bootstrap) and `scenarios.py` (hedge/netting + multi-strategy live validation)

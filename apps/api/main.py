@@ -178,8 +178,8 @@ async def get_dispatcher_status(
     raise HTTPException(status_code=503, detail=out.get("error") or {"code": "dispatcher_unavailable"})
 
 
-@app.post("/position/commands", response_model=CommandsResponse)
-async def post_position_commands(
+@app.post("/oms/commands", response_model=CommandsResponse)
+async def post_oms_commands(
     commands: CommandInput | list[CommandInput],
     parallel: bool = False,
     request_timeout_seconds: int | None = None,
@@ -194,7 +194,7 @@ async def post_position_commands(
             default_timeout_seconds=None,
         ),
         payload={
-            "op": "position_commands_batch",
+            "op": "oms_commands_batch",
             "x_api_key": x_api_key,
             "parallel": bool(parallel),
             "items": [item.model_dump(by_alias=True, mode="json") for item in items],
@@ -204,6 +204,75 @@ async def post_position_commands(
         raise HTTPException(status_code=400, detail=dispatched.get("error") or {"code": "dispatcher_error"})
     result = dispatched.get("result", {})
     return CommandsResponse(results=result.get("results", []))
+
+
+def _normalize_account_targets(
+    account_ids: str | list[int] | None,
+) -> list[int]:
+    targets: list[int] = []
+    seen: set[int] = set()
+    if isinstance(account_ids, str):
+        for part in account_ids.split(","):
+            raw = part.strip()
+            if not raw.isdigit():
+                continue
+            aid = int(raw)
+            if aid <= 0 or aid in seen:
+                continue
+            targets.append(aid)
+            seen.add(aid)
+    elif isinstance(account_ids, list):
+        for raw in account_ids:
+            aid = int(raw or 0)
+            if aid <= 0 or aid in seen:
+                continue
+            targets.append(aid)
+            seen.add(aid)
+    return targets
+
+
+async def _oms_query_multi_account(
+    *,
+    x_api_key: str,
+    query: str,
+    account_ids: str | list[int] | None,
+    strategy_id: int | None,
+) -> list[dict[str, Any]]:
+    targets = _normalize_account_targets(account_ids=account_ids)
+    if not targets:
+        raise HTTPException(status_code=422, detail={"code": "validation_error", "message": "account_ids is required"})
+
+    requests = [
+        dispatch_request(
+            host=settings.dispatcher_host,
+            port=settings.dispatcher_port,
+            timeout_seconds=settings.dispatcher_request_timeout_seconds,
+            payload={
+                "op": "oms_query",
+                "x_api_key": x_api_key,
+                "account_id": aid,
+                "query": query,
+                "strategy_id": strategy_id,
+            },
+        )
+        for aid in targets
+    ]
+    outputs = await asyncio.gather(*requests)
+    merged: list[dict[str, Any]] = []
+    for aid, out in zip(targets, outputs):
+        if not out.get("ok"):
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "code": "dispatcher_error",
+                    "account_id": aid,
+                    "detail": out.get("error") or {"code": "dispatcher_error"},
+                },
+            )
+        rows = out.get("result", [])
+        if isinstance(rows, list):
+            merged.extend(rows)
+    return merged
 
 
 def _scope_lookback_seconds(scope: str, account: dict[str, Any] | None = None) -> int:
@@ -411,123 +480,83 @@ async def post_ccxt_batch(
     return CcxtBatchResponse(results=result.get("results", []))
 
 
-@app.get("/position/orders/open", response_model=PositionOrdersResponse)
+@app.get("/oms/orders/open", response_model=PositionOrdersResponse)
 async def get_position_orders_open(
-    account_id: int,
+    account_ids: str,
     strategy_id: int | None = None,
     x_api_key: str = Header(default=""),
 ) -> PositionOrdersResponse:
-    out = await dispatch_request(
-        host=settings.dispatcher_host,
-        port=settings.dispatcher_port,
-        timeout_seconds=settings.dispatcher_request_timeout_seconds,
-        payload={
-            "op": "position_query",
-            "x_api_key": x_api_key,
-            "account_id": account_id,
-            "query": "orders_open",
-            "strategy_id": strategy_id,
-        },
+    rows = await _oms_query_multi_account(
+        x_api_key=x_api_key,
+        query="orders_open",
+        account_ids=account_ids,
+        strategy_id=strategy_id,
     )
-    if not out.get("ok"):
-        raise HTTPException(status_code=400, detail=out.get("error") or {"code": "dispatcher_error"})
-    return PositionOrdersResponse(items=out.get("result", []))
+    return PositionOrdersResponse(items=rows)
 
 
-@app.get("/position/orders/history", response_model=PositionOrdersResponse)
+@app.get("/oms/orders/history", response_model=PositionOrdersResponse)
 async def get_position_orders_history(
-    account_id: int,
+    account_ids: str,
     strategy_id: int | None = None,
     x_api_key: str = Header(default=""),
 ) -> PositionOrdersResponse:
-    out = await dispatch_request(
-        host=settings.dispatcher_host,
-        port=settings.dispatcher_port,
-        timeout_seconds=settings.dispatcher_request_timeout_seconds,
-        payload={
-            "op": "position_query",
-            "x_api_key": x_api_key,
-            "account_id": account_id,
-            "query": "orders_history",
-            "strategy_id": strategy_id,
-        },
+    rows = await _oms_query_multi_account(
+        x_api_key=x_api_key,
+        query="orders_history",
+        account_ids=account_ids,
+        strategy_id=strategy_id,
     )
-    if not out.get("ok"):
-        raise HTTPException(status_code=400, detail=out.get("error") or {"code": "dispatcher_error"})
-    return PositionOrdersResponse(items=out.get("result", []))
+    return PositionOrdersResponse(items=rows)
 
 
-@app.get("/position/deals", response_model=PositionDealsResponse)
+@app.get("/oms/deals", response_model=PositionDealsResponse)
 async def get_position_deals(
-    account_id: int,
+    account_ids: str,
     strategy_id: int | None = None,
     x_api_key: str = Header(default=""),
 ) -> PositionDealsResponse:
-    out = await dispatch_request(
-        host=settings.dispatcher_host,
-        port=settings.dispatcher_port,
-        timeout_seconds=settings.dispatcher_request_timeout_seconds,
-        payload={
-            "op": "position_query",
-            "x_api_key": x_api_key,
-            "account_id": account_id,
-            "query": "deals",
-            "strategy_id": strategy_id,
-        },
+    rows = await _oms_query_multi_account(
+        x_api_key=x_api_key,
+        query="deals",
+        account_ids=account_ids,
+        strategy_id=strategy_id,
     )
-    if not out.get("ok"):
-        raise HTTPException(status_code=400, detail=out.get("error") or {"code": "dispatcher_error"})
-    return PositionDealsResponse(items=out.get("result", []))
+    return PositionDealsResponse(items=rows)
 
 
-@app.get("/position/positions/open", response_model=PositionsResponse)
+@app.get("/oms/positions/open", response_model=PositionsResponse)
 async def get_position_positions_open(
-    account_id: int,
+    account_ids: str,
     strategy_id: int | None = None,
     x_api_key: str = Header(default=""),
 ) -> PositionsResponse:
-    out = await dispatch_request(
-        host=settings.dispatcher_host,
-        port=settings.dispatcher_port,
-        timeout_seconds=settings.dispatcher_request_timeout_seconds,
-        payload={
-            "op": "position_query",
-            "x_api_key": x_api_key,
-            "account_id": account_id,
-            "query": "positions_open",
-            "strategy_id": strategy_id,
-        },
+    rows = await _oms_query_multi_account(
+        x_api_key=x_api_key,
+        query="positions_open",
+        account_ids=account_ids,
+        strategy_id=strategy_id,
     )
-    if not out.get("ok"):
-        raise HTTPException(status_code=400, detail=out.get("error") or {"code": "dispatcher_error"})
-    return PositionsResponse(items=out.get("result", []))
+    return PositionsResponse(items=rows)
 
 
-@app.get("/position/positions/history", response_model=PositionsResponse)
+@app.get("/oms/positions/history", response_model=PositionsResponse)
 async def get_position_positions_history(
-    account_id: int,
+    account_ids: str,
     strategy_id: int | None = None,
     x_api_key: str = Header(default=""),
 ) -> PositionsResponse:
-    out = await dispatch_request(
-        host=settings.dispatcher_host,
-        port=settings.dispatcher_port,
-        timeout_seconds=settings.dispatcher_request_timeout_seconds,
-        payload={
-            "op": "position_query",
-            "x_api_key": x_api_key,
-            "account_id": account_id,
-            "query": "positions_history",
-            "strategy_id": strategy_id,
-        },
+    rows = await _oms_query_multi_account(
+        x_api_key=x_api_key,
+        query="positions_history",
+        account_ids=account_ids,
+        strategy_id=strategy_id,
     )
-    if not out.get("ok"):
-        raise HTTPException(status_code=400, detail=out.get("error") or {"code": "dispatcher_error"})
-    return PositionsResponse(items=out.get("result", []))
+    return PositionsResponse(items=rows)
 
 
-@app.post("/position/reassign", response_model=ReassignResponse)
-async def post_position_reassign(
+@app.post("/oms/reassign", response_model=ReassignResponse)
+async def post_oms_reassign(
     req: ReassignInput,
     x_api_key: str = Header(default=""),
 ) -> ReassignResponse:
@@ -536,7 +565,7 @@ async def post_position_reassign(
         port=settings.dispatcher_port,
         timeout_seconds=settings.dispatcher_request_timeout_seconds,
         payload={
-            "op": "position_reassign",
+            "op": "oms_reassign",
             "x_api_key": x_api_key,
             "account_id": req.account_id,
             "deal_ids": req.deal_ids,
@@ -551,7 +580,7 @@ async def post_position_reassign(
     return ReassignResponse(ok=True, deals_updated=int(res.get("deals_updated", 0)), orders_updated=int(res.get("orders_updated", 0)))
 
 
-@app.post("/position/reconcile", response_model=ReconcileNowResponse)
+@app.post("/oms/reconcile", response_model=ReconcileNowResponse)
 async def post_position_reconcile_now(
     x_api_key: str = Header(default=""),
     req: ReconcileNowInput | None = None,
@@ -605,7 +634,7 @@ async def post_position_reconcile_now(
     )
 
 
-@app.get("/position/reconcile/{account_id}/status", response_model=ReconcileStatusResponse)
+@app.get("/oms/reconcile/{account_id}/status", response_model=ReconcileStatusResponse)
 async def get_position_reconcile_account_status(
     account_id: int,
     stale_after_seconds: int = 120,
@@ -638,7 +667,7 @@ async def get_position_reconcile_account_status(
     )
 
 
-@app.get("/position/reconcile/status", response_model=ReconcileStatusResponse)
+@app.get("/oms/reconcile/status", response_model=ReconcileStatusResponse)
 async def get_position_reconcile_status(
     status: str | None = None,
     stale_after_seconds: int = 120,
@@ -664,7 +693,7 @@ async def get_position_reconcile_status(
     return ReconcileStatusResponse(items=out.get("result", []))
 
 
-@app.get("/position/accounts", response_model=AccountsResponse)
+@app.get("/oms/accounts", response_model=AccountsResponse)
 async def get_position_accounts(
     x_api_key: str = Header(default=""),
 ) -> AccountsResponse:
@@ -682,7 +711,7 @@ async def get_position_accounts(
     return AccountsResponse(items=out.get("result", []))
 
 
-@app.post("/position/risk/{account_id}/allow_new_positions", response_model=RiskActionResponse)
+@app.post("/oms/risk/{account_id}/allow_new_positions", response_model=RiskActionResponse)
 async def post_risk_allow_new_positions(
     account_id: int,
     req: RiskSetAllowNewPositionsInput,
@@ -697,6 +726,7 @@ async def post_risk_allow_new_positions(
             "x_api_key": x_api_key,
             "account_id": account_id,
             "allow_new_positions": bool(req.allow_new_positions),
+            "comment": req.comment,
         },
     )
     if not out.get("ok"):
@@ -710,7 +740,7 @@ async def post_risk_allow_new_positions(
     )
 
 
-@app.post("/position/risk/{account_id}/strategies/allow_new_positions", response_model=RiskActionResponse)
+@app.post("/oms/risk/{account_id}/strategies/allow_new_positions", response_model=RiskActionResponse)
 async def post_risk_strategy_allow_new_positions(
     account_id: int,
     req: RiskSetStrategyAllowNewPositionsInput,
@@ -726,6 +756,7 @@ async def post_risk_strategy_allow_new_positions(
             "account_id": account_id,
             "strategy_id": int(req.strategy_id),
             "allow_new_positions": bool(req.allow_new_positions),
+            "comment": req.comment,
         },
     )
     if not out.get("ok"):
@@ -740,7 +771,7 @@ async def post_risk_strategy_allow_new_positions(
     )
 
 
-@app.post("/position/risk/{account_id}/status", response_model=RiskActionResponse)
+@app.post("/oms/risk/{account_id}/status", response_model=RiskActionResponse)
 async def post_risk_account_status(
     account_id: int,
     req: RiskSetAccountStatusInput,
@@ -755,6 +786,7 @@ async def post_risk_account_status(
             "x_api_key": x_api_key,
             "account_id": account_id,
             "status": req.status,
+            "comment": req.comment,
         },
     )
     if not out.get("ok"):
@@ -1011,7 +1043,7 @@ async def post_auth_login_password(
         token_type=str(res.get("token_type", "bearer")),
         expires_at=str(res.get("expires_at", "")),
         user_id=int(res.get("user_id", 0)),
-        role=str(res.get("role", "trade")),
+        role=str(res.get("role", "trader")),
         api_key_id=int(res.get("api_key_id", 0)),
     )
 
@@ -1030,6 +1062,7 @@ async def post_admin_create_strategy(
             "x_api_key": x_api_key,
             "name": req.name,
             "account_ids": req.account_ids,
+            "client_strategy_id": req.client_strategy_id,
         },
     )
     if not out.get("ok"):
@@ -1071,6 +1104,8 @@ async def patch_admin_update_strategy(
             "strategy_id": strategy_id,
             "name": req.name,
             "status": req.status,
+            "client_strategy_id": req.client_strategy_id,
+            "account_ids": req.account_ids,
         },
     )
     if not out.get("ok"):
@@ -1115,6 +1150,7 @@ async def post_strategies(
             "x_api_key": x_api_key,
             "name": req.name,
             "account_ids": req.account_ids,
+            "client_strategy_id": req.client_strategy_id,
         },
     )
     if not out.get("ok"):
@@ -1315,55 +1351,88 @@ async def ws_endpoint(websocket: WebSocket) -> None:
                     )
                     with_snapshot = bool(payload.get("with_snapshot", True))
                     if with_snapshot and "position" in subscriptions:
+                        snapshot_meta: list[dict[str, int]] = []
                         for account_id in sorted(subscribed_accounts):
                             open_orders = await dispatch_request(
                                 host=settings.dispatcher_host,
                                 port=settings.dispatcher_port,
                                 timeout_seconds=settings.dispatcher_request_timeout_seconds,
                                 payload={
-                                    "op": "position_query",
+                                    "op": "oms_query",
                                     "x_api_key": api_key,
                                     "account_id": account_id,
                                     "query": "orders_open",
                                 },
                             )
+                            orders_items = open_orders.get("result", []) if open_orders.get("ok") else []
+                            if not isinstance(orders_items, list):
+                                orders_items = []
+                            snapshot_meta.append(
+                                {
+                                    "account_id": int(account_id),
+                                    "open_orders": len(orders_items),
+                                    "open_positions": 0,
+                                }
+                            )
                             if open_orders.get("ok"):
-                                for row in open_orders.get("result", []) or []:
-                                    await websocket.send_json(
-                                        {
-                                            "id": None,
-                                            "ok": True,
-                                            "type": "ws_event",
-                                            "namespace": "position",
-                                            "action": "snapshot",
-                                            "event": "snapshot_open_order",
-                                            "payload": row,
-                                        }
-                                    )
+                                await websocket.send_json(
+                                    {
+                                        "id": None,
+                                        "ok": True,
+                                        "type": "ws_event",
+                                        "namespace": "position",
+                                        "action": "snapshot",
+                                        "event": "snapshot_open_orders",
+                                        "payload": {
+                                            "account_id": account_id,
+                                            "items": orders_items,
+                                        },
+                                    }
+                                )
                             open_positions = await dispatch_request(
                                 host=settings.dispatcher_host,
                                 port=settings.dispatcher_port,
                                 timeout_seconds=settings.dispatcher_request_timeout_seconds,
                                 payload={
-                                    "op": "position_query",
+                                    "op": "oms_query",
                                     "x_api_key": api_key,
                                     "account_id": account_id,
                                     "query": "positions_open",
                                 },
                             )
+                            positions_items = open_positions.get("result", []) if open_positions.get("ok") else []
+                            if not isinstance(positions_items, list):
+                                positions_items = []
+                            snapshot_meta[-1]["open_positions"] = len(positions_items)
                             if open_positions.get("ok"):
-                                for row in open_positions.get("result", []) or []:
-                                    await websocket.send_json(
-                                        {
-                                            "id": None,
-                                            "ok": True,
-                                            "type": "ws_event",
-                                            "namespace": "position",
-                                            "action": "snapshot",
-                                            "event": "snapshot_open_position",
-                                            "payload": row,
-                                        }
-                                    )
+                                await websocket.send_json(
+                                    {
+                                        "id": None,
+                                        "ok": True,
+                                        "type": "ws_event",
+                                        "namespace": "position",
+                                        "action": "snapshot",
+                                        "event": "snapshot_open_positions",
+                                        "payload": {
+                                            "account_id": account_id,
+                                            "items": positions_items,
+                                        },
+                                    }
+                                )
+                        await websocket.send_json(
+                            {
+                                "id": None,
+                                "ok": True,
+                                "type": "ws_event",
+                                "namespace": "position",
+                                "action": "snapshot",
+                                "event": "snapshot_done",
+                                "payload": {
+                                    "account_ids": sorted(subscribed_accounts),
+                                    "accounts": snapshot_meta,
+                                },
+                            }
+                        )
                     continue
 
                 if namespace == "position" and action == "command":
@@ -1388,7 +1457,7 @@ async def ws_endpoint(websocket: WebSocket) -> None:
                         port=settings.dispatcher_port,
                         timeout_seconds=settings.dispatcher_request_timeout_seconds,
                         payload={
-                            "op": "position_command",
+                            "op": "oms_command",
                             "x_api_key": api_key,
                             "account_id": account_id,
                             "index": 0,

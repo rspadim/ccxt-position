@@ -367,14 +367,23 @@ class PositionModel(BaseModel):
 
 class PositionOrdersResponse(BaseModel):
     items: list[PositionOrderModel]
+    total: int | None = None
+    page: int | None = None
+    page_size: int | None = None
 
 
 class PositionDealsResponse(BaseModel):
     items: list[PositionDealModel]
+    total: int | None = None
+    page: int | None = None
+    page_size: int | None = None
 
 
 class PositionsResponse(BaseModel):
     items: list[PositionModel]
+    total: int | None = None
+    page: int | None = None
+    page_size: int | None = None
 
 
 class ReassignResponse(BaseModel):
@@ -428,15 +437,18 @@ class AccountsResponse(BaseModel):
 
 class RiskSetAllowNewPositionsInput(BaseModel):
     allow_new_positions: bool
+    comment: str = Field(min_length=1)
 
 
 class RiskSetStrategyAllowNewPositionsInput(BaseModel):
     strategy_id: int
     allow_new_positions: bool
+    comment: str = Field(min_length=1)
 
 
 class RiskSetAccountStatusInput(BaseModel):
     status: Literal["active", "blocked"]
+    comment: str = Field(min_length=1)
 
 
 class RiskActionResponse(BaseModel):
@@ -538,7 +550,7 @@ class AdminApiKeyAccountPermissionInput(BaseModel):
 
 class AdminCreateUserApiKeyInput(BaseModel):
     user_name: str = Field(min_length=1)
-    role: Literal["admin", "trade"] = "trade"
+    role: Literal["admin", "trader", "portfolio_manager", "robot", "risk", "readonly"] = "trader"
     api_key: str | None = None
     password: str | None = None
     permissions: list[AdminApiKeyAccountPermissionInput] = Field(default_factory=list)
@@ -608,6 +620,7 @@ class AdminUpsertApiKeyPermissionInput(BaseModel):
 class AdminCreateStrategyInput(BaseModel):
     name: str = Field(min_length=1)
     account_ids: list[int] = Field(default_factory=list)
+    client_strategy_id: int | None = Field(default=None, ge=1)
 
 
 class AdminCreateStrategyResponse(BaseModel):
@@ -617,6 +630,7 @@ class AdminCreateStrategyResponse(BaseModel):
 
 class AdminStrategyItem(BaseModel):
     strategy_id: int
+    client_strategy_id: int | None = None
     name: str
     status: Literal["active", "disabled"]
     account_ids: list[int] = Field(default_factory=list)
@@ -629,6 +643,8 @@ class AdminStrategiesResponse(BaseModel):
 class AdminUpdateStrategyInput(BaseModel):
     name: str | None = None
     status: Literal["active", "disabled"] | None = None
+    client_strategy_id: int | None = Field(default=None, ge=1)
+    account_ids: list[int] | None = None
 
 
 class AdminUpdateStrategyResponse(BaseModel):
@@ -639,6 +655,7 @@ class AdminUpdateStrategyResponse(BaseModel):
 
 class StrategyItem(BaseModel):
     strategy_id: int
+    client_strategy_id: int | None = None
     name: str
     status: Literal["active", "disabled"]
     account_ids: list[int] = Field(default_factory=list)
@@ -651,6 +668,7 @@ class StrategiesResponse(BaseModel):
 class CreateStrategyInput(BaseModel):
     name: str = Field(min_length=1)
     account_ids: list[int] = Field(default_factory=list)
+    client_strategy_id: int | None = Field(default=None, ge=1)
 
 
 class CreateStrategyResponse(BaseModel):
