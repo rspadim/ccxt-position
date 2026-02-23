@@ -10,6 +10,7 @@ from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass
 from typing import Any
 
+import ccxt.async_support as ccxt_async
 from pydantic import TypeAdapter
 
 from .app.auth import AuthContext, validate_api_key
@@ -22,6 +23,11 @@ from .app.repository_mysql import MySQLCommandRepository
 from .app.schemas import CommandInput
 from .app.service import process_single_command_direct
 from .worker_position import _reconcile_account_once
+
+try:
+    import ccxt.pro as ccxt_pro  # type: ignore
+except Exception:
+    ccxt_pro = None
 
 
 COMMAND_INPUT_ADAPTER = TypeAdapter(CommandInput)
@@ -720,6 +726,14 @@ class Dispatcher:
                     "exchange_id": self._exchange_engine_id(account.get("exchange_id")),
                 },
             }
+
+        if op == "meta_ccxt_exchanges":
+            await self._auth_from_payload(msg)
+            ccxt_items = sorted([f"ccxt.{str(x)}" for x in list(getattr(ccxt_async, "exchanges", []))])
+            pro_items: list[str] = []
+            if ccxt_pro is not None:
+                pro_items = sorted([f"ccxtpro.{str(x)}" for x in list(getattr(ccxt_pro, "exchanges", []))])
+            return {"ok": True, "result": sorted(set([*ccxt_items, *pro_items]))}
 
         if op == "ccxt_call":
             auth = await self._auth_from_payload(msg)
@@ -1504,7 +1518,7 @@ class Dispatcher:
         if op == "admin_create_account":
             auth = await self._auth_from_payload(msg)
             self._require_admin(auth)
-            exchange_id = str(msg.get("exchange_id", "")).strip()
+            exchange_id = self._exchange_engine_id(str(msg.get("exchange_id", "")).strip())
             label = str(msg.get("label", "")).strip()
             position_mode = str(msg.get("position_mode", "hedge")).strip()
             is_testnet = bool(msg.get("is_testnet", True))
@@ -1546,7 +1560,11 @@ class Dispatcher:
             status_raw = msg.get("status")
             extra_config_raw = msg.get("extra_config_json")
             credentials_raw = msg.get("credentials") if isinstance(msg.get("credentials"), dict) else None
-            exchange_id = None if exchange_id_raw is None else str(exchange_id_raw).strip()
+            exchange_id = (
+                None
+                if exchange_id_raw is None
+                else self._exchange_engine_id(str(exchange_id_raw).strip())
+            )
             label = None if label_raw is None else str(label_raw).strip()
             position_mode = None if position_mode_raw is None else str(position_mode_raw).strip()
             if position_mode is not None and position_mode not in {"hedge", "netting", "strategy_netting"}:

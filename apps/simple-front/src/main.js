@@ -2774,11 +2774,18 @@ async function loadRiskPermissions(cfgOverride = null) {
 
 async function loadCcxtExchanges(cfgOverride = null) {
   const cfg = cfgOverride || requireConfig();
-  const res = await apiRequest("/meta/ccxt/exchanges", {}, cfg);
+  const res = await apiRequest("/meta/exchanges", {}, cfg);
   const node = $("adminExchangeIdSelect");
   const current = String(node.value || "").trim();
   node.innerHTML = "";
-  const items = Array.isArray(res.items) ? res.items : [];
+  const toEngineId = (value) => {
+    const raw = String(value || "").trim();
+    if (!raw) return "";
+    const lower = raw.toLowerCase();
+    if (lower.startsWith("ccxt.") || lower.startsWith("ccxtpro.")) return raw;
+    return `ccxt.${raw}`;
+  };
+  const items = (Array.isArray(res.items) ? res.items : []).map((x) => toEngineId(x)).filter((x) => !!x);
   for (const ex of items) {
     const opt = document.createElement("option");
     opt.value = String(ex);
@@ -2786,7 +2793,7 @@ async function loadCcxtExchanges(cfgOverride = null) {
     node.appendChild(opt);
   }
   if (current && items.includes(current)) node.value = current;
-  else if (items.includes("binance")) node.value = "binance";
+  else if (items.includes("ccxt.binance")) node.value = "ccxt.binance";
   else if (items[0]) node.value = String(items[0]);
 }
 
@@ -4185,10 +4192,10 @@ function bootstrapDefaults() {
   const exchangeSelect = $("adminExchangeIdSelect");
   if (exchangeSelect.options.length === 0) {
     const opt = document.createElement("option");
-    opt.value = "binance";
-    opt.textContent = "binance";
+    opt.value = "";
+    opt.textContent = "";
     exchangeSelect.appendChild(opt);
-    exchangeSelect.value = "binance";
+    exchangeSelect.value = "";
   }
   applyDefaultHistoryDates();
   for (const key of OMS_PAGER_KEYS) {

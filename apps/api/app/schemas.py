@@ -959,6 +959,12 @@ class UserUpdateApiKeyInput(BaseModel):
     user_id: int | None = Field(default=None, ge=1)
 
 
+class UserUpdateApiKeyResponse(BaseModel):
+    ok: bool
+    api_key_id: int
+    rows: int
+
+
 class CcxtExchangesResponse(BaseModel):
     items: list[str]
 

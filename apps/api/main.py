@@ -3,7 +3,6 @@ import contextlib
 import json
 from datetime import datetime
 from typing import Any
-import ccxt.async_support as ccxt_async
 
 from fastapi import FastAPI, Header, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -198,19 +197,23 @@ async def healthz() -> dict[str, str]:
     }
 
 
-@app.get("/meta/ccxt/exchanges", response_model=CcxtExchangesResponse)
+@app.get("/meta/exchanges", response_model=CcxtExchangesResponse)
 async def get_ccxt_exchanges(
     x_api_key: str = Header(default=""),
 ) -> CcxtExchangesResponse:
-    auth = await dispatch_request(
+    out = await dispatch_request(
         host=settings.dispatcher_host,
         port=settings.dispatcher_port,
         timeout_seconds=settings.dispatcher_request_timeout_seconds,
-        payload={"op": "auth_check", "x_api_key": x_api_key},
+        payload={"op": "meta_ccxt_exchanges", "x_api_key": x_api_key},
     )
-    if not auth.get("ok"):
-        raise HTTPException(status_code=401, detail=auth.get("error") or {"code": "invalid_api_key"})
-    return CcxtExchangesResponse(items=sorted(list(getattr(ccxt_async, "exchanges", []))))
+    if not out.get("ok"):
+        err = out.get("error") or {"code": "dispatcher_error"}
+        code = str(err.get("code", "")).strip().lower()
+        if code in {"invalid_api_key", "missing_api_key"}:
+            raise HTTPException(status_code=401, detail=err)
+        raise HTTPException(status_code=400, detail=err)
+    return CcxtExchangesResponse(items=out.get("result", []))
 
 
 @app.get("/dispatcher/status")

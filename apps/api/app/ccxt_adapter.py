@@ -14,6 +14,16 @@ class CCXTAdapter:
     def __init__(self, logger: Any | None = None) -> None:
         self.logger = logger
 
+    @staticmethod
+    def _resolve_exchange_class_id(exchange_id: str) -> str:
+        raw = str(exchange_id or "").strip()
+        if not raw:
+            return raw
+        lowered = raw.lower()
+        if lowered.startswith("ccxt.") or lowered.startswith("ccxtpro."):
+            return raw.split(".", 1)[1].strip()
+        return raw
+
     def _build_exchange(
         self,
         exchange_id: str,
@@ -23,7 +33,8 @@ class CCXTAdapter:
         passphrase: str | None,
         extra_config: dict[str, Any] | None = None,
     ) -> Any:
-        exchange_cls = getattr(ccxt_async, exchange_id, None)
+        exchange_class_id = self._resolve_exchange_class_id(exchange_id)
+        exchange_cls = getattr(ccxt_async, exchange_class_id, None)
         if exchange_cls is None:
             raise RuntimeError(f"unsupported exchange_id: {exchange_id}")
         config: dict[str, Any] = {}

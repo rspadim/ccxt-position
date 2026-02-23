@@ -594,45 +594,53 @@
 
       <section class="card is-hidden" id="postTradingPanel">
         <h2 data-i18n="post_trading.external_orders">Ordens Externas</h2>
-        <div class="actions history-filters">
-          <label><span data-i18n="post_trading.account_ids">Account IDs CSV</span><input id="postTradingAccountIds" placeholder="1,2,3" /></label>
-          <label><span data-i18n="common.start_date">Start Date</span><input id="postTradingStartDate" type="date" /></label>
-          <label><span data-i18n="common.end_date">End Date</span><input id="postTradingEndDate" type="date" /></label>
-          <label><span data-i18n="post_trading.reconciled">Reconciled</span>
-            <select id="postTradingReconciled" multiple size="2">
-              <option value="true" selected>true</option>
-              <option value="false" selected>false</option>
-            </select>
-          </label>
-          <label><span data-i18n="post_trading.order_statuses">Order Statuses CSV</span><input id="postTradingOrderStatuses" placeholder="OPEN,PARTIALLY_FILLED" /></label>
-          <label><span data-i18n="post_trading.reconcile_scope">Reconcile Scope</span>
-            <select id="postTradingReconcileScope">
-              <option value="short" data-i18n="post_trading.scope_short">Short</option>
-              <option value="hourly" data-i18n="post_trading.scope_hourly">Hourly</option>
-              <option value="long" data-i18n="post_trading.scope_long">Long</option>
-              <option value="period" selected data-i18n="post_trading.scope_period">Period</option>
-            </select>
-          </label>
-          <wa-button id="postTradingReconcileBtn" variant="neutral" data-i18n="post_trading.reconcile">Reconcile</wa-button>
-          <wa-button id="postTradingPreviewBtn" variant="neutral" data-i18n="post_trading.preview">Preview</wa-button>
-          <wa-button id="postTradingApplyBtn" variant="brand" data-i18n="post_trading.apply">Apply Reassign</wa-button>
+        <div class="card oms-table-card">
+          <div class="actions history-filters">
+            <label><span data-i18n="post_trading.account_ids">Account IDs CSV</span><input id="postTradingAccountIds" placeholder="1,2,3" /></label>
+            <label><span data-i18n="common.start_date">Start Date</span><input id="postTradingStartDate" type="date" /></label>
+            <label><span data-i18n="common.end_date">End Date</span><input id="postTradingEndDate" type="date" /></label>
+            <label><span data-i18n="post_trading.reconciled">Reconciled</span>
+              <select id="postTradingReconciled" multiple size="2">
+                <option value="true" selected>true</option>
+                <option value="false" selected>false</option>
+              </select>
+            </label>
+            <label><span data-i18n="post_trading.order_statuses">Order Statuses CSV</span><input id="postTradingOrderStatuses" placeholder="OPEN,PARTIALLY_FILLED" /></label>
+            <wa-button id="postTradingPreviewBtn" variant="neutral" data-i18n="post_trading.preview">Preview</wa-button>
+            <wa-button id="postTradingApplyBtn" variant="brand" data-i18n="post_trading.apply">Apply Reassign</wa-button>
+          </div>
+          <div id="postTradingMessage" class="notice notice-info is-hidden"></div>
+          <div class="pager-row">
+            <div class="pager-group">
+              <wa-button id="postTradingPrevPageBtn" type="button" variant="neutral"><i class="fa-solid fa-chevron-left" aria-hidden="true"></i></wa-button>
+              <wa-button id="postTradingNextPageBtn" type="button" variant="neutral"><i class="fa-solid fa-chevron-right" aria-hidden="true"></i></wa-button>
+              <label class="pager-label"><span data-i18n="common.items_per_page">Items/Page</span><select id="postTradingPageSize"><option value="50">50</option><option value="100" selected>100</option><option value="200">200</option><option value="500">500</option></select></label>
+              <label class="pager-label"><span data-i18n="common.page">Page</span><input id="postTradingPageInput" type="number" min="1" value="1" /></label>
+              <div id="postTradingPageInfo" class="pager-info">1 / 1</div>
+              <wa-button id="postTradingCopyBtn" type="button" variant="neutral"><i class="fa-solid fa-copy" aria-hidden="true"></i></wa-button>
+              <wa-button id="postTradingExportCsvBtn" type="button" variant="neutral"><i class="fa-solid fa-file-csv" aria-hidden="true"></i></wa-button>
+              <wa-button id="postTradingExportExcelBtn" type="button" variant="neutral"><i class="fa-solid fa-file-excel" aria-hidden="true"></i></wa-button>
+              <wa-button id="postTradingExportJsonBtn" type="button" variant="neutral"><i class="fa-solid fa-file-lines" aria-hidden="true"></i></wa-button>
+              <wa-button id="postTradingExportHtmlBtn" type="button" variant="neutral"><i class="fa-solid fa-file-code" aria-hidden="true"></i></wa-button>
+            </div>
+          </div>
+          <div id="postTradingTable"></div>
         </div>
-        <div id="postTradingMessage" class="notice notice-info is-hidden"></div>
-        <div class="pager-row">
-          <div class="pager-group">
-            <wa-button id="postTradingPrevPageBtn" type="button" variant="neutral"><i class="fa-solid fa-chevron-left" aria-hidden="true"></i></wa-button>
-            <wa-button id="postTradingNextPageBtn" type="button" variant="neutral"><i class="fa-solid fa-chevron-right" aria-hidden="true"></i></wa-button>
-            <label class="pager-label"><span data-i18n="common.items_per_page">Items/Page</span><select id="postTradingPageSize"><option value="50">50</option><option value="100" selected>100</option><option value="200">200</option><option value="500">500</option></select></label>
-            <label class="pager-label"><span data-i18n="common.page">Page</span><input id="postTradingPageInput" type="number" min="1" value="1" /></label>
-            <div id="postTradingPageInfo" class="pager-info">1 / 1</div>
-            <wa-button id="postTradingCopyBtn" type="button" variant="neutral"><i class="fa-solid fa-copy" aria-hidden="true"></i></wa-button>
-            <wa-button id="postTradingExportCsvBtn" type="button" variant="neutral"><i class="fa-solid fa-file-csv" aria-hidden="true"></i></wa-button>
-            <wa-button id="postTradingExportExcelBtn" type="button" variant="neutral"><i class="fa-solid fa-file-excel" aria-hidden="true"></i></wa-button>
-            <wa-button id="postTradingExportJsonBtn" type="button" variant="neutral"><i class="fa-solid fa-file-lines" aria-hidden="true"></i></wa-button>
-            <wa-button id="postTradingExportHtmlBtn" type="button" variant="neutral"><i class="fa-solid fa-file-code" aria-hidden="true"></i></wa-button>
+
+        <div class="card oms-table-card">
+          <h3 data-i18n="post_trading.reconcile">Reconcile</h3>
+          <div class="actions history-filters">
+            <label><span data-i18n="post_trading.reconcile_scope">Reconcile Scope</span>
+              <select id="postTradingReconcileScope">
+                <option value="short" data-i18n="post_trading.scope_short">Short</option>
+                <option value="hourly" data-i18n="post_trading.scope_hourly">Hourly</option>
+                <option value="long" data-i18n="post_trading.scope_long">Long</option>
+                <option value="period" selected data-i18n="post_trading.scope_period">Period</option>
+              </select>
+            </label>
+            <wa-button id="postTradingReconcileBtn" variant="neutral" data-i18n="post_trading.reconcile">Reconcile</wa-button>
           </div>
         </div>
-        <div id="postTradingTable"></div>
       </section>
 
       <wa-dialog id="closeByModal" label="Close By" light-dismiss>
