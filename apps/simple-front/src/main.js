@@ -39,10 +39,12 @@ const state = {
   omsLocalData: {
     openPositions: [],
     openOrders: [],
+    symbolsList: [],
   },
   omsPager: {
     openPositions: { page: 1, pageSize: 100, total: 0, totalPages: 1 },
     openOrders: { page: 1, pageSize: 100, total: 0, totalPages: 1 },
+    symbolsList: { page: 1, pageSize: 100, total: 0, totalPages: 1 },
     deals: { page: 1, pageSize: 100, total: 0, totalPages: 1 },
     historyPositions: { page: 1, pageSize: 100, total: 0, totalPages: 1 },
     historyOrders: { page: 1, pageSize: 100, total: 0, totalPages: 1 },
@@ -452,7 +454,15 @@ async function apiRequest(path, options = {}, cfgOverride = null) {
   });
   const text = await res.text();
   const json = text ? JSON.parse(text) : {};
-  if (!res.ok) throw new Error(`${res.status} ${JSON.stringify(json)}`);
+  if (!res.ok) {
+    const detail = json?.detail && typeof json.detail === "object" ? json.detail : null;
+    const msg1 = String(detail?.message || detail?.code || "").trim();
+    const nested = Array.isArray(detail?.results) ? detail.results[0]?.error : null;
+    const msg2 = String(nested?.message || nested?.code || "").trim();
+    const chosen = msg1 || msg2;
+    if (chosen) throw new Error(`${res.status} ${chosen}`);
+    throw new Error(`${res.status} ${JSON.stringify(json)}`);
+  }
   return json;
 }
 
@@ -496,6 +506,134 @@ function setCcxtResultBox(value) {
   $("ccxtResultBox").value = text;
 }
 
+function parseLoadMarketsRows(result) {
+  const toFiniteNumberOrNull = (value) => {
+    if (value === null || value === undefined || value === "") return null;
+    const n = Number(value);
+    return Number.isFinite(n) ? n : null;
+  };
+  const extractTickAndStep = (market) => {
+    const data = (market && typeof market === "object") ? market : {};
+    const info = (data.info && typeof data.info === "object") ? data.info : {};
+    const filters = Array.isArray(info.filters) ? info.filters : [];
+    const findFilter = (name) => filters.find((f) => String(f?.filterType || "").toUpperCase() === String(name).toUpperCase()) || {};
+    const priceFilter = findFilter("PRICE_FILTER");
+    const lotFilter = findFilter("LOT_SIZE");
+    const marketLotFilter = findFilter("MARKET_LOT_SIZE");
+    const tickSize =
+      toFiniteNumberOrNull(data.tick_size)
+      ?? toFiniteNumberOrNull(data.tickSize)
+      ?? toFiniteNumberOrNull(info.tickSize)
+      ?? toFiniteNumberOrNull(priceFilter.tickSize)
+      ?? null;
+    const stepSize =
+      toFiniteNumberOrNull(data.step_size)
+      ?? toFiniteNumberOrNull(data.stepSize)
+      ?? toFiniteNumberOrNull(info.stepSize)
+      ?? toFiniteNumberOrNull(lotFilter.stepSize)
+      ?? toFiniteNumberOrNull(marketLotFilter.stepSize)
+      ?? null;
+    return { tickSize, stepSize };
+  };
+  let rows = [];
+  if (Array.isArray(result)) {
+    rows = result.map((item, index) => {
+      const data = item && typeof item === "object" ? item : {};
+      const symbol = String(data.symbol || "").trim();
+      const id = String(data.id || "").trim();
+      const base = String(data.base || "").trim();
+      const quote = String(data.quote || "").trim();
+      const precision = (data.precision && typeof data.precision === "object") ? data.precision : {};
+      const limits = (data.limits && typeof data.limits === "object") ? data.limits : {};
+      const amountLimits = (limits.amount && typeof limits.amount === "object") ? limits.amount : {};
+      const priceLimits = (limits.price && typeof limits.price === "object") ? limits.price : {};
+      const costLimits = (limits.cost && typeof limits.cost === "object") ? limits.cost : {};
+      const rowKey = `${symbol || id || index}`;
+      const { tickSize, stepSize } = extractTickAndStep(data);
+      return {
+        id: rowKey,
+        row_id: rowKey,
+        symbol: symbol || (base && quote ? `${base}/${quote}` : ""),
+        market_id: id,
+        base,
+        quote,
+        type: String(data.type || "").trim(),
+        active: data.active === true ? true : (data.active === false ? false : null),
+        qty_decimals: precision.amount ?? null,
+        price_decimals: precision.price ?? null,
+        qty_min: amountLimits.min ?? null,
+        qty_max: amountLimits.max ?? null,
+        price_min: priceLimits.min ?? null,
+        price_max: priceLimits.max ?? null,
+        cost_min: costLimits.min ?? null,
+        cost_max: costLimits.max ?? null,
+        tick_size: tickSize,
+        step_size: stepSize,
+      };
+    });
+  } else if (result && typeof result === "object") {
+    rows = Object.entries(result).map(([key, value], index) => {
+      const data = value && typeof value === "object" ? value : {};
+      const symbol = String(data.symbol || "").trim();
+      const marketId = String(data.id || key || "").trim();
+      const base = String(data.base || "").trim();
+      const quote = String(data.quote || "").trim();
+      const precision = (data.precision && typeof data.precision === "object") ? data.precision : {};
+      const limits = (data.limits && typeof data.limits === "object") ? data.limits : {};
+      const amountLimits = (limits.amount && typeof limits.amount === "object") ? limits.amount : {};
+      const priceLimits = (limits.price && typeof limits.price === "object") ? limits.price : {};
+      const costLimits = (limits.cost && typeof limits.cost === "object") ? limits.cost : {};
+      const rowKey = `${marketId || symbol || index}`;
+      const { tickSize, stepSize } = extractTickAndStep(data);
+      return {
+        id: rowKey,
+        row_id: rowKey,
+        symbol: symbol || (base && quote ? `${base}/${quote}` : String(key || "").trim()),
+        market_id: marketId,
+        base,
+        quote,
+        type: String(data.type || "").trim(),
+        active: data.active === true ? true : (data.active === false ? false : null),
+        qty_decimals: precision.amount ?? null,
+        price_decimals: precision.price ?? null,
+        qty_min: amountLimits.min ?? null,
+        qty_max: amountLimits.max ?? null,
+        price_min: priceLimits.min ?? null,
+        price_max: priceLimits.max ?? null,
+        cost_min: costLimits.min ?? null,
+        cost_max: costLimits.max ?? null,
+        tick_size: tickSize,
+        step_size: stepSize,
+      };
+    });
+  }
+  return rows
+    .filter((row) => String(row.symbol || "").trim() || String(row.market_id || "").trim())
+    .sort((a, b) => String(a.symbol || a.market_id || "").localeCompare(String(b.symbol || b.market_id || "")));
+}
+
+function extractSymbolsList(rows) {
+  return [...new Set((rows || [])
+    .map((row) => String(row.symbol || row.market_id || "").trim())
+    .filter((s) => !!s))].sort();
+}
+
+async function loadOmsSymbolsList(resetPage = true) {
+  const cfg = requireConfig();
+  const accountId = requireAccountId("omsSymbolsAccountId", "oms_symbols");
+  const out = await apiRequest(`/ccxt/${accountId}/load_markets`, {
+    method: "POST",
+    body: { args: [], kwargs: {} },
+  }, cfg);
+  const rows = parseLoadMarketsRows(out.result);
+  setLocalOmsRows("symbolsList", rows, resetPage ? 1 : null);
+  const symbols = extractSymbolsList(rows);
+  renderHistory("symbolHistory", symbols.slice(0, 2000));
+  if (!$("sendSymbol").value && symbols[0]) $("sendSymbol").value = symbols[0];
+  eventLog("oms_symbols_loaded", { account_id: accountId, count: rows.length });
+  uiLog("info", "OMS symbol list loaded", { account_id: accountId, count: rows.length });
+}
+
 function redrawTableByPaneId(paneId) {
   const map = {
     paneOpenPositions: "openPositions",
@@ -503,6 +641,7 @@ function redrawTableByPaneId(paneId) {
     paneDeals: "deals",
     paneHistoryPositions: "historyPositions",
     paneHistoryOrders: "historyOrders",
+    paneSymbolsList: "omsSymbols",
     paneCcxtOrders: "ccxtOrders",
     paneCcxtTrades: "ccxtTrades",
     paneWsEvents: "events",
@@ -532,6 +671,7 @@ async function maybeAutoReloadOmsTab(panelName) {
     deals: () => refreshHistoryTable("deals", false),
     historyPositions: () => refreshHistoryTable("historyPositions", false),
     historyOrders: () => refreshHistoryTable("historyOrders", false),
+    symbolsList: () => loadOmsSymbolsList(false),
   };
   const load = loaders[kind];
   if (!load) return;
@@ -559,6 +699,7 @@ function bindWaTabs() {
       deals: "paneDeals",
       historyPositions: "paneHistoryPositions",
       historyOrders: "paneHistoryOrders",
+      symbolsList: "paneSymbolsList",
       ccxtOrders: "paneCcxtOrders",
       ccxtTrades: "paneCcxtTrades",
       wsEvents: "paneWsEvents",
@@ -585,6 +726,23 @@ function languageLabelFor(code) {
 function t(key, fallback = "") {
   const dict = I18N?.[state.locale] || I18N?.["pt-BR"] || {};
   return String(dict[key] || fallback || key);
+}
+
+function setOmsMessage(kind, text) {
+  const node = document.getElementById("omsMessage");
+  if (!node) return;
+  if (!text) {
+    node.textContent = "";
+    node.classList.add("is-hidden");
+    node.classList.remove("notice-success", "notice-error", "notice-info");
+    return;
+  }
+  node.textContent = String(text);
+  node.classList.remove("is-hidden", "notice-success", "notice-error", "notice-info");
+  if (kind === "success") node.classList.add("notice-success");
+  else if (kind === "error") node.classList.add("notice-error");
+  else node.classList.add("notice-info");
+  uiLog(kind, String(text), { source: "oms" });
 }
 
 function setLoginMessage(kind, text) {
@@ -696,7 +854,9 @@ function applyLanguageTexts() {
     label.textContent = t(key, fallback);
   };
   applyMenu("tabLoginBtn", "menu.login_config", "Login / Config");
-  applyMenu("tabUserBtn", "menu.user", "User");
+  applyMenu("tabUserGroupBtn", "menu.user", "User");
+  applyMenu("tabUserProfileBtn", "user.tab_profile", "Profile");
+  applyMenu("tabUserApiKeysBtn", "user.tab_api_keys", "API Keys");
   applyMenu("tabStrategiesBtn", "menu.strategies", "Strategies");
   applyMenu("tabPositionsBtn", "menu.oms", "OMS");
   applyMenu("tabPostTradingGroupBtn", "menu.post_trading", "Post Trading");
@@ -769,10 +929,16 @@ function updateLoginPasswordToggleLabel() {
 }
 
 function bindSidebarMenu() {
+  const userGroup = $("tabUserGroupBtn");
+  const userSubmenu = $("userSubmenu");
   const adminGroup = $("tabAdminGroupBtn");
   const adminSubmenu = $("adminSubmenu");
   const postTradingGroup = $("tabPostTradingGroupBtn");
   const postTradingSubmenu = $("postTradingSubmenu");
+  const setUserExpanded = (expanded) => {
+    userSubmenu.classList.toggle("is-hidden", !expanded);
+    userGroup.classList.toggle("active", expanded);
+  };
   const setAdminExpanded = (expanded) => {
     adminSubmenu.classList.toggle("is-hidden", !expanded);
     adminGroup.classList.toggle("active", expanded);
@@ -782,7 +948,13 @@ function bindSidebarMenu() {
     postTradingGroup.classList.toggle("active", expanded);
   };
   $("tabLoginBtn").addEventListener("click", () => switchTab("login"));
-  $("tabUserBtn").addEventListener("click", () => switchTab("user"));
+  userGroup.addEventListener("click", () => {
+    const collapsed = userSubmenu.classList.contains("is-hidden");
+    setUserExpanded(collapsed);
+    if (collapsed) switchTab("userProfile");
+  });
+  $("tabUserProfileBtn").addEventListener("click", () => switchTab("userProfile"));
+  $("tabUserApiKeysBtn").addEventListener("click", () => switchTab("userApiKeys"));
   $("tabCommandsBtn").addEventListener("click", () => switchTab("commands"));
   $("tabPositionsBtn").addEventListener("click", () => switchTab("positions"));
   $("tabSystemBtn").addEventListener("click", () => switchTab("system"));
@@ -804,6 +976,7 @@ function bindSidebarMenu() {
   $("tabAdminApiKeysBtn").addEventListener("click", () => switchTab("adminApiKeys"));
   $("tabAdminStatusBtn").addEventListener("click", () => switchTab("adminStatus"));
   $("tabAdminOmsBtn").addEventListener("click", () => switchTab("adminOms"));
+  setUserExpanded(false);
   setAdminExpanded(false);
   setPostTradingExpanded(false);
 }
@@ -1332,14 +1505,25 @@ async function fetchCombinedSnapshot(accountIds, cfg) {
 function mergeById(items) {
   const map = new Map();
   for (const item of items) {
-    const id = item.id !== undefined ? String(item.id) : JSON.stringify(item);
+    const id = item.id !== undefined ? String(item.id) : (item.row_id !== undefined ? String(item.row_id) : JSON.stringify(item));
     map.set(id, item);
   }
   return [...map.values()];
 }
 
 function sortByIdAsc(items) {
-  return [...(items || [])].sort((a, b) => Number(a?.id || 0) - Number(b?.id || 0));
+  return [...(items || [])].sort((a, b) => {
+    const aKey = a?.id ?? a?.row_id ?? "";
+    const bKey = b?.id ?? b?.row_id ?? "";
+    const an = Number(aKey);
+    const bn = Number(bKey);
+    const aNum = Number.isFinite(an);
+    const bNum = Number.isFinite(bn);
+    if (aNum && bNum) return an - bn;
+    if (aNum && !bNum) return -1;
+    if (!aNum && bNum) return 1;
+    return String(aKey).localeCompare(String(bKey));
+  });
 }
 
 function clampPage(page, totalPages) {
@@ -1375,8 +1559,15 @@ function setPagerFromTotal(key, total, page = 1, pageSize = state.omsPageSize) {
 }
 
 function renderLocalOmsPage(key) {
-  const tableKey = key === "openPositions" ? "openPositions" : "openOrders";
-  const rows = sortByIdAsc(mergeById(state.omsLocalData[key] || []));
+  const tableKeyByLocalKey = {
+    openPositions: "openPositions",
+    openOrders: "openOrders",
+    symbolsList: "omsSymbols",
+  };
+  const tableKey = tableKeyByLocalKey[key] || "openOrders";
+  const rows = key === "symbolsList"
+    ? [...mergeById(state.omsLocalData[key] || [])].sort((a, b) => String(a?.symbol || a?.market_id || "").localeCompare(String(b?.symbol || b?.market_id || "")))
+    : sortByIdAsc(mergeById(state.omsLocalData[key] || []));
   const pager = state.omsPager[key];
   const pageSize = Math.max(1, Number(pager?.pageSize || state.omsPageSize));
   const totalPages = Math.max(1, Math.ceil(rows.length / pageSize));
@@ -1389,7 +1580,9 @@ function renderLocalOmsPage(key) {
 }
 
 function setLocalOmsRows(key, rows, page = null) {
-  state.omsLocalData[key] = sortByIdAsc(mergeById(rows || []));
+  state.omsLocalData[key] = key === "symbolsList"
+    ? [...mergeById(rows || [])].sort((a, b) => String(a?.symbol || a?.market_id || "").localeCompare(String(b?.symbol || b?.market_id || "")))
+    : sortByIdAsc(mergeById(rows || []));
   if (page !== null) {
     state.omsPager[key].page = Math.max(1, Number(page) || 1);
   }
@@ -1531,8 +1724,8 @@ async function refreshHistoryTable(kind, resetPage = false) {
   setPagerFromTotal(kind, Number(out.total || 0), Number(out.page || page), Number(out.page_size || pageSize));
 }
 
-const OMS_PAGER_KEYS = ["openPositions", "openOrders", "deals", "historyPositions", "historyOrders", "ccxtOrders", "ccxtTrades", "postTrading", "adminOms"];
-const OMS_LOCAL_KEYS = new Set(["openPositions", "openOrders"]);
+const OMS_PAGER_KEYS = ["openPositions", "openOrders", "symbolsList", "deals", "historyPositions", "historyOrders", "ccxtOrders", "ccxtTrades", "postTrading", "adminOms"];
+const OMS_LOCAL_KEYS = new Set(["openPositions", "openOrders", "symbolsList"]);
 
 function updatePagerButtonI18n() {
   const prevTitle = t("common.previous", "Previous");
@@ -1808,6 +2001,102 @@ async function changeOpenPositionInline(row) {
   ensureOmsCommandSuccess(out, "position_change");
   eventLog("open_position_change_inline", { account_id: accountId, position_id: positionId, out });
   await refreshOpenPositionsTable();
+}
+
+async function closeSelectedOpenPositions() {
+  const table = state.tables.openPositions;
+  const rows = (table?.getSelectedData?.() || [])
+    .filter((row) => Number(row?.account_id) > 0 && Number(row?.id) > 0);
+  if (rows.length === 0) throw new Error("select_rows");
+  const cfg = requireConfig();
+  const commands = rows.map((row) => ({
+    account_id: Number(row.account_id),
+    command: "close_position",
+    payload: { position_id: Number(row.id), order_type: "market" },
+  }));
+  const out = await apiRequest("/oms/commands", {
+    method: "POST",
+    body: commands,
+  }, cfg);
+  const results = Array.isArray(out?.results) ? out.results : [];
+  const okCount = results.filter((r) => r && r.ok === true).length;
+  const errors = results
+    .map((r, idx) => ({ r, idx }))
+    .filter((x) => !x.r || x.r.ok === false)
+    .map((x) => {
+      const input = commands[x.idx] || {};
+      const err = x.r?.error || {};
+      return {
+        index: x.idx,
+        account_id: input.account_id,
+        position_id: input?.payload?.position_id,
+        error: String(err.message || err.code || "dispatcher_error"),
+      };
+    });
+  eventLog("open_positions_close_selected", { requested: rows.length, ok: okCount, errors });
+  if (errors.length > 0) {
+    setOmsMessage("error", `${t("oms.bulk_close_positions_partial", "Close selected positions finished with errors")} (${okCount}/${rows.length})`);
+    uiLog("warn", t("oms.bulk_close_positions_partial", "Close selected positions finished with errors"), { requested: rows.length, ok: okCount, errors });
+  } else {
+    setOmsMessage("success", `${t("oms.bulk_close_positions_ok", "Close selected positions ok")} (${okCount}/${rows.length})`);
+    uiLog("info", t("oms.bulk_close_positions_ok", "Close selected positions ok"), { requested: rows.length, ok: okCount });
+  }
+  await refreshOpenPositionsTable();
+}
+
+async function cancelSelectedOpenOrders() {
+  const table = state.tables.openOrders;
+  const rows = (table?.getSelectedData?.() || [])
+    .filter((row) => Number(row?.account_id) > 0 && Number(row?.id) > 0);
+  if (rows.length === 0) throw new Error("select_rows");
+  const cfg = requireConfig();
+  const byAccount = new Map();
+  for (const row of rows) {
+    const accountId = Number(row.account_id);
+    const orderId = Number(row.id);
+    if (!byAccount.has(accountId)) byAccount.set(accountId, []);
+    byAccount.get(accountId).push(orderId);
+  }
+  const commands = [...byAccount.entries()].map(([accountId, ids]) => {
+    const uniqueIds = [...new Set(ids)];
+    return {
+      account_id: accountId,
+      command: "cancel_order",
+      payload: {
+        order_ids: uniqueIds,
+        order_ids_csv: uniqueIds.join(","),
+      },
+    };
+  });
+  const out = await apiRequest("/oms/commands", {
+    method: "POST",
+    body: commands,
+  }, cfg);
+  const results = Array.isArray(out?.results) ? out.results : [];
+  const errors = results
+    .map((r, idx) => ({ r, idx }))
+    .filter((x) => !x.r || x.r.ok === false)
+    .map((x) => {
+      const input = commands[x.idx] || {};
+      const err = x.r?.error || {};
+      return {
+        index: x.idx,
+        account_id: input.account_id,
+        order_ids: input?.payload?.order_ids || [],
+        error: String(err.message || err.code || "dispatcher_error"),
+      };
+    });
+  const failedOrderIds = new Set(errors.flatMap((e) => Array.isArray(e.order_ids) ? e.order_ids : []));
+  const okCount = rows.filter((row) => !failedOrderIds.has(Number(row.id))).length;
+  eventLog("open_orders_cancel_selected", { requested: rows.length, ok: okCount, errors });
+  if (errors.length > 0) {
+    setOmsMessage("error", `${t("oms.bulk_cancel_orders_partial", "Cancel selected orders finished with errors")} (${okCount}/${rows.length})`);
+    uiLog("warn", t("oms.bulk_cancel_orders_partial", "Cancel selected orders finished with errors"), { requested: rows.length, ok: okCount, errors });
+  } else {
+    setOmsMessage("success", `${t("oms.bulk_cancel_orders_ok", "Cancel selected orders ok")} (${okCount}/${rows.length})`);
+    uiLog("info", t("oms.bulk_cancel_orders_ok", "Cancel selected orders ok"), { requested: rows.length, ok: okCount });
+  }
+  await refreshOpenOrdersTable();
 }
 
 function closeCloseByModal() {
@@ -2247,7 +2536,19 @@ function setupTables() {
     { title: t("oms.col_opened_at", "Opened At"), field: "opened_at", width: 170 },
     { title: t("oms.col_updated_at", "Updated At"), field: "updated_at", width: 170 },
     { title: t("oms.col_closed_at", "Closed At"), field: "closed_at", width: 170 },
-  ]);
+  ], {
+    selectableRows: true,
+    rowHeader: {
+      formatter: "rowSelection",
+      titleFormatter: "rowSelection",
+      hozAlign: "center",
+      headerSort: false,
+      resizable: false,
+      frozen: true,
+      width: 40,
+      minWidth: 40,
+    },
+  });
   state.tables.openOrders = makeTable("openOrdersTable", [
     omsRowNumberColumn("openOrders"),
     {
@@ -2316,7 +2617,19 @@ function setupTables() {
         }
       },
     },
-  ]);
+  ], {
+    selectableRows: true,
+    rowHeader: {
+      formatter: "rowSelection",
+      titleFormatter: "rowSelection",
+      hozAlign: "center",
+      headerSort: false,
+      resizable: false,
+      frozen: true,
+      width: 40,
+      minWidth: 40,
+    },
+  });
   state.tables.historyPositions = makeTable("historyPositionsTable", [
     omsRowNumberColumn("historyPositions"),
     { title: t("oms.col_id", "ID"), field: "id", width: 84 },
@@ -2359,6 +2672,24 @@ function setupTables() {
     { title: t("oms.col_created_at", "Created At"), field: "created_at", width: 170 },
     { title: t("oms.col_updated_at", "Updated At"), field: "updated_at", width: 170 },
     { title: t("oms.col_closed_at", "Closed At"), field: "closed_at", width: 170 },
+  ]);
+  state.tables.omsSymbols = makeTable("omsSymbolsTable", [
+    { title: t("oms.col_symbol", "Symbol"), field: "symbol", width: 220 },
+    { title: t("oms.col_market_id", "Market ID"), field: "market_id", width: 220 },
+    { title: t("oms.col_base", "Base"), field: "base", width: 120 },
+    { title: t("oms.col_quote", "Quote"), field: "quote", width: 120 },
+    { title: t("oms.col_market_type", "Type"), field: "type", width: 120 },
+    { title: t("oms.col_market_active", "Active"), field: "active", width: 100, formatter: "tickCross" },
+    { title: t("oms.col_price_decimals", "Price Decimals"), field: "price_decimals", width: 120 },
+    { title: t("oms.col_qty_decimals", "Qty Decimals"), field: "qty_decimals", width: 120 },
+    { title: t("oms.col_price_min", "Min Price"), field: "price_min", width: 120, formatter: (cell) => formatDecimalForUi(cell.getValue()) },
+    { title: t("oms.col_price_max", "Max Price"), field: "price_max", width: 120, formatter: (cell) => formatDecimalForUi(cell.getValue()) },
+    { title: t("oms.col_qty_min", "Min Qty"), field: "qty_min", width: 120, formatter: (cell) => formatDecimalForUi(cell.getValue()) },
+    { title: t("oms.col_qty_max", "Max Qty"), field: "qty_max", width: 120, formatter: (cell) => formatDecimalForUi(cell.getValue()) },
+    { title: t("oms.col_cost_min", "Min Cost"), field: "cost_min", width: 120, formatter: (cell) => formatDecimalForUi(cell.getValue()) },
+    { title: t("oms.col_cost_max", "Max Cost"), field: "cost_max", width: 120, formatter: (cell) => formatDecimalForUi(cell.getValue()) },
+    { title: t("oms.col_tick_size", "Tick Size"), field: "tick_size", width: 120, formatter: (cell) => formatDecimalForUi(cell.getValue()) },
+    { title: t("oms.col_step_size", "Step Size"), field: "step_size", width: 120, formatter: (cell) => formatDecimalForUi(cell.getValue()) },
   ]);
   state.tables.deals = makeTable("dealsTable", [
     omsRowNumberColumn("deals"),
@@ -2624,7 +2955,7 @@ function setupTables() {
             body: { status },
           }, cfg);
           eventLog("user_update_api_key_status", out);
-          await loadUserApiKeys(cfg);
+          await Promise.all([loadUserApiKeys(cfg), loadUserApiKeyPermissions(cfg)]);
           setUserMessage("success", t("user.api_key_status_updated", "Status da API Key atualizado."));
         } catch (err) {
           eventLog("user_update_api_key_status_error", { error: String(err) });
@@ -2632,6 +2963,27 @@ function setupTables() {
         }
       },
     },
+  ]);
+  state.tables.userApiKeyPermissions = makeTable("userApiKeyPermissionsTable", [
+    { title: "api_key_id", field: "api_key_id", width: 110, hozAlign: "right", headerHozAlign: "right" },
+    { title: "account_id", field: "account_id", width: 110, hozAlign: "right", headerHozAlign: "right" },
+    { title: "can_read", field: "can_read", width: 100 },
+    { title: "can_trade", field: "can_trade", width: 100 },
+    { title: "can_close_position", field: "can_close_position", width: 150 },
+    { title: "can_risk_manage", field: "can_risk_manage", width: 140 },
+    { title: "can_block_new_positions", field: "can_block_new_positions", width: 180 },
+    { title: "can_block_account", field: "can_block_account", width: 150 },
+    { title: "restrict_to_strategies", field: "restrict_to_strategies", width: 170 },
+    {
+      title: "strategy_ids",
+      field: "strategy_ids",
+      width: 180,
+      formatter: (cell) => {
+        const arr = cell.getValue();
+        return Array.isArray(arr) ? arr.join(",") : "";
+      },
+    },
+    { title: "status", field: "status", width: 100 },
   ]);
   state.tables.riskPermissions = makeTable("riskPermissionsTable", [
     { title: "api_key_id", field: "api_key_id", width: 90 },
@@ -2737,6 +3089,48 @@ async function loadUserApiKeys(cfgOverride = null) {
   return res;
 }
 
+async function loadUserApiKeyPermissions(cfgOverride = null) {
+  const cfg = cfgOverride || requireConfig();
+  try {
+    const res = await apiRequest("/user/api-keys/permissions", {}, cfg);
+    state.tables.userApiKeyPermissions.setData(res.items || []);
+    return res;
+  } catch (err) {
+    const msg = String(err || "");
+    const statusMatch = msg.match(/^(\d+)\b/);
+    const status = statusMatch ? Number(statusMatch[1]) : 0;
+    if (status === 404 || status === 405) {
+      try {
+        const keysRes = await apiRequest("/user/api-keys", {}, cfg);
+        const keys = Array.isArray(keysRes?.items) ? keysRes.items : [];
+        const calls = keys
+          .map((item) => Number(item?.api_key_id || 0))
+          .filter((id) => Number.isFinite(id) && id > 0)
+          .map(async (apiKeyId) => {
+            try {
+              const out = await apiRequest(`/user/api-keys/${apiKeyId}/permissions`, {}, cfg);
+              return Array.isArray(out?.items) ? out.items : [];
+            } catch {
+              return [];
+            }
+          });
+        const chunks = await Promise.all(calls);
+        const merged = mergeById(chunks.flat());
+        state.tables.userApiKeyPermissions.setData(merged);
+        if (merged.length === 0) {
+          uiLog("warn", "User API key permissions endpoint unavailable", { status, error: msg });
+        }
+        return { items: merged };
+      } catch {
+        state.tables.userApiKeyPermissions.setData([]);
+        uiLog("warn", "User API key permissions unavailable", { status, error: msg });
+        return { items: [] };
+      }
+    }
+    throw err;
+  }
+}
+
 async function loadTradeStrategies(cfgOverride = null) {
   const cfg = cfgOverride || requireConfig();
   const res = await apiRequest("/strategies", {}, cfg);
@@ -2830,6 +3224,7 @@ async function loadAccountsByApiKey(cfgOverride = null) {
     }
     renderAllHistories();
     if (!$("sendAccountId").value) $("sendAccountId").value = String(ids[0]);
+    if (!$("omsSymbolsAccountId").value) $("omsSymbolsAccountId").value = String(ids[0]);
     if (!$("cancelOrderAccountId").value) $("cancelOrderAccountId").value = String(ids[0]);
     if (!$("ccxtAccountId").value) $("ccxtAccountId").value = String(ids[0]);
     if (!$("changeOrderAccountId").value) $("changeOrderAccountId").value = String(ids[0]);
@@ -2970,12 +3365,38 @@ function bindForms() {
       eventLog("refresh_open_positions_error", { error: String(err) });
     }
   });
+  $("closeSelectedPositionsBtn").addEventListener("click", async () => {
+    try {
+      await closeSelectedOpenPositions();
+    } catch (err) {
+      const msg = String(err || "");
+      if (msg.includes("select_rows")) {
+        setOmsMessage("error", t("oms.select_open_positions_first", "Select one or more open positions first"));
+      } else {
+        eventLog("close_selected_positions_error", { error: msg });
+        setOmsMessage("error", `${t("oms.bulk_close_positions_failed", "Close selected positions failed")}: ${msg}`);
+      }
+    }
+  });
   $("refreshOpenOrdersBtn").addEventListener("click", async () => {
     try {
       await refreshOpenOrdersTable();
       eventLog("refresh_open_orders_ok", {});
     } catch (err) {
       eventLog("refresh_open_orders_error", { error: String(err) });
+    }
+  });
+  $("cancelSelectedOrdersBtn").addEventListener("click", async () => {
+    try {
+      await cancelSelectedOpenOrders();
+    } catch (err) {
+      const msg = String(err || "");
+      if (msg.includes("select_rows")) {
+        setOmsMessage("error", t("oms.select_open_orders_first", "Select one or more open orders first"));
+      } else {
+        eventLog("cancel_selected_orders_error", { error: msg });
+        setOmsMessage("error", `${t("oms.bulk_cancel_orders_failed", "Cancel selected orders failed")}: ${msg}`);
+      }
     }
   });
   $("refreshDealsBtn").addEventListener("click", async () => {
@@ -3000,6 +3421,15 @@ function bindForms() {
       eventLog("refresh_history_orders_ok", {});
     } catch (err) {
       eventLog("refresh_history_orders_error", { error: String(err) });
+    }
+  });
+  $("refreshOmsSymbolsBtn").addEventListener("click", async () => {
+    try {
+      await loadOmsSymbolsList(true);
+      eventLog("refresh_oms_symbols_ok", {});
+    } catch (err) {
+      eventLog("refresh_oms_symbols_error", { error: String(err) });
+      uiLog("error", "OMS symbol list load failed", { error: String(err) });
     }
   });
 
@@ -3249,6 +3679,10 @@ function bindForms() {
   };
 
   const defaultCoreBodies = {
+    load_markets: { reload: false, params: {} },
+    fetch_markets: { params: {} },
+    fetch_ticker: { symbol: "BTC/USDT", params: {} },
+    fetch_tickers: { symbols: null, params: {} },
     fetch_balance: {},
     fetch_open_orders: { symbol: "BTC/USDT", since: null, limit: 200, params: {} },
     fetch_order: { id: "", symbol: null, params: {} },
@@ -3275,38 +3709,8 @@ function bindForms() {
         method: "POST",
         body: { args: [], kwargs: {} },
       }, cfg);
-      const result = out.result;
-      let symbols = [];
-      if (Array.isArray(result)) {
-        symbols = result
-          .map((item) => {
-            if (!item || typeof item !== "object") return "";
-            const symbol = String(item.symbol || "").trim();
-            if (symbol) return symbol;
-            const id = String(item.id || "").trim();
-            if (id) return id;
-            const base = String(item.base || "").trim();
-            const quote = String(item.quote || "").trim();
-            if (base && quote) return `${base}/${quote}`;
-            return "";
-          })
-          .filter((s) => !!s);
-      } else if (result && typeof result === "object") {
-        symbols = Object.entries(result).map(([key, value]) => {
-          const k = String(key || "").trim();
-          const v = (value && typeof value === "object") ? value : {};
-          const symbol = String(v.symbol || "").trim();
-          if (symbol) return symbol;
-          if (k) return k;
-          const id = String(v.id || "").trim();
-          if (id) return id;
-          const base = String(v.base || "").trim();
-          const quote = String(v.quote || "").trim();
-          if (base && quote) return `${base}/${quote}`;
-          return "";
-        }).filter((s) => !!s);
-      }
-      symbols = [...new Set(symbols)].sort();
+      const rows = parseLoadMarketsRows(out.result);
+      const symbols = extractSymbolsList(rows);
       renderHistory("symbolHistory", symbols.slice(0, 2000));
       if (!$("sendSymbol").value && symbols[0]) $("sendSymbol").value = symbols[0];
       eventLog("load_symbols", { account_id: accountId, count: symbols.length });
@@ -3674,7 +4078,7 @@ function bindForms() {
         .replace("{key}", String(out.api_key_plain || ""));
       box.classList.remove("is-hidden", "notice-error");
       box.classList.add("notice-info");
-      await loadUserApiKeys(cfg);
+      await Promise.all([loadUserApiKeys(cfg), loadUserApiKeyPermissions(cfg)]);
       setUserMessage("success", t("user.api_key_created_success", "API Key criada com sucesso."));
     } catch (err) {
       eventLog("user_create_api_key_error", { error: String(err) });
@@ -3689,7 +4093,7 @@ function bindForms() {
   $("loadUserApiKeysBtn").addEventListener("click", async () => {
     try {
       const cfg = requireConfig();
-      await Promise.all([loadUserProfile(cfg), loadUserApiKeys(cfg)]);
+      await Promise.all([loadUserProfile(cfg), loadUserApiKeys(cfg), loadUserApiKeyPermissions(cfg)]);
       setUserMessage("info", t("user.reloaded", "Dados do usuário recarregados."));
     } catch (err) {
       eventLog("user_load_error", { error: String(err) });
@@ -4038,9 +4442,11 @@ function bindForms() {
 }
 
 function switchTab(tab) {
+  const requestedTab = tab === "user" ? "userProfile" : tab;
   const allowedTabs = new Set([
     "login",
-    "user",
+    "userProfile",
+    "userApiKeys",
     "commands",
     "positions",
     "postTrading",
@@ -4053,10 +4459,12 @@ function switchTab(tab) {
     "adminStatus",
     "adminOms",
   ]);
-  const nextTab = allowedTabs.has(tab) ? tab : "login";
+  const nextTab = allowedTabs.has(requestedTab) ? requestedTab : "login";
   localStorage.setItem(STORAGE.activeMenu, nextTab);
   const isLogin = nextTab === "login";
-  const isUser = nextTab === "user";
+  const isUserProfile = nextTab === "userProfile";
+  const isUserApiKeys = nextTab === "userApiKeys";
+  const inUserGroup = isUserProfile || isUserApiKeys;
   const isCommands = nextTab === "commands";
   const isPositions = nextTab === "positions";
   const isPostTrading = nextTab === "postTrading";
@@ -4074,7 +4482,8 @@ function switchTab(tab) {
     node.setAttribute("variant", "neutral");
   };
   setMenuActive("tabLoginBtn", isLogin);
-  setMenuActive("tabUserBtn", isUser);
+  setMenuActive("tabUserProfileBtn", isUserProfile);
+  setMenuActive("tabUserApiKeysBtn", isUserApiKeys);
   setMenuActive("tabCommandsBtn", isCommands);
   setMenuActive("tabPositionsBtn", isPositions);
   setMenuActive("tabPostTradingOrdersBtn", isPostTrading);
@@ -4086,13 +4495,15 @@ function switchTab(tab) {
   setMenuActive("tabAdminApiKeysBtn", isAdminApiKeys);
   setMenuActive("tabAdminStatusBtn", isAdminStatus);
   setMenuActive("tabAdminOmsBtn", isAdminOms);
+  $("tabUserGroupBtn").classList.toggle("active", inUserGroup);
   $("tabPostTradingGroupBtn").classList.toggle("active", isPostTrading);
   const inAdminGroup = isAdmin || isAdminUsers || isAdminApiKeys || isAdminStatus || isAdminOms;
   $("tabAdminGroupBtn").classList.toggle("active", inAdminGroup);
+  $("userSubmenu").classList.toggle("is-hidden", !inUserGroup);
   $("adminSubmenu").classList.toggle("is-hidden", !inAdminGroup);
   $("postTradingSubmenu").classList.toggle("is-hidden", !isPostTrading);
   $("loginPanel").classList.toggle("is-hidden", !isLogin);
-  $("userPanel").classList.toggle("is-hidden", !isUser);
+  $("userPanel").classList.toggle("is-hidden", !inUserGroup);
   $("commandsPanel").classList.toggle("is-hidden", !isCommands);
   $("positionsPanel").classList.toggle("is-hidden", !isPositions);
   $("postTradingPanel").classList.toggle("is-hidden", !isPostTrading);
@@ -4136,8 +4547,12 @@ function switchTab(tab) {
       eventLog("admin_oms_load_error", { error: String(err) });
     });
   }
-  if (isUser) {
-    Promise.all([loadUserProfile(), loadUserApiKeys()]).catch((err) => {
+  if (inUserGroup) {
+    const profileSection = document.getElementById("userProfileSection");
+    const apiKeysSection = document.getElementById("userApiKeysSection");
+    if (profileSection) profileSection.classList.toggle("is-hidden", !isUserProfile);
+    if (apiKeysSection) apiKeysSection.classList.toggle("is-hidden", !isUserApiKeys);
+    Promise.all([loadUserProfile(), loadUserApiKeys(), loadUserApiKeyPermissions()]).catch((err) => {
       eventLog("user_load_error", { error: String(err) });
     });
   }

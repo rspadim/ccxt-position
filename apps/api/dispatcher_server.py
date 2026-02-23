@@ -1920,6 +1920,35 @@ class Dispatcher:
                 await conn.commit()
             return {"ok": True, "result": items}
 
+        if op == "user_api_key_permissions_list":
+            auth = await self._auth_from_payload(msg)
+            requested_api_key_id = int(msg.get("api_key_id", 0) or 0)
+            async with self.db.connection() as conn:
+                user_keys = await self.repo.list_api_keys_for_user(conn, auth.user_id)
+                owned_key_ids = sorted(
+                    set(
+                        [
+                            int(item.get("api_key_id", 0) or 0)
+                            for item in (user_keys or [])
+                            if int(item.get("api_key_id", 0) or 0) > 0
+                        ]
+                    )
+                )
+                if requested_api_key_id > 0:
+                    if requested_api_key_id not in owned_key_ids:
+                        await conn.commit()
+                        return {"ok": False, "error": {"code": "permission_denied"}}
+                    target_key_ids = [requested_api_key_id]
+                else:
+                    target_key_ids = owned_key_ids
+                items: list[dict[str, Any]] = []
+                for api_key_id in target_key_ids:
+                    rows = await self.repo.list_api_key_permissions_admin(conn, api_key_id)
+                    if rows:
+                        items.extend(rows)
+                await conn.commit()
+            return {"ok": True, "result": items}
+
         if op == "user_api_key_create":
             auth = await self._auth_from_payload(msg)
             api_key_plain = str(msg.get("api_key") or secrets.token_urlsafe(32))

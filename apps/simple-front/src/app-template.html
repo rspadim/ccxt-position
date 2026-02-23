@@ -11,7 +11,11 @@
         </div>
         <div class="menu">
           <wa-button id="tabLoginBtn" class="tab" variant="neutral"><i class="fa-solid fa-sliders" aria-hidden="true"></i><span>Login / Config</span></wa-button>
-          <wa-button id="tabUserBtn" class="tab" variant="neutral"><i class="fa-solid fa-user" aria-hidden="true"></i><span>Usuário</span></wa-button>
+          <wa-button id="tabUserGroupBtn" class="tab" variant="neutral"><i class="fa-solid fa-user" aria-hidden="true"></i><span>Usuário</span></wa-button>
+          <div id="userSubmenu" class="menu-submenu is-hidden">
+            <wa-button id="tabUserProfileBtn" class="tab submenu-item" variant="neutral"><i class="fa-solid fa-id-card" aria-hidden="true"></i><span>Perfil</span></wa-button>
+            <wa-button id="tabUserApiKeysBtn" class="tab submenu-item" variant="neutral"><i class="fa-solid fa-key" aria-hidden="true"></i><span>API Keys</span></wa-button>
+          </div>
           <wa-button id="tabStrategiesBtn" class="tab" variant="neutral"><i class="fa-solid fa-diagram-project" aria-hidden="true"></i><span>Strategies</span></wa-button>
           <wa-button id="tabPositionsBtn" class="tab" variant="neutral"><i class="fa-solid fa-layer-group" aria-hidden="true"></i><span>OMS</span></wa-button>
           <wa-button id="tabPostTradingGroupBtn" class="tab" variant="neutral"><i class="fa-solid fa-shuffle" aria-hidden="true"></i><span>Post Trading</span></wa-button>
@@ -123,34 +127,41 @@
       <section class="card forms is-hidden" id="userPanel">
         <h2 data-i18n="menu.user">Usuário</h2>
         <div id="userMessage" class="notice notice-info is-hidden"></div>
-        <div class="grid cols-2">
-          <form id="userProfileForm">
-            <h3 data-i18n="user.profile">Meu Perfil</h3>
-            <label><span data-i18n="user.user_id">ID do Usuário</span><input id="userProfileUserId" readonly /></label>
-            <label><span data-i18n="user.role">Perfil</span><input id="userProfileRole" readonly /></label>
-            <label><span data-i18n="user.status">Status</span><input id="userProfileStatus" readonly /></label>
-            <label><span data-i18n="user.current_api_key_id">API Key Atual</span><input id="userProfileApiKeyId" readonly /></label>
-            <label><span data-i18n="user.user_name">Nome do Usuário</span><input id="userProfileName" /></label>
-            <wa-button id="userSaveProfileBtn" type="submit" variant="brand" data-i18n="user.save_profile">Salvar Perfil</wa-button>
-          </form>
-          <form id="userPasswordForm">
-            <h3 data-i18n="user.change_password">Alterar Senha</h3>
-            <label><span data-i18n="user.current_password">Senha Atual</span><input id="userCurrentPassword" type="password" /></label>
-            <label><span data-i18n="user.new_password">Nova Senha</span><input id="userNewPassword" type="password" /></label>
-            <wa-button id="userSavePasswordBtn" type="submit" variant="brand" data-i18n="user.save_password">Salvar Senha</wa-button>
-          </form>
-        </div>
-        <div class="card">
-          <form id="userCreateApiKeyForm">
-            <h3 data-i18n="user.api_keys">Minhas API Keys</h3>
-            <label><span data-i18n="user.new_api_key_optional">Nova API Key (opcional)</span><input id="userNewApiKeyValue" placeholder="" /></label>
-            <wa-button id="userCreateApiKeyBtn" type="submit" variant="brand" data-i18n="user.create_api_key">Criar API Key</wa-button>
-          </form>
-          <div id="userCreatedApiKeyBox" class="notice notice-info is-hidden"></div>
-          <div class="actions">
-            <wa-button id="loadUserApiKeysBtn" type="button" variant="neutral" data-i18n="user.load_api_keys">Recarregar API Keys</wa-button>
+        <div id="userProfileSection">
+          <div class="grid cols-2">
+            <form id="userProfileForm">
+              <h3 data-i18n="user.profile">Meu Perfil</h3>
+              <label><span data-i18n="user.user_id">ID do Usuário</span><input id="userProfileUserId" readonly /></label>
+              <label><span data-i18n="user.role">Perfil</span><input id="userProfileRole" readonly /></label>
+              <label><span data-i18n="user.status">Status</span><input id="userProfileStatus" readonly /></label>
+              <label><span data-i18n="user.current_api_key_id">API Key Atual</span><input id="userProfileApiKeyId" readonly /></label>
+              <label><span data-i18n="user.user_name">Nome do Usuário</span><input id="userProfileName" /></label>
+              <wa-button id="userSaveProfileBtn" type="submit" variant="brand" data-i18n="user.save_profile">Salvar Perfil</wa-button>
+            </form>
+            <form id="userPasswordForm">
+              <h3 data-i18n="user.change_password">Alterar Senha</h3>
+              <label><span data-i18n="user.current_password">Senha Atual</span><input id="userCurrentPassword" type="password" /></label>
+              <label><span data-i18n="user.new_password">Nova Senha</span><input id="userNewPassword" type="password" /></label>
+              <wa-button id="userSavePasswordBtn" type="submit" variant="brand" data-i18n="user.save_password">Salvar Senha</wa-button>
+            </form>
           </div>
-          <div id="userApiKeysTable"></div>
+        </div>
+
+        <div id="userApiKeysSection" class="is-hidden">
+          <div class="card">
+            <form id="userCreateApiKeyForm">
+              <h3 data-i18n="user.api_keys">Minhas API Keys</h3>
+              <label><span data-i18n="user.new_api_key_optional">Nova API Key (opcional)</span><input id="userNewApiKeyValue" placeholder="" /></label>
+              <wa-button id="userCreateApiKeyBtn" type="submit" variant="brand" data-i18n="user.create_api_key">Criar API Key</wa-button>
+            </form>
+            <div id="userCreatedApiKeyBox" class="notice notice-info is-hidden"></div>
+            <div class="actions">
+              <wa-button id="loadUserApiKeysBtn" type="button" variant="neutral" data-i18n="user.load_api_keys">Recarregar API Keys</wa-button>
+            </div>
+            <div id="userApiKeysTable"></div>
+            <h3 data-i18n="user.api_key_permissions">Permissões por API Key</h3>
+            <div id="userApiKeyPermissionsTable"></div>
+          </div>
         </div>
       </section>
 
@@ -222,6 +233,7 @@
             <label><span data-i18n="cmd.field.params_json">Params JSON</span><textarea name="params_json">{}</textarea></label>
             <label class="inline"><input name="post_only" type="checkbox" /> <span data-i18n="cmd.field.post_only">post_only</span></label>
             <label class="inline"><input name="reduce_only" type="checkbox" /> <span data-i18n="cmd.field.reduce_only">reduce_only</span></label>
+            <div id="sendOrderValidationBox" class="notice notice-info is-hidden"></div>
             <wa-button type="submit" variant="brand" data-i18n="common.send">Send</wa-button>
           </form>
           </wa-tab-panel>
@@ -329,6 +341,10 @@
             <div id="ccxtCoreFields" class="is-hidden">
               <label><span data-i18n="cmd.field.core_func">Core Func</span>
                 <select id="ccxtCoreFunc" name="core_func">
+                  <option value="load_markets">load_markets</option>
+                  <option value="fetch_markets">fetch_markets</option>
+                  <option value="fetch_ticker">fetch_ticker</option>
+                  <option value="fetch_tickers">fetch_tickers</option>
                   <option value="fetch_balance">fetch_balance</option>
                   <option value="fetch_open_orders">fetch_open_orders</option>
                   <option value="fetch_order">fetch_order</option>
@@ -373,6 +389,7 @@
 
       <section class="card is-hidden" id="positionsPanel">
         <h2 data-i18n="positions.title">Position Monitor</h2>
+        <div id="omsMessage" class="notice notice-info is-hidden"></div>
         <div class="actions">
           <wa-button id="refreshOmsBtn" variant="neutral" data-i18n="trade.refresh_tables">Refresh Tables</wa-button>
         </div>
@@ -382,11 +399,13 @@
           <wa-tab slot="nav" panel="deals" data-i18n="positions.deals">Deals</wa-tab>
           <wa-tab slot="nav" panel="historyPositions" data-i18n="positions.history_positions">History Positions</wa-tab>
           <wa-tab slot="nav" panel="historyOrders" data-i18n="positions.history_orders">History Orders</wa-tab>
+          <wa-tab slot="nav" panel="symbolsList" data-i18n="positions.symbol_list">Symbol List</wa-tab>
 
           <wa-tab-panel name="openPositions">
             <div class="oms-table-card">
               <div class="actions">
                 <wa-button id="refreshOpenPositionsBtn" variant="neutral" data-i18n="common.refresh">Refresh</wa-button>
+                <wa-button id="closeSelectedPositionsBtn" class="danger-btn" variant="neutral" data-i18n="oms.close_selected_positions">Close Selected</wa-button>
               </div>
               <div class="pager-row">
                 <div class="pager-group">
@@ -410,6 +429,7 @@
             <div class="oms-table-card">
               <div class="actions">
                 <wa-button id="refreshOpenOrdersBtn" variant="neutral" data-i18n="common.refresh">Refresh</wa-button>
+                <wa-button id="cancelSelectedOrdersBtn" class="danger-btn" variant="neutral" data-i18n="oms.cancel_selected_orders">Cancel Selected</wa-button>
               </div>
               <div class="pager-row">
                 <div class="pager-group">
@@ -501,6 +521,30 @@
                 </div>
               </div>
               <div id="historyOrdersTable"></div>
+            </div>
+          </wa-tab-panel>
+
+          <wa-tab-panel name="symbolsList">
+            <div class="oms-table-card">
+              <div class="actions history-filters">
+                <label><span data-i18n="common.account_id">Account ID</span><input id="omsSymbolsAccountId" list="accountHistory" data-i18n-placeholder="common.account_id_placeholder" placeholder="ex: 1" /></label>
+                <wa-button id="refreshOmsSymbolsBtn" variant="neutral" data-i18n="common.load">Load</wa-button>
+              </div>
+              <div class="pager-row">
+                <div class="pager-group">
+                  <wa-button id="symbolsListPrevPageBtn" type="button" variant="neutral"><i class="fa-solid fa-chevron-left" aria-hidden="true"></i></wa-button>
+                  <wa-button id="symbolsListNextPageBtn" type="button" variant="neutral"><i class="fa-solid fa-chevron-right" aria-hidden="true"></i></wa-button>
+                  <label class="pager-label"><span data-i18n="common.items_per_page">Items/Page</span><select id="symbolsListPageSize"><option value="50">50</option><option value="100" selected>100</option><option value="200">200</option><option value="500">500</option></select></label>
+                  <label class="pager-label"><span data-i18n="common.page">Page</span><input id="symbolsListPageInput" type="number" min="1" value="1" /></label>
+                  <div id="symbolsListPageInfo" class="pager-info">1 / 1</div>
+                  <wa-button id="symbolsListCopyBtn" type="button" variant="neutral"><i class="fa-solid fa-copy" aria-hidden="true"></i></wa-button>
+                  <wa-button id="symbolsListExportCsvBtn" type="button" variant="neutral"><i class="fa-solid fa-file-csv" aria-hidden="true"></i></wa-button>
+                  <wa-button id="symbolsListExportExcelBtn" type="button" variant="neutral"><i class="fa-solid fa-file-excel" aria-hidden="true"></i></wa-button>
+                  <wa-button id="symbolsListExportJsonBtn" type="button" variant="neutral"><i class="fa-solid fa-file-lines" aria-hidden="true"></i></wa-button>
+                  <wa-button id="symbolsListExportHtmlBtn" type="button" variant="neutral"><i class="fa-solid fa-file-code" aria-hidden="true"></i></wa-button>
+                </div>
+              </div>
+              <div id="omsSymbolsTable"></div>
             </div>
           </wa-tab-panel>
         </wa-tab-group>

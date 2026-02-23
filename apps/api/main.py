@@ -589,6 +589,40 @@ async def post_ccxt_core_fetch_balance(
     return CcxtResponse(result=out["result"])
 
 
+@app.post("/ccxt/core/{account_id}/{func}", response_model=CcxtResponse)
+async def post_ccxt_core_generic(
+    account_id: int,
+    func: str,
+    request: dict[str, Any] | None = None,
+    x_api_key: str = Header(default=""),
+) -> CcxtResponse:
+    normalized = str(func or "").strip().lower()
+    allowed = {
+        "fetch_balance",
+        "fetch_open_orders",
+        "fetch_order",
+        "cancel_order",
+        "create_order",
+        "load_markets",
+        "fetch_markets",
+        "fetch_ticker",
+        "fetch_tickers",
+    }
+    if normalized not in allowed:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "validation_error", "message": f"unsupported core func: {normalized}"},
+        )
+    kwargs = request if isinstance(request, dict) else {}
+    out = await post_ccxt_call(
+        account_id=account_id,
+        func=normalized,
+        request=CcxtCallInput(args=[], kwargs=kwargs),
+        x_api_key=x_api_key,
+    )
+    return CcxtResponse(result=out["result"])
+
+
 @app.post("/ccxt/commands", response_model=CcxtBatchResponse)
 async def post_ccxt_batch(
     items: CcxtBatchItem | list[CcxtBatchItem],
@@ -1484,6 +1518,44 @@ async def get_user_api_keys(
     if not out.get("ok"):
         raise HTTPException(status_code=400, detail=out.get("error") or {"code": "dispatcher_error"})
     return UserApiKeysResponse(items=out.get("result", []))
+
+
+@app.get("/user/api-keys/permissions", response_model=AdminApiKeyPermissionsResponse)
+async def get_user_api_keys_permissions(
+    x_api_key: str = Header(default=""),
+) -> AdminApiKeyPermissionsResponse:
+    out = await dispatch_request(
+        host=settings.dispatcher_host,
+        port=settings.dispatcher_port,
+        timeout_seconds=settings.dispatcher_request_timeout_seconds,
+        payload={
+            "op": "user_api_key_permissions_list",
+            "x_api_key": x_api_key,
+        },
+    )
+    if not out.get("ok"):
+        raise HTTPException(status_code=400, detail=out.get("error") or {"code": "dispatcher_error"})
+    return AdminApiKeyPermissionsResponse(items=out.get("result", []))
+
+
+@app.get("/user/api-keys/{api_key_id}/permissions", response_model=AdminApiKeyPermissionsResponse)
+async def get_user_api_key_permissions(
+    api_key_id: int,
+    x_api_key: str = Header(default=""),
+) -> AdminApiKeyPermissionsResponse:
+    out = await dispatch_request(
+        host=settings.dispatcher_host,
+        port=settings.dispatcher_port,
+        timeout_seconds=settings.dispatcher_request_timeout_seconds,
+        payload={
+            "op": "user_api_key_permissions_list",
+            "x_api_key": x_api_key,
+            "api_key_id": api_key_id,
+        },
+    )
+    if not out.get("ok"):
+        raise HTTPException(status_code=400, detail=out.get("error") or {"code": "dispatcher_error"})
+    return AdminApiKeyPermissionsResponse(items=out.get("result", []))
 
 
 @app.post("/user/api-keys", response_model=UserCreateApiKeyResponse)
