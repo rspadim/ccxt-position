@@ -9,7 +9,9 @@ class FakeRepo:
     def __init__(self, mode: str) -> None:
         self.mode = mode
         self.next_position_id = 1
+        self.next_order_id = 1
         self.positions: dict[int, dict[str, Any]] = {}
+        self.orders: dict[int, dict[str, Any]] = {}
         self.deals: list[dict[str, Any]] = []
 
     async def deal_exists_by_exchange_trade_id(self, _conn: Any, _account_id: int, _trade_id: str | None) -> bool:
@@ -22,9 +24,59 @@ class FakeRepo:
         exchange_order_id: str | None,
         client_order_id: str | None,
     ) -> dict[str, Any] | None:
-        _ = exchange_order_id
-        _ = client_order_id
+        for o in self.orders.values():
+            if exchange_order_id and o.get("exchange_order_id") == exchange_order_id:
+                return dict(o)
+            if client_order_id and o.get("client_order_id") == client_order_id:
+                return dict(o)
         return None
+
+    async def get_or_create_external_unmatched_order(
+        self,
+        conn: Any,
+        account_id: int,
+        *,
+        symbol: str,
+        side: str,
+        exchange_order_id: str | None,
+        client_order_id: str | None,
+        qty: Any,
+        price: Any,
+    ) -> dict[str, Any]:
+        row = await self.fetch_open_order_link(
+            conn,
+            account_id,
+            exchange_order_id=exchange_order_id,
+            client_order_id=client_order_id,
+        )
+        if row is not None:
+            return row
+        oid = self.next_order_id
+        self.next_order_id += 1
+        row = {
+            "id": oid,
+            "strategy_id": 0,
+            "position_id": 0,
+            "stop_loss": None,
+            "stop_gain": None,
+            "comment": None,
+            "reason": "external",
+            "exchange_order_id": exchange_order_id,
+            "client_order_id": client_order_id,
+            "account_id": account_id,
+            "symbol": symbol,
+            "side": side,
+            "qty": qty,
+            "price": price,
+        }
+        self.orders[oid] = dict(row)
+        return dict(row)
+
+    async def update_order_position_link(self, _conn: Any, order_id: int, position_id: int) -> int:
+        if order_id in self.orders:
+            self.orders[order_id]["position_id"] = int(position_id)
+            return 1
+        return 0
 
     async def fetch_account_position_mode(self, _conn: Any, _account_id: int) -> str:
         return self.mode
@@ -48,6 +100,11 @@ class FakeRepo:
                 return {"id": p["id"], "qty": p["qty"], "avg_price": p["avg_price"], "side": p["side"]}
         return None
 
+    async def fetch_open_position_for_symbol_non_external(
+        self, _conn: Any, account_id: int, symbol: str, side: str
+    ) -> dict[str, Any] | None:
+        return await self.fetch_open_position_for_symbol(_conn, account_id, symbol, side)
+
     async def fetch_open_net_position_by_symbol(
         self, _conn: Any, account_id: int, symbol: str
     ) -> dict[str, Any] | None:
@@ -60,6 +117,11 @@ class FakeRepo:
             return None
         p = sorted(open_positions, key=lambda x: x["id"], reverse=True)[0]
         return {"id": p["id"], "qty": p["qty"], "avg_price": p["avg_price"], "side": p["side"]}
+
+    async def fetch_open_net_position_by_symbol_non_external(
+        self, _conn: Any, account_id: int, symbol: str
+    ) -> dict[str, Any] | None:
+        return await self.fetch_open_net_position_by_symbol(_conn, account_id, symbol)
 
     async def create_position_open(
         self,
@@ -154,7 +216,7 @@ def test_hedge_mode_keeps_buy_and_sell_positions_separate() -> None:
     assert {p["side"] for p in open_positions} == {"buy", "sell"}
 
 
-def test_netting_reversal_closes_old_and_opens_new_position_id() -> None:
+def test_netting_mode_external_unmatched_keeps_positions_isolated_per_order() -> None:
     repo = FakeRepo(mode="netting")
     asyncio.run(
         _project_trade_to_position(
@@ -166,8 +228,6 @@ def test_netting_reversal_closes_old_and_opens_new_position_id() -> None:
             reconciled=False,
         )
     )
-    first_id = next(iter(repo.positions.keys()))
-    assert repo.positions[first_id]["state"] == "open"
     asyncio.run(
         _project_trade_to_position(
             repo=repo,
@@ -178,9 +238,6 @@ def test_netting_reversal_closes_old_and_opens_new_position_id() -> None:
             reconciled=False,
         )
     )
-    assert repo.positions[first_id]["state"] == "closed"
     open_positions = [p for p in repo.positions.values() if p["state"] == "open"]
-    assert len(open_positions) == 1
-    assert open_positions[0]["id"] != first_id
-    assert open_positions[0]["side"] == "sell"
-    assert open_positions[0]["qty"] == Decimal("1")
+    assert len(open_positions) == 2
+    assert {p["side"] for p in open_positions} == {"buy", "sell"}

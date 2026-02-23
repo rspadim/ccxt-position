@@ -61,26 +61,119 @@ async def _project_trade_to_position(
     if await repo.deal_exists_by_exchange_trade_id(conn, account_id, exchange_trade.get("id")):
         return
 
+    qty = exchange_trade["amount"]
+    price = exchange_trade["price"]
+    symbol = exchange_trade["symbol"]
+    side = exchange_trade["side"]
+    exchange_order_id = exchange_trade.get("order")
+    client_order_id = exchange_trade.get("client_order_id")
+
     linked_order = await repo.fetch_open_order_link(
         conn,
         account_id,
-        exchange_order_id=exchange_trade.get("order"),
-        client_order_id=exchange_trade.get("client_order_id"),
+        exchange_order_id=exchange_order_id,
+        client_order_id=client_order_id,
     )
+    if linked_order is None:
+        # Build deterministic fallback key when exchange omits order id.
+        if not exchange_order_id and not client_order_id and exchange_trade.get("id"):
+            client_order_id = f"ext-trade:{exchange_trade['id']}"
+        linked_order = await repo.get_or_create_external_unmatched_order(
+            conn=conn,
+            account_id=account_id,
+            symbol=symbol,
+            side=side,
+            exchange_order_id=exchange_order_id,
+            client_order_id=client_order_id,
+            qty=qty,
+            price=price,
+        )
+
     strategy_id = int(linked_order["strategy_id"]) if linked_order else 0
     position_id = int(linked_order["position_id"]) if linked_order else 0
     order_id = int(linked_order["id"]) if linked_order else None
     order_stop_loss = linked_order.get("stop_loss") if linked_order else None
     order_stop_gain = linked_order.get("stop_gain") if linked_order else None
     order_comment = linked_order.get("comment") if linked_order else None
-
-    qty = exchange_trade["amount"]
-    price = exchange_trade["price"]
-    symbol = exchange_trade["symbol"]
-    side = exchange_trade["side"]
+    order_reason = str(linked_order.get("reason", "")).lower() if linked_order else ""
     mode = await repo.fetch_account_position_mode(conn, account_id)
+    isolated_external = bool(
+        linked_order
+        and strategy_id == 0
+        and order_reason == "external"
+    )
 
-    if mode == "hedge":
+    if isolated_external:
+        if position_id <= 0:
+            position_id = await repo.create_position_open(
+                conn=conn,
+                account_id=account_id,
+                symbol=symbol,
+                strategy_id=0,
+                side=side,
+                qty=qty,
+                avg_price=price,
+                stop_loss=order_stop_loss,
+                stop_gain=order_stop_gain,
+                comment=order_comment,
+                reason="external",
+            )
+            if order_id is not None:
+                await repo.update_order_position_link(conn, order_id, position_id)
+        else:
+            explicit = await repo.fetch_open_position(conn, account_id, position_id)
+            if explicit is None or explicit[1] != symbol:
+                position_id = await repo.create_position_open(
+                    conn=conn,
+                    account_id=account_id,
+                    symbol=symbol,
+                    strategy_id=0,
+                    side=side,
+                    qty=qty,
+                    avg_price=price,
+                    stop_loss=order_stop_loss,
+                    stop_gain=order_stop_gain,
+                    comment=order_comment,
+                    reason="external",
+                )
+                if order_id is not None:
+                    await repo.update_order_position_link(conn, order_id, position_id)
+            else:
+                explicit_side = str(explicit[3]).lower()
+                old_qty = _dec(explicit[4])
+                old_avg = _dec(explicit[5])
+                if explicit_side == side:
+                    new_qty = old_qty + qty
+                    if new_qty <= 0:
+                        await repo.close_position(conn, position_id)
+                    else:
+                        new_avg = ((old_qty * old_avg) + (qty * price)) / new_qty
+                        await repo.update_position_open_qty_price(conn, position_id, new_qty, new_avg)
+                else:
+                    if old_qty > qty:
+                        remain = old_qty - qty
+                        await repo.update_position_open_qty_price(conn, position_id, remain, old_avg)
+                    elif old_qty == qty:
+                        await repo.close_position(conn, position_id)
+                    else:
+                        reverse_qty = qty - old_qty
+                        await repo.close_position(conn, position_id)
+                        position_id = await repo.create_position_open(
+                            conn=conn,
+                            account_id=account_id,
+                            symbol=symbol,
+                            strategy_id=0,
+                            side=side,
+                            qty=reverse_qty,
+                            avg_price=price,
+                            stop_loss=order_stop_loss,
+                            stop_gain=order_stop_gain,
+                            comment=order_comment,
+                            reason="external",
+                        )
+                        if order_id is not None:
+                            await repo.update_order_position_link(conn, order_id, position_id)
+    elif mode == "hedge":
         if position_id > 0:
             explicit = await repo.fetch_open_position(conn, account_id, position_id)
             if explicit is not None and explicit[1] == symbol:
@@ -103,7 +196,9 @@ async def _project_trade_to_position(
                     else:
                         reverse_qty = qty - old_qty
                         await repo.close_position(conn, position_id)
-                        reverse = await repo.fetch_open_position_for_symbol(conn, account_id, symbol, side)
+                        reverse = await repo.fetch_open_position_for_symbol_non_external(
+                            conn, account_id, symbol, side
+                        )
                         if reverse is None:
                             position_id = await repo.create_position_open(
                                 conn=conn,
@@ -126,7 +221,9 @@ async def _project_trade_to_position(
                             rev_new_avg = ((rev_old_qty * rev_old_avg) + (reverse_qty * price)) / rev_new_qty
                             await repo.update_position_open_qty_price(conn, position_id, rev_new_qty, rev_new_avg)
             else:
-                existing = await repo.fetch_open_position_for_symbol(conn, account_id, symbol, side)
+                existing = await repo.fetch_open_position_for_symbol_non_external(
+                    conn, account_id, symbol, side
+                )
                 if existing is None:
                     position_id = await repo.create_position_open(
                         conn=conn,
@@ -152,7 +249,9 @@ async def _project_trade_to_position(
                         new_avg = ((old_qty * old_avg) + (qty * price)) / new_qty
                         await repo.update_position_open_qty_price(conn, position_id, new_qty, new_avg)
         else:
-            existing = await repo.fetch_open_position_for_symbol(conn, account_id, symbol, side)
+            existing = await repo.fetch_open_position_for_symbol_non_external(
+                conn, account_id, symbol, side
+            )
             if existing is None:
                 position_id = await repo.create_position_open(
                     conn=conn,
@@ -178,7 +277,7 @@ async def _project_trade_to_position(
                     new_avg = ((old_qty * old_avg) + (qty * price)) / new_qty
                     await repo.update_position_open_qty_price(conn, position_id, new_qty, new_avg)
     else:
-        existing = await repo.fetch_open_net_position_by_symbol(conn, account_id, symbol)
+        existing = await repo.fetch_open_net_position_by_symbol_non_external(conn, account_id, symbol)
         if existing is None:
             position_id = await repo.create_position_open(
                 conn=conn,

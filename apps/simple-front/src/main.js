@@ -32,7 +32,37 @@ const state = {
   userRole: "",
   themeMode: "system",
   densityMode: "normal",
+  postTradingLastPreview: null,
+  adminOmsView: "open_orders",
   closeBySourceRow: null,
+  omsPageSize: 100,
+  omsLocalData: {
+    openPositions: [],
+    openOrders: [],
+  },
+  omsPager: {
+    openPositions: { page: 1, pageSize: 100, total: 0, totalPages: 1 },
+    openOrders: { page: 1, pageSize: 100, total: 0, totalPages: 1 },
+    deals: { page: 1, pageSize: 100, total: 0, totalPages: 1 },
+    historyPositions: { page: 1, pageSize: 100, total: 0, totalPages: 1 },
+    historyOrders: { page: 1, pageSize: 100, total: 0, totalPages: 1 },
+    ccxtOrders: { page: 1, pageSize: 100, total: 0, totalPages: 1 },
+    ccxtTrades: { page: 1, pageSize: 100, total: 0, totalPages: 1 },
+    postTrading: { page: 1, pageSize: 100, total: 0, totalPages: 1 },
+    adminOms: { page: 1, pageSize: 100, total: 0, totalPages: 1 },
+  },
+};
+
+const UI_NUMBER_FORMAT = {
+  decimalPlaces: 14,
+  smartSteps: [14, 5, 2, 0],
+};
+
+const UI_LOG_STORAGE = {
+  dbName: "ccxt_oms_ui_logs",
+  storeName: "ui_logs",
+  version: 1,
+  maxRows: null,
 };
 
 const LANGUAGE_FALLBACK_LABELS = {
@@ -276,18 +306,16 @@ function renderViewAccountsOptions(ids) {
 }
 
 function renderStrategyAccountsOptions(ids) {
-  for (const nodeId of ["strategyAccountIds", "tradeStrategyAccountIds"]) {
-    const node = $(nodeId);
-    const selected = new Set([...node.selectedOptions].map((opt) => Number(opt.value)));
-    node.innerHTML = "";
-    for (const id of ids) {
-      const option = document.createElement("option");
-      option.value = String(id);
-      const label = state.accountLabels.get(id) || "";
-      option.textContent = label ? `${id} - ${label}` : String(id);
-      option.selected = selected.has(id);
-      node.appendChild(option);
-    }
+  const node = $("tradeStrategyAccountIds");
+  const selected = new Set([...node.selectedOptions].map((opt) => Number(opt.value)));
+  node.innerHTML = "";
+  for (const id of ids) {
+    const option = document.createElement("option");
+    option.value = String(id);
+    const label = state.accountLabels.get(id) || "";
+    option.textContent = label ? `${id} - ${label}` : String(id);
+    option.selected = selected.has(id);
+    node.appendChild(option);
   }
 }
 
@@ -308,12 +336,6 @@ function renderSendStrategyOptions(items) {
     node.appendChild(opt);
   }
   node.value = [...node.options].some((o) => o.value === current) ? current : "0";
-}
-
-function selectedStrategyAccountIds() {
-  return [...$("strategyAccountIds").selectedOptions]
-    .map((opt) => Number(opt.value))
-    .filter((n) => Number.isFinite(n) && n > 0);
 }
 
 function selectedTradeStrategyAccountIds() {
@@ -434,6 +456,17 @@ async function apiRequest(path, options = {}, cfgOverride = null) {
   return json;
 }
 
+function ensureOmsCommandSuccess(out, actionLabel = "oms_command") {
+  if (!out || !Array.isArray(out.results)) return out;
+  const failed = out.results.find((item) => item && item.ok === false);
+  if (!failed) return out;
+  const err = failed.error || {};
+  const code = String(err.code || "dispatcher_error");
+  const message = String(err.message || "").trim();
+  const suffix = message ? `: ${message}` : "";
+  throw new Error(`${actionLabel} -> ${code}${suffix}`);
+}
+
 async function resolveViewAccountIds(cfg) {
   if (cfg.viewAccountIds.length > 0) return cfg.viewAccountIds;
   if (state.availableAccountIds.length === 0) await loadAccountsByApiKey(cfg);
@@ -482,6 +515,38 @@ function redrawTableByPaneId(paneId) {
   table.redraw(true);
 }
 
+function tableHasRows(key) {
+  if (OMS_LOCAL_KEYS.has(key)) {
+    return (state.omsLocalData[key] || []).length > 0;
+  }
+  const table = state.tables[key];
+  if (!table || typeof table.getData !== "function") return false;
+  return (table.getData() || []).length > 0;
+}
+
+async function maybeAutoReloadOmsTab(panelName) {
+  const kind = String(panelName || "").trim();
+  const loaders = {
+    openPositions: () => refreshOpenPositionsTable(),
+    openOrders: () => refreshOpenOrdersTable(),
+    deals: () => refreshHistoryTable("deals", false),
+    historyPositions: () => refreshHistoryTable("historyPositions", false),
+    historyOrders: () => refreshHistoryTable("historyOrders", false),
+  };
+  const load = loaders[kind];
+  if (!load) return;
+  if (tableHasRows(kind)) return;
+  const cfg = getConfig();
+  if (!cfg.baseUrl || !cfg.apiKey) return;
+  try {
+    await load();
+    eventLog("oms_tab_autoload", { tab: kind });
+  } catch (err) {
+    eventLog("oms_tab_autoload_error", { tab: kind, error: String(err) });
+    uiLog("error", "OMS tab auto reload failed", { tab: kind, error: String(err) });
+  }
+}
+
 function bindWaTabs() {
   const positionTabs = $("positionTabs");
   const systemTabs = $("systemTabs");
@@ -500,6 +565,11 @@ function bindWaTabs() {
       uiLogs: "paneUiLogs",
     };
     redrawTableByPaneId(String(paneIdMap[panelName] || ""));
+    if (ev?.currentTarget === positionTabs) {
+      Promise.resolve(maybeAutoReloadOmsTab(panelName)).catch((err) => {
+        eventLog("oms_tab_autoload_error", { tab: panelName, error: String(err) });
+      });
+    }
   };
   positionTabs.addEventListener("wa-tab-show", onShow);
   systemTabs.addEventListener("wa-tab-show", onShow);
@@ -534,6 +604,57 @@ function setLoginMessage(kind, text) {
   uiLog(kind, String(text), { source: "login" });
 }
 
+function setAdminApiKeyMessage(kind, text) {
+  const node = document.getElementById("adminCreatedApiKeyBox");
+  if (!node) return;
+  if (!text) {
+    node.textContent = "";
+    node.classList.add("is-hidden");
+    node.classList.remove("notice-success", "notice-error", "notice-info");
+    return;
+  }
+  node.textContent = String(text);
+  node.classList.remove("is-hidden", "notice-success", "notice-error", "notice-info");
+  if (kind === "success") node.classList.add("notice-success");
+  else if (kind === "error") node.classList.add("notice-error");
+  else node.classList.add("notice-info");
+  uiLog(kind, String(text), { source: "admin_api_keys" });
+}
+
+function setAdminOmsMessage(kind, text) {
+  const node = document.getElementById("adminOmsMessage");
+  if (!node) return;
+  if (!text) {
+    node.textContent = "";
+    node.classList.add("is-hidden");
+    node.classList.remove("notice-success", "notice-error", "notice-info");
+    return;
+  }
+  node.textContent = String(text);
+  node.classList.remove("is-hidden", "notice-success", "notice-error", "notice-info");
+  if (kind === "success") node.classList.add("notice-success");
+  else if (kind === "error") node.classList.add("notice-error");
+  else node.classList.add("notice-info");
+  uiLog(kind, String(text), { source: "admin_oms" });
+}
+
+function setUserMessage(kind, text) {
+  const node = document.getElementById("userMessage");
+  if (!node) return;
+  if (!text) {
+    node.textContent = "";
+    node.classList.add("is-hidden");
+    node.classList.remove("notice-success", "notice-error", "notice-info");
+    return;
+  }
+  node.textContent = String(text);
+  node.classList.remove("is-hidden", "notice-success", "notice-error", "notice-info");
+  if (kind === "success") node.classList.add("notice-success");
+  else if (kind === "error") node.classList.add("notice-error");
+  else node.classList.add("notice-info");
+  uiLog(kind, String(text), { source: "user" });
+}
+
 function renderLanguageOptions(selectedCode = "pt-BR") {
   const node = $("loginLanguage");
   const languages = Object.keys(I18N || {});
@@ -556,6 +677,12 @@ function applyLanguageTexts() {
     if (!key) return;
     node.textContent = t(key, node.textContent || "");
   });
+  document.querySelectorAll("[data-i18n-placeholder]").forEach((node) => {
+    const key = String(node.getAttribute("data-i18n-placeholder") || "").trim();
+    if (!key) return;
+    const fallback = node.getAttribute("placeholder") || "";
+    node.setAttribute("placeholder", t(key, fallback));
+  });
   const apply = (id, key, fallback) => {
     const node = document.getElementById(id);
     if (!node) return;
@@ -569,12 +696,19 @@ function applyLanguageTexts() {
     label.textContent = t(key, fallback);
   };
   applyMenu("tabLoginBtn", "menu.login_config", "Login / Config");
+  applyMenu("tabUserBtn", "menu.user", "User");
   applyMenu("tabStrategiesBtn", "menu.strategies", "Strategies");
   applyMenu("tabPositionsBtn", "menu.oms", "OMS");
+  applyMenu("tabPostTradingGroupBtn", "menu.post_trading", "Post Trading");
+  applyMenu("tabPostTradingOrdersBtn", "menu.post_trading_external_orders", "External Orders");
   applyMenu("tabCommandsBtn", "menu.ccxt_commands", "CCXT Commands");
   applyMenu("tabSystemBtn", "menu.system_monitor", "System Monitor");
   applyMenu("tabRiskBtn", "menu.risk", "Risk");
-  applyMenu("tabAdminBtn", "menu.admin", "Administrator");
+  applyMenu("tabAdminGroupBtn", "menu.admin", "Administration");
+  applyMenu("tabAdminBtn", "admin.accounts", "Accounts");
+  applyMenu("tabAdminUsersBtn", "admin.users", "Users");
+  applyMenu("tabAdminApiKeysBtn", "menu.api_keys", "API Keys");
+  applyMenu("tabAdminOmsBtn", "menu.admin_oms_crud", "OMS CRUD");
   apply("loginModeLabel", "login.mode", "Mode");
   apply("loginModeApiKeyOption", "login.mode_api_key", "API Key");
   apply("loginModeUserPassOption", "login.mode_user_password", "User + Password");
@@ -592,11 +726,16 @@ function applyLanguageTexts() {
   apply("loadTradeStrategiesBtn", "trade.load_strategies", "Load Strategies");
   apply("tradeStrategyNameLabel", "trade.name", "Name");
   apply("tradeStrategyAccountsLabel", "trade.accounts", "Accounts");
-  apply("adminCreateStrategyTitle", "admin.create_strategy", "Create Strategy");
-  apply("adminCreateStrategyBtn", "admin.create_strategy", "Create Strategy");
-  apply("adminStrategyAccountsLabel", "trade.accounts", "Accounts");
-  apply("loadStrategiesBtn", "trade.load_strategies", "Load Strategies");
+  apply("loadUserApiKeysBtn", "user.load_api_keys", "Reload API Keys");
+  apply("userCreateApiKeyBtn", "user.create_api_key", "Create API Key");
+  apply("userSaveProfileBtn", "user.save_profile", "Save Profile");
+  apply("userSavePasswordBtn", "user.save_password", "Save Password");
   apply("riskSavePermissionBtn", "risk.save_permission", "Save Permission");
+  const closeByModal = document.getElementById("closeByModal");
+  if (closeByModal) {
+    closeByModal.setAttribute("label", t("closeby.title", "Close By"));
+  }
+  updatePagerButtonI18n();
   applyDensityMode(state.densityMode, false);
   updateApiKeyToggleLabel();
   updateLoginPasswordToggleLabel();
@@ -629,13 +768,42 @@ function updateLoginPasswordToggleLabel() {
 }
 
 function bindSidebarMenu() {
+  const adminGroup = $("tabAdminGroupBtn");
+  const adminSubmenu = $("adminSubmenu");
+  const postTradingGroup = $("tabPostTradingGroupBtn");
+  const postTradingSubmenu = $("postTradingSubmenu");
+  const setAdminExpanded = (expanded) => {
+    adminSubmenu.classList.toggle("is-hidden", !expanded);
+    adminGroup.classList.toggle("active", expanded);
+  };
+  const setPostTradingExpanded = (expanded) => {
+    postTradingSubmenu.classList.toggle("is-hidden", !expanded);
+    postTradingGroup.classList.toggle("active", expanded);
+  };
   $("tabLoginBtn").addEventListener("click", () => switchTab("login"));
+  $("tabUserBtn").addEventListener("click", () => switchTab("user"));
   $("tabCommandsBtn").addEventListener("click", () => switchTab("commands"));
   $("tabPositionsBtn").addEventListener("click", () => switchTab("positions"));
   $("tabSystemBtn").addEventListener("click", () => switchTab("system"));
   $("tabStrategiesBtn").addEventListener("click", () => switchTab("strategies"));
   $("tabRiskBtn").addEventListener("click", () => switchTab("risk"));
+  postTradingGroup.addEventListener("click", () => {
+    const collapsed = postTradingSubmenu.classList.contains("is-hidden");
+    setPostTradingExpanded(collapsed);
+    if (collapsed) switchTab("postTrading");
+  });
+  $("tabPostTradingOrdersBtn").addEventListener("click", () => switchTab("postTrading"));
+  adminGroup.addEventListener("click", () => {
+    const collapsed = adminSubmenu.classList.contains("is-hidden");
+    setAdminExpanded(collapsed);
+    if (collapsed) switchTab("admin");
+  });
   $("tabAdminBtn").addEventListener("click", () => switchTab("admin"));
+  $("tabAdminUsersBtn").addEventListener("click", () => switchTab("adminUsers"));
+  $("tabAdminApiKeysBtn").addEventListener("click", () => switchTab("adminApiKeys"));
+  $("tabAdminOmsBtn").addEventListener("click", () => switchTab("adminOms"));
+  setAdminExpanded(false);
+  setPostTradingExpanded(false);
 }
 
 function bindShellControls() {
@@ -670,7 +838,6 @@ function collectFormAccountIds() {
     parseAccountId($("cancelOrderAccountId").value),
     parseAccountId($("ccxtAccountId").value),
     parseAccountId($("changeOrderAccountId").value),
-    parseAccountId($("cancelAllAccountId").value),
     parseAccountId($("positionChangeAccountId").value),
     parseAccountId($("closePositionAccountId").value),
     parseAccountId($("closeByAccountId").value),
@@ -681,16 +848,122 @@ function collectFormAccountIds() {
   return [...new Set(ids)];
 }
 
-function makeTable(id, columns) {
+function normalizeTabulatorColumns(input) {
+  const isIntegerLikeField = (field) => {
+    const key = String(field || "").toLowerCase();
+    return (
+      key === "id"
+      || key.endsWith("_id")
+      || key.includes("seq")
+      || key.includes("page")
+    );
+  };
+  const isDecimalLikeField = (field) => {
+    const key = String(field || "").toLowerCase();
+    return (
+      key.includes("qty")
+      || key.includes("price")
+      || key.includes("fee")
+      || key.includes("pnl")
+    );
+  };
+  const shouldCenter = (field) => {
+    const key = String(field || "").toLowerCase();
+    return (
+      key.startsWith("_")
+      || key.includes("status")
+      || key === "side"
+      || key.includes("state")
+      || key.includes("mode")
+      || key.includes("role")
+      || key.includes("level")
+      || key.includes("kind")
+      || key.includes("reconciled")
+    );
+  };
+  const formatDecimalForUi = (value) => {
+    if (value === null || value === undefined) return "";
+    const raw = String(value).trim();
+    if (!raw) return "";
+    const n = Number(raw);
+    if (!Number.isFinite(n)) return raw;
+    const maxPlaces = Math.max(0, Number(UI_NUMBER_FORMAT.decimalPlaces) || 14);
+    const zeroThreshold = 10 ** (-maxPlaces);
+    if (Math.abs(n) < zeroThreshold) return "0";
+    const normalize = (num, places) => Number(num.toFixed(places));
+    const render = (num, places) => {
+      const fixed = num.toFixed(places);
+      const trimmed = fixed.replace(/\.?0+$/, "");
+      return trimmed === "-0" ? "0" : trimmed;
+    };
+    const base = normalize(n, maxPlaces);
+    const seen = new Set();
+    const steps = [];
+    for (const step of UI_NUMBER_FORMAT.smartSteps || []) {
+      const p = Math.max(0, Number(step) || 0);
+      if (!seen.has(p)) {
+        seen.add(p);
+        steps.push(p);
+      }
+    }
+    if (!seen.has(maxPlaces)) steps.unshift(maxPlaces);
+    let chosen = maxPlaces;
+    for (const p of steps) {
+      if (normalize(n, p) === base) chosen = p;
+    }
+    return render(n, chosen);
+  };
+  if (!Array.isArray(input)) return [];
+  return input.map((col) => {
+    if (!col || typeof col !== "object") return col;
+    const next = { ...col };
+    if (Array.isArray(next.columns)) {
+      next.columns = normalizeTabulatorColumns(next.columns);
+      return next;
+    }
+    if (!next.hozAlign) {
+      if (shouldCenter(next.field)) next.hozAlign = "center";
+      else if (isIntegerLikeField(next.field) || isDecimalLikeField(next.field)) next.hozAlign = "right";
+      else next.hozAlign = "left";
+    }
+    if (!next.headerHozAlign) {
+      if (shouldCenter(next.field)) next.headerHozAlign = "center";
+      else if (isIntegerLikeField(next.field) || isDecimalLikeField(next.field)) next.headerHozAlign = "right";
+      else next.headerHozAlign = "left";
+    }
+    if (!next.formatter && isDecimalLikeField(next.field)) {
+      next.formatter = (cell) => formatDecimalForUi(cell.getValue());
+    }
+    return next;
+  });
+}
+
+function makeTable(id, columns, options = {}) {
   const Tabulator = window.Tabulator;
   if (!Tabulator) throw new Error("Tabulator not loaded");
-  return new Tabulator(`#${id}`, {
+  const tableHost = document.getElementById(id);
+  const mergedOptions = { ...options };
+  const initialHeight = String(mergedOptions.height || mergedOptions.maxHeight || "300px");
+  delete mergedOptions.maxHeight;
+  if (tableHost) {
+    tableHost.classList.add("table-resizable");
+    if (!tableHost.style.height) tableHost.style.height = initialHeight;
+  }
+  const table = new Tabulator(`#${id}`, {
     data: [],
     layout: "fitDataStretch",
-    maxHeight: "300px",
+    height: initialHeight,
     placeholder: "sem dados",
-    columns,
+    columns: normalizeTabulatorColumns(columns),
+    ...mergedOptions,
   });
+  if (tableHost && typeof ResizeObserver !== "undefined") {
+    const observer = new ResizeObserver(() => {
+      if (table && typeof table.redraw === "function") table.redraw(true);
+    });
+    observer.observe(tableHost);
+  }
+  return table;
 }
 
 function upsert(table, row, key = "id") {
@@ -760,7 +1033,6 @@ function buildTradeStrategiesColumns() {
           }, cfg);
           eventLog("trade_update_strategy", out);
           await loadTradeStrategies(cfg);
-          await loadStrategies(cfg);
         } catch (err) {
           eventLog("trade_update_strategy_error", { error: String(err), strategy_id: row.strategy_id });
         }
@@ -797,7 +1069,6 @@ function buildTradeStrategiesColumns() {
           }, cfg);
           eventLog("trade_toggle_strategy_status", out);
           await loadTradeStrategies(cfg);
-          await loadStrategies(cfg);
         } catch (err) {
           eventLog("trade_toggle_strategy_status_error", { error: String(err), strategy_id: row.strategy_id });
         }
@@ -850,16 +1121,193 @@ function eventLog(kind, payload) {
   });
 }
 
+function uiLogStorageAvailable() {
+  return typeof indexedDB !== "undefined";
+}
+
+function hashScope(text) {
+  let h = 2166136261;
+  const src = String(text || "");
+  for (let i = 0; i < src.length; i += 1) {
+    h ^= src.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return `h${(h >>> 0).toString(16).padStart(8, "0")}`;
+}
+
+function currentUiLogScopeHash() {
+  const base = String(document.getElementById("baseUrl")?.value || "").trim().toLowerCase();
+  const key = String(document.getElementById("apiKey")?.value || "").trim();
+  if (!base && !key) return "h_anonymous";
+  return hashScope(`${base}|${key}`);
+}
+
+function openUiLogDb() {
+  return new Promise((resolve, reject) => {
+    if (!uiLogStorageAvailable()) {
+      reject(new Error("indexeddb_unavailable"));
+      return;
+    }
+    const req = indexedDB.open(UI_LOG_STORAGE.dbName, UI_LOG_STORAGE.version);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains(UI_LOG_STORAGE.storeName)) {
+        db.createObjectStore(UI_LOG_STORAGE.storeName, { keyPath: "id", autoIncrement: true });
+      }
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error || new Error("indexeddb_open_error"));
+  });
+}
+
+function idbRequest(req) {
+  return new Promise((resolve, reject) => {
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error || new Error("indexeddb_request_error"));
+  });
+}
+
+async function persistUiLogRow(row) {
+  try {
+    const db = await openUiLogDb();
+    try {
+      const tx = db.transaction(UI_LOG_STORAGE.storeName, "readwrite");
+      const store = tx.objectStore(UI_LOG_STORAGE.storeName);
+      const scopeHash = currentUiLogScopeHash();
+      await idbRequest(store.add({ ...row, scope_hash: scopeHash, created_ts: Date.now() }));
+      const maxRows = Number(UI_LOG_STORAGE.maxRows);
+      if (Number.isFinite(maxRows) && maxRows > 0) {
+        const keys = await idbRequest(store.getAllKeys());
+        const overflow = Math.max(0, (keys?.length || 0) - maxRows);
+        if (overflow > 0) {
+          for (let i = 0; i < overflow; i += 1) {
+            await idbRequest(store.delete(keys[i]));
+          }
+        }
+      }
+      await new Promise((resolve, reject) => {
+        tx.oncomplete = () => resolve(true);
+        tx.onerror = () => reject(tx.error || new Error("indexeddb_tx_error"));
+        tx.onabort = () => reject(tx.error || new Error("indexeddb_tx_abort"));
+      });
+    } finally {
+      db.close();
+    }
+  } catch {
+    // Persistência de log não pode quebrar a UI.
+  }
+}
+
+async function loadUiLogsFromStorage() {
+  if (!state.tables.uiLogs) return;
+  try {
+    const db = await openUiLogDb();
+    try {
+      const tx = db.transaction(UI_LOG_STORAGE.storeName, "readonly");
+      const store = tx.objectStore(UI_LOG_STORAGE.storeName);
+      const rows = await idbRequest(store.getAll());
+      const scopeHash = currentUiLogScopeHash();
+      const normalized = (rows || [])
+        .filter((row) => String(row?.scope_hash || "h_anonymous") === scopeHash)
+        .map((row) => ({
+        seq: Number(row?.seq || 0),
+        at: String(row?.at || ""),
+        level: String(row?.level || "info"),
+        message: String(row?.message || ""),
+        payload: String(row?.payload || ""),
+      }));
+      state.tables.uiLogs.setData(normalized);
+      if (typeof state.tables.uiLogs.setPage === "function") {
+        await state.tables.uiLogs.setPage(1);
+      }
+      const maxSeq = normalized.reduce((acc, row) => Math.max(acc, Number(row.seq || 0)), 0);
+      state.uiLogSeq = Math.max(state.uiLogSeq, maxSeq);
+      updateUiLogsPagerInfo();
+    } finally {
+      db.close();
+    }
+  } catch {
+    // Sem IndexedDB, segue normal só em memória.
+  }
+}
+
+async function clearUiLogsStorage() {
+  try {
+    const db = await openUiLogDb();
+    try {
+      const tx = db.transaction(UI_LOG_STORAGE.storeName, "readwrite");
+      const store = tx.objectStore(UI_LOG_STORAGE.storeName);
+      const scopeHash = currentUiLogScopeHash();
+      const rows = await idbRequest(store.getAll());
+      for (const row of rows || []) {
+        if (String(row?.scope_hash || "h_anonymous") !== scopeHash) continue;
+        if (row?.id !== undefined) {
+          await idbRequest(store.delete(row.id));
+        }
+      }
+      await new Promise((resolve, reject) => {
+        tx.oncomplete = () => resolve(true);
+        tx.onerror = () => reject(tx.error || new Error("indexeddb_tx_error"));
+        tx.onabort = () => reject(tx.error || new Error("indexeddb_tx_abort"));
+      });
+    } finally {
+      db.close();
+    }
+  } catch {
+    // no-op
+  }
+}
+
+function updateUiLogsPagerInfo() {
+  const table = state.tables.uiLogs;
+  const info = document.getElementById("uiLogsPageInfo");
+  const input = document.getElementById("uiLogsPageInput");
+  if (!table || !info) return;
+  const page = Number(table.getPage?.() || 1);
+  const maxPage = Math.max(1, Number(table.getPageMax?.() || 1));
+  info.textContent = `${page} / ${maxPage}`;
+  if (input) input.value = String(page);
+}
+
+async function goToUiLogsPage(nextPage) {
+  const table = state.tables.uiLogs;
+  if (!table || typeof table.setPage !== "function") return;
+  const maxPage = Math.max(1, Number(table.getPageMax?.() || 1));
+  const page = Math.min(maxPage, Math.max(1, Number(nextPage) || 1));
+  await table.setPage(page);
+  updateUiLogsPagerInfo();
+}
+
+async function setUiLogsPageSize(nextSize) {
+  const table = state.tables.uiLogs;
+  if (!table || typeof table.setPageSize !== "function") return;
+  const size = Math.max(1, Math.min(5000, Number(nextSize) || 100));
+  await table.setPageSize(size);
+  await table.setPage(1);
+  updateUiLogsPagerInfo();
+}
+
+async function reloadUiLogsForCurrentScope() {
+  if (state.tables.uiLogs) state.tables.uiLogs.clearData();
+  state.uiLogSeq = 0;
+  await loadUiLogsFromStorage();
+}
+
 function uiLog(level, message, payload = {}) {
   if (!state.tables.uiLogs) return;
   state.uiLogSeq += 1;
-  append(state.tables.uiLogs, {
+  const row = {
     seq: state.uiLogSeq,
     at: nowIso(),
     level: String(level || "info"),
     message: String(message || ""),
     payload: JSON.stringify(payload).slice(0, 2400),
-  });
+  };
+  const maxRows = Number(UI_LOG_STORAGE.maxRows);
+  if (Number.isFinite(maxRows) && maxRows > 0) append(state.tables.uiLogs, row, maxRows);
+  else append(state.tables.uiLogs, row, Number.POSITIVE_INFINITY);
+  updateUiLogsPagerInfo();
+  Promise.resolve(persistUiLogRow(row)).catch(() => {});
 }
 
 function accountIdsCsv(accountIds) {
@@ -868,20 +1316,14 @@ function accountIdsCsv(accountIds) {
 
 async function fetchCombinedSnapshot(accountIds, cfg) {
   const csv = accountIdsCsv(accountIds);
-  const query = `account_ids=${encodeURIComponent(csv)}`;
-  const [openOrders, historyOrders, deals, openPositions, historyPositions] = await Promise.all([
-    apiRequest(`/oms/orders/open?${query}`, {}, cfg),
-    apiRequest(`/oms/orders/history?${query}`, {}, cfg),
-    apiRequest(`/oms/deals?${query}`, {}, cfg),
-    apiRequest(`/oms/positions/open?${query}`, {}, cfg),
-    apiRequest(`/oms/positions/history?${query}`, {}, cfg),
+  const query = new URLSearchParams({ account_ids: csv, limit: "5000" });
+  const [openOrders, openPositions] = await Promise.all([
+    apiRequest(`/oms/orders/open?${query.toString()}`, {}, cfg),
+    apiRequest(`/oms/positions/open?${query.toString()}`, {}, cfg),
   ]);
   return {
     openOrders: openOrders.items || [],
-    historyOrders: historyOrders.items || [],
-    deals: deals.items || [],
     openPositions: openPositions.items || [],
-    historyPositions: historyPositions.items || [],
   };
 }
 
@@ -894,22 +1336,381 @@ function mergeById(items) {
   return [...map.values()];
 }
 
+function sortByIdAsc(items) {
+  return [...(items || [])].sort((a, b) => Number(a?.id || 0) - Number(b?.id || 0));
+}
+
+function clampPage(page, totalPages) {
+  const p = Number(page);
+  if (!Number.isFinite(p) || p < 1) return 1;
+  const max = Math.max(1, Number(totalPages) || 1);
+  return Math.min(Math.trunc(p), max);
+}
+
+function updatePagerInfo(key) {
+  const pager = state.omsPager[key];
+  if (!pager) return;
+  const infoId = `${key}PageInfo`;
+  const inputId = `${key}PageInput`;
+  const info = document.getElementById(infoId);
+  const input = document.getElementById(inputId);
+  if (info) info.textContent = `${pager.page} / ${pager.totalPages}`;
+  if (input) input.value = String(pager.page);
+}
+
+function setPagerFromTotal(key, total, page = 1, pageSize = state.omsPageSize) {
+  const normalizedPageSize = Math.max(1, Number(pageSize) || state.omsPageSize);
+  const normalizedTotal = Math.max(0, Number(total) || 0);
+  const totalPages = Math.max(1, Math.ceil(normalizedTotal / normalizedPageSize));
+  const normalizedPage = clampPage(page, totalPages);
+  state.omsPager[key] = {
+    page: normalizedPage,
+    pageSize: normalizedPageSize,
+    total: normalizedTotal,
+    totalPages,
+  };
+  updatePagerInfo(key);
+}
+
+function renderLocalOmsPage(key) {
+  const tableKey = key === "openPositions" ? "openPositions" : "openOrders";
+  const rows = sortByIdAsc(mergeById(state.omsLocalData[key] || []));
+  const pager = state.omsPager[key];
+  const pageSize = Math.max(1, Number(pager?.pageSize || state.omsPageSize));
+  const totalPages = Math.max(1, Math.ceil(rows.length / pageSize));
+  const page = clampPage(pager?.page || 1, totalPages);
+  const offset = (page - 1) * pageSize;
+  const pageRows = rows.slice(offset, offset + pageSize);
+  state.omsLocalData[key] = rows;
+  setPagerFromTotal(key, rows.length, page, pageSize);
+  state.tables[tableKey].setData(pageRows);
+}
+
+function setLocalOmsRows(key, rows, page = null) {
+  state.omsLocalData[key] = sortByIdAsc(mergeById(rows || []));
+  if (page !== null) {
+    state.omsPager[key].page = Math.max(1, Number(page) || 1);
+  }
+  renderLocalOmsPage(key);
+}
+
+function upsertLocalOmsRow(key, row) {
+  const rows = [...(state.omsLocalData[key] || [])];
+  const idx = rows.findIndex((item) => String(item.id) === String(row.id));
+  if (idx >= 0) rows[idx] = { ...rows[idx], ...row };
+  else rows.push(row);
+  state.omsLocalData[key] = sortByIdAsc(rows);
+  renderLocalOmsPage(key);
+}
+
+function removeLocalOmsRow(key, idValue) {
+  const rows = (state.omsLocalData[key] || []).filter((item) => String(item.id) !== String(idValue));
+  state.omsLocalData[key] = rows;
+  renderLocalOmsPage(key);
+}
+
+function replaceLocalOmsRowsForAccount(key, accountId, items) {
+  const normalizedItems = Array.isArray(items) ? items.filter((x) => x && typeof x === "object") : [];
+  if (!Number.isFinite(Number(accountId)) || Number(accountId) <= 0) {
+    setLocalOmsRows(key, normalizedItems);
+    return;
+  }
+  const aid = Number(accountId);
+  const keep = (state.omsLocalData[key] || []).filter((row) => Number(row.account_id) !== aid);
+  setLocalOmsRows(key, [...keep, ...normalizedItems]);
+}
+
+function todayIsoDate() {
+  const now = new Date();
+  const yyyy = now.getFullYear();
+  const mm = String(now.getMonth() + 1).padStart(2, "0");
+  const dd = String(now.getDate()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+function endOfMonthIsoDate(base = new Date()) {
+  const d = new Date(base.getFullYear(), base.getMonth() + 1, 0);
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+function minusDaysIsoDate(days) {
+  const d = new Date();
+  d.setDate(d.getDate() - Math.max(0, Number(days) || 0));
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+function startOfMonthIsoDate(base = new Date()) {
+  const d = new Date(base.getFullYear(), base.getMonth(), 1);
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+function defaultHistoryDateRange() {
+  const startOfMonth = startOfMonthIsoDate();
+  const sevenDaysAgo = minusDaysIsoDate(7);
+  const startDate = sevenDaysAgo < startOfMonth ? sevenDaysAgo : startOfMonth;
+  return {
+    startDate,
+    endDate: endOfMonthIsoDate(),
+  };
+}
+
+function applyDefaultHistoryDates() {
+  const range = defaultHistoryDateRange();
+  const pairs = [
+    ["dealsStartDate", "dealsEndDate"],
+    ["historyPositionsStartDate", "historyPositionsEndDate"],
+    ["historyOrdersStartDate", "historyOrdersEndDate"],
+    ["ccxtOrdersStartDate", "ccxtOrdersEndDate"],
+    ["ccxtTradesStartDate", "ccxtTradesEndDate"],
+    ["postTradingStartDate", "postTradingEndDate"],
+    ["adminOmsStartDate", "adminOmsEndDate"],
+  ];
+  for (const [startId, endId] of pairs) {
+    const startNode = document.getElementById(startId);
+    const endNode = document.getElementById(endId);
+    if (startNode && !startNode.value) startNode.value = range.startDate;
+    if (endNode && !endNode.value) endNode.value = range.endDate;
+  }
+}
+
+function readHistoryFilter(kind) {
+  const map = {
+    deals: ["dealsStartDate", "dealsEndDate"],
+    historyPositions: ["historyPositionsStartDate", "historyPositionsEndDate"],
+    historyOrders: ["historyOrdersStartDate", "historyOrdersEndDate"],
+    ccxtOrders: ["ccxtOrdersStartDate", "ccxtOrdersEndDate"],
+    ccxtTrades: ["ccxtTradesStartDate", "ccxtTradesEndDate"],
+  };
+  const pair = map[kind];
+  if (!pair) throw new Error("invalid history kind");
+  const startDate = String($(pair[0]).value || "").trim();
+  const endDate = String($(pair[1]).value || "").trim();
+  if (!startDate || !endDate) {
+    throw new Error("start_date e end_date são obrigatórios");
+  }
+  return { startDate, endDate };
+}
+
+async function refreshHistoryTable(kind, resetPage = false) {
+  const cfg = requireConfig();
+  const accountIds = await resolveViewAccountIds(cfg);
+  const csv = accountIdsCsv(accountIds);
+  const pager = state.omsPager[kind];
+  const page = resetPage ? 1 : Math.max(1, Number(pager?.page || 1));
+  const pageSize = Math.max(1, Number(pager?.pageSize || state.omsPageSize));
+  const { startDate, endDate } = readHistoryFilter(kind);
+  const pathByKind = {
+    deals: "/oms/deals",
+    historyPositions: "/oms/positions/history",
+    historyOrders: "/oms/orders/history",
+    ccxtOrders: "/ccxt/orders/raw",
+    ccxtTrades: "/ccxt/trades/raw",
+  };
+  const path = pathByKind[kind];
+  const query = new URLSearchParams({
+    account_ids: csv,
+    start_date: startDate,
+    end_date: endDate,
+    page: String(page),
+    page_size: String(pageSize),
+  });
+  const out = await apiRequest(`${path}?${query.toString()}`, {}, cfg);
+  const items = mergeById(out.items || []);
+  state.tables[kind].setData(items);
+  setPagerFromTotal(kind, Number(out.total || 0), Number(out.page || page), Number(out.page_size || pageSize));
+}
+
+const OMS_PAGER_KEYS = ["openPositions", "openOrders", "deals", "historyPositions", "historyOrders", "ccxtOrders", "ccxtTrades", "postTrading", "adminOms"];
+const OMS_LOCAL_KEYS = new Set(["openPositions", "openOrders"]);
+
+function updatePagerButtonI18n() {
+  const prevTitle = t("common.previous", "Previous");
+  const nextTitle = t("common.next", "Next");
+  const copyTitle = t("common.copy", "Copy");
+  const exportCsvTitle = t("common.export_csv", "Export CSV");
+  const exportExcelTitle = t("common.export_excel", "Export Excel");
+  const exportJsonTitle = t("common.export_json", "Export JSON");
+  const exportHtmlTitle = t("common.export_html", "Export HTML");
+  for (const key of OMS_PAGER_KEYS) {
+    const prevBtn = document.getElementById(`${key}PrevPageBtn`);
+    const nextBtn = document.getElementById(`${key}NextPageBtn`);
+    const copyBtn = document.getElementById(`${key}CopyBtn`);
+    const exportCsvBtn = document.getElementById(`${key}ExportCsvBtn`);
+    const exportExcelBtn = document.getElementById(`${key}ExportExcelBtn`);
+    const exportJsonBtn = document.getElementById(`${key}ExportJsonBtn`);
+    const exportHtmlBtn = document.getElementById(`${key}ExportHtmlBtn`);
+    if (prevBtn) {
+      prevBtn.setAttribute("title", prevTitle);
+      prevBtn.setAttribute("aria-label", prevTitle);
+    }
+    if (nextBtn) {
+      nextBtn.setAttribute("title", nextTitle);
+      nextBtn.setAttribute("aria-label", nextTitle);
+    }
+    if (copyBtn) {
+      copyBtn.setAttribute("title", copyTitle);
+      copyBtn.setAttribute("aria-label", copyTitle);
+    }
+    if (exportCsvBtn) {
+      exportCsvBtn.setAttribute("title", exportCsvTitle);
+      exportCsvBtn.setAttribute("aria-label", exportCsvTitle);
+    }
+    if (exportExcelBtn) {
+      exportExcelBtn.setAttribute("title", exportExcelTitle);
+      exportExcelBtn.setAttribute("aria-label", exportExcelTitle);
+    }
+    if (exportJsonBtn) {
+      exportJsonBtn.setAttribute("title", exportJsonTitle);
+      exportJsonBtn.setAttribute("aria-label", exportJsonTitle);
+    }
+    if (exportHtmlBtn) {
+      exportHtmlBtn.setAttribute("title", exportHtmlTitle);
+      exportHtmlBtn.setAttribute("aria-label", exportHtmlTitle);
+    }
+  }
+}
+
+function omsRowsForExport(key) {
+  if (OMS_LOCAL_KEYS.has(key)) return sortByIdAsc(mergeById(state.omsLocalData[key] || []));
+  if (key === "postTrading") {
+    const rows = state.tables[key]?.getData() || [];
+    return [...rows];
+  }
+  return sortByIdAsc(mergeById(state.tables[key]?.getData() || []));
+}
+
+function omsExportColumns(key) {
+  const table = state.tables[key];
+  if (!table) return [];
+  return table.getColumns()
+    .map((col) => col.getDefinition())
+    .filter((def) => def && def.field && !String(def.field).startsWith("_"))
+    .map((def) => ({ field: String(def.field), title: String(def.title || def.field) }));
+}
+
+function escapeCsvCell(value) {
+  const text = value === null || value === undefined ? "" : String(value);
+  if (!/[",\n\r]/.test(text)) return text;
+  return `"${text.replace(/"/g, "\"\"")}"`;
+}
+
+function rowsToCsv(rows, columns) {
+  const header = columns.map((col) => escapeCsvCell(col.title)).join(",");
+  const body = rows.map((row) => columns.map((col) => escapeCsvCell(row[col.field])).join(",")).join("\n");
+  return `${header}\n${body}`;
+}
+
+function rowsToHtml(rows, columns) {
+  const esc = (value) => String(value === null || value === undefined ? "" : value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+  const head = columns.map((col) => `<th>${esc(col.title)}</th>`).join("");
+  const body = rows.map((row) => `<tr>${columns.map((col) => `<td>${esc(row[col.field])}</td>`).join("")}</tr>`).join("\n");
+  return `<!doctype html><html><head><meta charset="utf-8"><title>OMS Export</title></head><body><table border="1"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></body></html>`;
+}
+
+function downloadText(filename, text, mimeType = "text/plain;charset=utf-8") {
+  const blob = new Blob([text], { type: mimeType });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+async function copyOmsTable(key) {
+  const rows = omsRowsForExport(key);
+  const columns = omsExportColumns(key);
+  const csv = rowsToCsv(rows, columns);
+  await navigator.clipboard.writeText(csv);
+  uiLog("info", `OMS copy ok (${key})`, { rows: rows.length });
+}
+
+function exportOmsTable(key, format) {
+  const rows = omsRowsForExport(key);
+  const columns = omsExportColumns(key);
+  const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
+  if (format === "csv") {
+    downloadText(`oms-${key}-${stamp}.csv`, rowsToCsv(rows, columns), "text/csv;charset=utf-8");
+    return;
+  }
+  if (format === "excel") {
+    downloadText(`oms-${key}-${stamp}.xls`, rowsToHtml(rows, columns), "application/vnd.ms-excel;charset=utf-8");
+    return;
+  }
+  if (format === "json") {
+    downloadText(`oms-${key}-${stamp}.json`, JSON.stringify(rows, null, 2), "application/json;charset=utf-8");
+    return;
+  }
+  downloadText(`oms-${key}-${stamp}.html`, rowsToHtml(rows, columns), "text/html;charset=utf-8");
+}
+
+async function goToOmsPage(key, nextPage) {
+  const pager = state.omsPager[key];
+  if (!pager) return;
+  const page = clampPage(nextPage, pager.totalPages);
+  state.omsPager[key].page = page;
+  if (key === "adminOms") {
+    await loadAdminOms(false);
+    return;
+  }
+  if (key === "postTrading") {
+    await loadPostTradingPreview(false);
+    return;
+  }
+  if (OMS_LOCAL_KEYS.has(key)) {
+    renderLocalOmsPage(key);
+    return;
+  }
+  await refreshHistoryTable(key, false);
+}
+
+async function setOmsPageSize(key, nextSize) {
+  const size = Math.max(1, Math.min(500, Number(nextSize) || state.omsPageSize));
+  state.omsPager[key].pageSize = size;
+  state.omsPager[key].page = 1;
+  if (key === "adminOms") {
+    await loadAdminOms(true);
+    return;
+  }
+  if (key === "postTrading") {
+    await loadPostTradingPreview(true);
+    return;
+  }
+  if (OMS_LOCAL_KEYS.has(key)) {
+    renderLocalOmsPage(key);
+    return;
+  }
+  await refreshHistoryTable(key, true);
+}
+
 async function refreshTables() {
   const cfg = requireConfig();
   const accountIds = await resolveViewAccountIds(cfg);
   const snapshot = await fetchCombinedSnapshot(accountIds, cfg);
 
-  const openOrders = mergeById(snapshot.openOrders);
-  const historyOrders = mergeById(snapshot.historyOrders);
-  const deals = mergeById(snapshot.deals);
-  const openPositions = mergeById(snapshot.openPositions);
-  const historyPositions = mergeById(snapshot.historyPositions);
-
-  state.tables.openOrders.setData(openOrders);
-  state.tables.historyOrders.setData(historyOrders);
-  state.tables.deals.setData(deals);
-  state.tables.openPositions.setData(openPositions);
-  state.tables.historyPositions.setData(historyPositions);
+  setLocalOmsRows("openOrders", snapshot.openOrders, 1);
+  setLocalOmsRows("openPositions", snapshot.openPositions, 1);
+  await Promise.all([
+    refreshHistoryTable("deals", true),
+    refreshHistoryTable("historyPositions", true),
+    refreshHistoryTable("historyOrders", true),
+    refreshHistoryTable("ccxtOrders", true),
+    refreshHistoryTable("ccxtTrades", true),
+  ]);
 
   status(`connected ${state.wsConnections.size} ws | viewing ${accountIds.length} account(s)`, state.connected);
 }
@@ -918,18 +1719,16 @@ async function refreshOpenPositionsTable() {
   const cfg = requireConfig();
   const accountIds = await resolveViewAccountIds(cfg);
   const csv = accountIdsCsv(accountIds);
-  const out = await apiRequest(`/oms/positions/open?account_ids=${encodeURIComponent(csv)}`, {}, cfg);
-  const openPositions = mergeById(out.items || []);
-  state.tables.openPositions.setData(openPositions);
+  const out = await apiRequest(`/oms/positions/open?account_ids=${encodeURIComponent(csv)}&limit=5000`, {}, cfg);
+  setLocalOmsRows("openPositions", out.items || []);
 }
 
 async function refreshOpenOrdersTable() {
   const cfg = requireConfig();
   const accountIds = await resolveViewAccountIds(cfg);
   const csv = accountIdsCsv(accountIds);
-  const out = await apiRequest(`/oms/orders/open?account_ids=${encodeURIComponent(csv)}`, {}, cfg);
-  const openOrders = mergeById(out.items || []);
-  state.tables.openOrders.setData(openOrders);
+  const out = await apiRequest(`/oms/orders/open?account_ids=${encodeURIComponent(csv)}&limit=5000`, {}, cfg);
+  setLocalOmsRows("openOrders", out.items || []);
 }
 
 async function cancelOpenOrderInline(row) {
@@ -942,6 +1741,7 @@ async function cancelOpenOrderInline(row) {
     method: "POST",
     body: { account_id: accountId, command: "cancel_order", payload: { order_id: orderId } },
   }, cfg);
+  ensureOmsCommandSuccess(out, "cancel_order");
   eventLog("open_order_cancel_inline", { account_id: accountId, order_id: orderId, out });
   await refreshOpenOrdersTable();
 }
@@ -962,6 +1762,7 @@ async function changeOpenOrderInline(row) {
     method: "POST",
     body: { account_id: accountId, command: "change_order", payload },
   }, cfg);
+  ensureOmsCommandSuccess(out, "change_order");
   eventLog("open_order_change_inline", { account_id: accountId, order_id: orderId, out });
   await refreshOpenOrdersTable();
 }
@@ -980,6 +1781,7 @@ async function closeOpenPositionInline(row) {
       payload: { position_id: positionId, order_type: "market" },
     },
   }, cfg);
+  ensureOmsCommandSuccess(out, "close_position");
   eventLog("open_position_close_inline", { account_id: accountId, position_id: positionId, out });
   await refreshOpenPositionsTable();
 }
@@ -994,13 +1796,14 @@ async function changeOpenPositionInline(row) {
   const stopLossRaw = row.stop_loss;
   const stopGainRaw = row.stop_gain;
   const commentRaw = row.comment;
-  if (stopLossRaw !== undefined) payload.stop_loss = stopLossRaw === "" || stopLossRaw === null ? null : String(stopLossRaw).trim();
-  if (stopGainRaw !== undefined) payload.stop_gain = stopGainRaw === "" || stopGainRaw === null ? null : String(stopGainRaw).trim();
+  if (stopLossRaw !== undefined) payload.oms_stop_loss = stopLossRaw === "" || stopLossRaw === null ? null : String(stopLossRaw).trim();
+  if (stopGainRaw !== undefined) payload.oms_stop_gain = stopGainRaw === "" || stopGainRaw === null ? null : String(stopGainRaw).trim();
   if (commentRaw !== undefined) payload.comment = commentRaw === "" || commentRaw === null ? null : String(commentRaw);
   const out = await apiRequest("/oms/commands", {
     method: "POST",
     body: { account_id: accountId, command: "position_change", payload },
   }, cfg);
+  ensureOmsCommandSuccess(out, "position_change");
   eventLog("open_position_change_inline", { account_id: accountId, position_id: positionId, out });
   await refreshOpenPositionsTable();
 }
@@ -1034,7 +1837,7 @@ function openCloseByModal(sourceRow) {
   }
   state.closeBySourceRow = { ...sourceRow };
   $("closeBySourceId").value = String(sourceId);
-  $("closeBySourceInfo").textContent = `Source #${sourceId} | account ${accountId} | ${symbol} | ${side}`;
+  $("closeBySourceInfo").textContent = `${t("closeby.source_prefix", "Source")} #${sourceId} | ${t("closeby.account", "account")} ${accountId} | ${symbol} | ${side}`;
   const targetSelect = $("closeByTargetSelect");
   targetSelect.innerHTML = "";
   for (const row of candidates) {
@@ -1064,6 +1867,7 @@ async function confirmCloseByModal() {
       payload: { position_id_a: positionIdA, position_id_b: positionIdB },
     },
   }, cfg);
+  ensureOmsCommandSuccess(out, "close_by");
   eventLog("open_position_close_by_inline", {
     account_id: accountId,
     position_id_a: positionIdA,
@@ -1078,6 +1882,8 @@ function routeWs(msg, accountId = null) {
   const namespace = msg.namespace || "system";
   const eventName = msg.event || "event";
   const payload = { ...(msg.payload || {}) };
+  if (payload.oms_stop_loss !== undefined && payload.stop_loss === undefined) payload.stop_loss = payload.oms_stop_loss;
+  if (payload.oms_stop_gain !== undefined && payload.stop_gain === undefined) payload.stop_gain = payload.oms_stop_gain;
   const resolvedAccountId = payload.account_id || accountId;
   eventLog(`${namespace}:${eventName}`, { account_id: resolvedAccountId, payload: msg.payload || {} });
 
@@ -1085,51 +1891,54 @@ function routeWs(msg, accountId = null) {
 
   if (namespace === "position") {
     if (eventName === "snapshot_open_orders" && Array.isArray(payload.items)) {
-      replaceRowsForAccount(state.tables.openOrders, payload.account_id, payload.items);
+      replaceLocalOmsRowsForAccount("openOrders", payload.account_id || accountId, payload.items);
       return;
     }
     if (eventName === "snapshot_open_positions" && Array.isArray(payload.items)) {
-      replaceRowsForAccount(state.tables.openPositions, payload.account_id, payload.items);
+      replaceLocalOmsRowsForAccount("openPositions", payload.account_id || accountId, payload.items);
       return;
     }
     if (payload.order_id || payload.order_type || payload.exchange_order_id) {
       const orderRow = { ...payload };
       if (!orderRow.id && payload.order_id) orderRow.id = payload.order_id;
+      if (orderRow.__deleted) {
+        removeLocalOmsRow("openOrders", orderRow.id);
+        return;
+      }
       const closedStatuses = new Set(["FILLED", "CANCELED", "REJECTED", "CLOSED"]);
       if (closedStatuses.has(String(orderRow.status || "").toUpperCase())) {
-        removeByKey(state.tables.openOrders, orderRow.id, "id");
+        removeLocalOmsRow("openOrders", orderRow.id);
       } else {
-        upsert(state.tables.openOrders, orderRow);
+        upsertLocalOmsRow("openOrders", orderRow);
       }
     }
     if (payload.exchange_trade_id || payload.position_id) {
+      if (payload.__deleted && payload.id) {
+        removeByKey(state.tables.deals, payload.id);
+        return;
+      }
       append(state.tables.deals, payload);
     }
     if (payload.state || payload.avg_price || payload.side) {
       const positionRow = { ...payload };
       if (!positionRow.id && payload.position_id) positionRow.id = payload.position_id;
+      if (positionRow.__deleted) {
+        removeLocalOmsRow("openPositions", positionRow.id);
+        return;
+      }
       const isClosed =
         String(positionRow.state || "").toLowerCase() === "closed" ||
         String(positionRow.qty || "") === "0";
       if (isClosed) {
-        removeByKey(state.tables.openPositions, positionRow.id, "id");
+        removeLocalOmsRow("openPositions", positionRow.id);
       } else {
-        upsert(state.tables.openPositions, positionRow);
+        upsertLocalOmsRow("openPositions", positionRow);
       }
     }
   }
 
   if (namespace === "ccxt") {
-    const base = payload.result || payload || {};
-    if (!base.account_id) base.account_id = accountId;
-    if (base.exchange_trade_id || eventName.includes("trade")) {
-      append(state.tables.ccxtTrades, base);
-    } else if (base.exchange_order_id || base.clientOrderId || eventName.includes("order")) {
-      append(state.tables.ccxtOrders, base);
-    } else if (base.order || base.trade) {
-      append(state.tables.ccxtOrders, base.order || {});
-      append(state.tables.ccxtTrades, base.trade || {});
-    }
+    return;
   }
 }
 
@@ -1219,17 +2028,26 @@ async function connectWs() {
   }, 20000);
 }
 
-function baseCols() {
-  return [
-    { title: t("oms.col_id", "ID"), field: "id", width: 84 },
-    { title: t("oms.col_account_id", "Account ID"), field: "account_id", width: 96 },
-    { title: t("oms.col_symbol", "Symbol"), field: "symbol", width: 120 },
-    { title: t("oms.col_side", "Side"), field: "side", width: 90 },
-    { title: t("oms.col_qty", "Qty"), field: "qty", width: 110 },
-    { title: t("oms.col_status", "Status"), field: "status", width: 120 },
-    { title: t("oms.col_price", "Price"), field: "price", width: 110 },
-    { title: t("oms.col_updated_at", "Updated At"), field: "updated_at", width: 175 },
-  ];
+function omsRowNumberColumn(kind) {
+  return {
+    title: "#",
+    field: "_rownum",
+    width: 52,
+    minWidth: 52,
+    maxWidth: 52,
+    hozAlign: "right",
+    headerHozAlign: "right",
+    headerSort: false,
+    cssClass: "col-rownum",
+    formatter: (cell) => {
+      const pager = state.omsPager[kind] || { page: 1, pageSize: 100 };
+      const page = Math.max(1, Number(pager.page) || 1);
+      const pageSize = Math.max(1, Number(pager.pageSize) || 100);
+      const pos = Number(cell.getRow().getPosition(true) || 1);
+      const n = ((page - 1) * pageSize) + pos;
+      return `<span class="rownum-badge">${n}</span>`;
+    },
+  };
 }
 
 function riskValueBadge(value, kind = "loss") {
@@ -1239,8 +2057,97 @@ function riskValueBadge(value, kind = "loss") {
   return `<span class="risk-pill ${css}">${text}</span>`;
 }
 
+function sideBadge(value) {
+  const text = String(value || "").trim();
+  const normalized = text.toLowerCase();
+  if (normalized === "buy") return `<span class="side-pill side-buy">${text}</span>`;
+  if (normalized === "sell") return `<span class="side-pill side-sell">${text}</span>`;
+  return text;
+}
+
+function jsonCellFormatter(cell) {
+  const v = cell.getValue();
+  if (v === null || v === undefined) return "";
+  if (typeof v === "string") return v;
+  try {
+    return JSON.stringify(v);
+  } catch {
+    return String(v);
+  }
+}
+
+function adminOmsColumnsForView(view) {
+  const shared = [
+    { title: t("oms.col_id", "ID"), field: "id", width: 84, editor: "input" },
+    { title: t("oms.col_account_id", "Account ID"), field: "account_id", width: 100, editor: "input" },
+  ];
+  if (view === "open_orders" || view === "history_orders") {
+    return [
+      ...shared,
+      { title: t("oms.col_command_id", "Command ID"), field: "command_id", width: 100, editor: "input" },
+      { title: t("oms.col_symbol", "Symbol"), field: "symbol", width: 120, editor: "input" },
+      { title: t("oms.col_side", "Side"), field: "side", width: 90, editor: "input", formatter: (cell) => sideBadge(cell.getValue()) },
+      { title: t("oms.col_order_type", "Order Type"), field: "order_type", width: 100, editor: "input" },
+      { title: t("oms.col_status", "Status"), field: "status", width: 120, editor: "input" },
+      { title: t("oms.col_strategy_id", "Strategy ID"), field: "strategy_id", width: 100, editor: "input" },
+      { title: t("oms.col_position_id", "Position ID"), field: "position_id", width: 100, editor: "input" },
+      { title: t("oms.col_qty", "Qty"), field: "qty", width: 100, editor: "input" },
+      { title: t("oms.col_price", "Price"), field: "price", width: 110, editor: "input" },
+      { title: t("oms.col_stop_loss", "Stop Loss"), field: "stop_loss", width: 120, editor: "input" },
+      { title: t("oms.col_stop_gain", "Stop Gain"), field: "stop_gain", width: 120, editor: "input" },
+      { title: t("oms.col_filled_qty", "Filled Qty"), field: "filled_qty", width: 100, editor: "input" },
+      { title: t("oms.col_avg_fill_price", "Avg Fill Price"), field: "avg_fill_price", width: 120, editor: "input" },
+      { title: t("oms.col_reason", "Reason"), field: "reason", width: 120, editor: "input" },
+      { title: t("oms.col_comment", "Comment"), field: "comment", width: 180, editor: "input" },
+      { title: t("oms.col_client_order_id", "Client Order ID"), field: "client_order_id", width: 140, editor: "input" },
+      { title: t("oms.col_exchange_order_id", "Exchange Order ID"), field: "exchange_order_id", width: 150, editor: "input" },
+      { title: t("oms.col_created_at", "Created At"), field: "created_at", width: 170, editor: "input" },
+      { title: t("oms.col_updated_at", "Updated At"), field: "updated_at", width: 170, editor: "input" },
+      { title: t("oms.col_closed_at", "Closed At"), field: "closed_at", width: 170, editor: "input" },
+    ];
+  }
+  if (view === "open_positions" || view === "history_positions") {
+    return [
+      ...shared,
+      { title: t("oms.col_symbol", "Symbol"), field: "symbol", width: 120, editor: "input" },
+      { title: t("oms.col_strategy_id", "Strategy ID"), field: "strategy_id", width: 100, editor: "input" },
+      { title: t("oms.col_side", "Side"), field: "side", width: 90, editor: "input", formatter: (cell) => sideBadge(cell.getValue()) },
+      { title: t("oms.col_qty", "Qty"), field: "qty", width: 100, editor: "input" },
+      { title: t("oms.col_avg_price", "Avg Price"), field: "avg_price", width: 120, editor: "input" },
+      { title: t("oms.col_stop_loss", "Stop Loss"), field: "stop_loss", width: 120, editor: "input" },
+      { title: t("oms.col_stop_gain", "Stop Gain"), field: "stop_gain", width: 120, editor: "input" },
+      { title: t("oms.col_state", "State"), field: "state", width: 100, editor: "input" },
+      { title: t("oms.col_reason", "Reason"), field: "reason", width: 120, editor: "input" },
+      { title: t("oms.col_comment", "Comment"), field: "comment", width: 180, editor: "input" },
+      { title: t("oms.col_opened_at", "Opened At"), field: "opened_at", width: 170, editor: "input" },
+      { title: t("oms.col_updated_at", "Updated At"), field: "updated_at", width: 170, editor: "input" },
+      { title: t("oms.col_closed_at", "Closed At"), field: "closed_at", width: 170, editor: "input" },
+    ];
+  }
+  return [
+    ...shared,
+    { title: t("oms.col_order_id", "Order ID"), field: "order_id", width: 90, editor: "input" },
+    { title: t("oms.col_position_id", "Position ID"), field: "position_id", width: 100, editor: "input" },
+    { title: t("oms.col_symbol", "Symbol"), field: "symbol", width: 120, editor: "input" },
+    { title: t("oms.col_side", "Side"), field: "side", width: 90, editor: "input", formatter: (cell) => sideBadge(cell.getValue()) },
+    { title: t("oms.col_qty", "Qty"), field: "qty", width: 100, editor: "input" },
+    { title: t("oms.col_price", "Price"), field: "price", width: 110, editor: "input" },
+    { title: t("oms.col_fee", "Fee"), field: "fee", width: 100, editor: "input" },
+    { title: t("oms.col_fee_currency", "Fee Ccy"), field: "fee_currency", width: 100, editor: "input" },
+    { title: t("oms.col_pnl", "PnL"), field: "pnl", width: 100, editor: "input" },
+    { title: t("oms.col_strategy_id", "Strategy ID"), field: "strategy_id", width: 100, editor: "input" },
+    { title: t("oms.col_reason", "Reason"), field: "reason", width: 120, editor: "input" },
+    { title: t("oms.col_comment", "Comment"), field: "comment", width: 180, editor: "input" },
+    { title: t("oms.col_reconciled", "Reconciled"), field: "reconciled", width: 110, editor: true },
+    { title: t("oms.col_exchange_trade_id", "Exchange Trade ID"), field: "exchange_trade_id", width: 150, editor: "input" },
+    { title: t("oms.col_created_at", "Created At"), field: "created_at", width: 170, editor: "input" },
+    { title: t("oms.col_executed_at", "Executed At"), field: "executed_at", width: 170, editor: "input" },
+  ];
+}
+
 function setupTables() {
   state.tables.openPositions = makeTable("openPositionsTable", [
+    omsRowNumberColumn("openPositions"),
     {
       title: "",
       field: "_close",
@@ -1265,13 +2172,15 @@ function setupTables() {
           }
         } catch (err) {
           eventLog("open_position_inline_error", { action, error: String(err), row });
+          uiLog("error", `Open position action failed (${action})`, { error: String(err), row });
         }
       },
     },
     { title: t("oms.col_id", "ID"), field: "id", width: 84 },
     { title: t("oms.col_account_id", "Account ID"), field: "account_id", width: 96 },
+    { title: t("oms.col_strategy_id", "Strategy ID"), field: "strategy_id", width: 100 },
     { title: t("oms.col_symbol", "Symbol"), field: "symbol", width: 120 },
-    { title: t("oms.col_side", "Side"), field: "side", width: 90 },
+    { title: t("oms.col_side", "Side"), field: "side", width: 90, formatter: (cell) => sideBadge(cell.getValue()) },
     { title: t("oms.col_qty", "Qty"), field: "qty", width: 110 },
     { title: t("oms.col_avg_price", "Avg Price"), field: "avg_price", width: 130 },
     {
@@ -1288,32 +2197,57 @@ function setupTables() {
       editor: "input",
       formatter: (cell) => riskValueBadge(cell.getValue(), "gain"),
     },
-    { title: t("oms.col_state", "State"), field: "state", width: 90 },
-    { title: t("oms.col_comment", "Comment"), field: "comment", width: 180, editor: "input" },
-    { title: t("oms.col_opened_at", "Opened At"), field: "opened_at", width: 170 },
-    { title: t("oms.col_updated_at", "Updated At"), field: "updated_at", width: 170 },
     {
       title: "",
-      field: "_save",
+      field: "_save_targets",
       width: 46,
-      hozAlign: "right",
-      headerHozAlign: "right",
+      hozAlign: "left",
+      headerHozAlign: "left",
       headerSort: false,
-      formatter: () => `<button data-act='apply' class='row-icon-btn' title='${t("common.apply", "Apply")}' aria-label='${t("common.apply", "Apply")}'><i class='fa-solid fa-floppy-disk icon-save' aria-hidden='true'></i></button>`,
+      formatter: () => `<button data-act='save_targets' class='row-icon-btn' title='${t("common.apply", "Apply")}' aria-label='${t("common.apply", "Apply")}'><i class='fa-solid fa-floppy-disk icon-save' aria-hidden='true'></i></button>`,
       cellClick: async (ev, cell) => {
         const btn = ev?.target?.closest ? ev.target.closest("[data-act]") : null;
         const action = btn?.dataset?.act;
-        if (action !== "apply") return;
+        if (action !== "save_targets") return;
         const row = cell.getRow().getData();
         try {
           await changeOpenPositionInline(row);
         } catch (err) {
           eventLog("open_position_inline_error", { action, error: String(err), row });
+          uiLog("error", `Open position action failed (${action})`, { error: String(err), row });
         }
       },
     },
+    { title: t("oms.col_state", "State"), field: "state", width: 90 },
+    { title: t("oms.col_reason", "Reason"), field: "reason", width: 120 },
+    { title: t("oms.col_comment", "Comment"), field: "comment", width: 180, editor: "input" },
+    {
+      title: "",
+      field: "_save_comment",
+      width: 46,
+      hozAlign: "left",
+      headerHozAlign: "left",
+      headerSort: false,
+      formatter: () => `<button data-act='save_comment' class='row-icon-btn' title='${t("common.apply", "Apply")}' aria-label='${t("common.apply", "Apply")}'><i class='fa-solid fa-floppy-disk icon-save' aria-hidden='true'></i></button>`,
+      cellClick: async (ev, cell) => {
+        const btn = ev?.target?.closest ? ev.target.closest("[data-act]") : null;
+        const action = btn?.dataset?.act;
+        if (action !== "save_comment") return;
+        const row = cell.getRow().getData();
+        try {
+          await changeOpenPositionInline(row);
+        } catch (err) {
+          eventLog("open_position_inline_error", { action, error: String(err), row });
+          uiLog("error", `Open position action failed (${action})`, { error: String(err), row });
+        }
+      },
+    },
+    { title: t("oms.col_opened_at", "Opened At"), field: "opened_at", width: 170 },
+    { title: t("oms.col_updated_at", "Updated At"), field: "updated_at", width: 170 },
+    { title: t("oms.col_closed_at", "Closed At"), field: "closed_at", width: 170 },
   ]);
   state.tables.openOrders = makeTable("openOrdersTable", [
+    omsRowNumberColumn("openOrders"),
     {
       title: "",
       field: "_close",
@@ -1333,13 +2267,17 @@ function setupTables() {
           }
         } catch (err) {
           eventLog("open_order_inline_error", { action, error: String(err), row });
+          uiLog("error", `Open order action failed (${action})`, { error: String(err), row });
         }
       },
     },
+    { title: t("oms.col_command_id", "Command ID"), field: "command_id", width: 100 },
     { title: t("oms.col_id", "ID"), field: "id", width: 84 },
     { title: t("oms.col_account_id", "Account ID"), field: "account_id", width: 110 },
+    { title: t("oms.col_strategy_id", "Strategy ID"), field: "strategy_id", width: 100 },
+    { title: t("oms.col_position_id", "Position ID"), field: "position_id", width: 100 },
     { title: t("oms.col_symbol", "Symbol"), field: "symbol", width: 120 },
-    { title: t("oms.col_side", "Side"), field: "side", width: 80 },
+    { title: t("oms.col_side", "Side"), field: "side", width: 80, formatter: (cell) => sideBadge(cell.getValue()) },
     { title: t("oms.col_order_type", "Order Type"), field: "order_type", width: 100 },
     { title: t("oms.col_status", "Status"), field: "status", width: 110 },
     { title: t("oms.col_qty", "Qty"), field: "qty", width: 100, editor: "input" },
@@ -1347,9 +2285,14 @@ function setupTables() {
     { title: t("oms.col_stop_loss", "Stop Loss"), field: "stop_loss", width: 120 },
     { title: t("oms.col_stop_gain", "Stop Gain"), field: "stop_gain", width: 120 },
     { title: t("oms.col_filled_qty", "Filled Qty"), field: "filled_qty", width: 100 },
+    { title: t("oms.col_avg_fill_price", "Avg Fill Price"), field: "avg_fill_price", width: 120 },
+    { title: t("oms.col_reason", "Reason"), field: "reason", width: 120 },
+    { title: t("oms.col_client_order_id", "Client Order ID"), field: "client_order_id", width: 140 },
     { title: t("oms.col_exchange_order_id", "Exchange Order ID"), field: "exchange_order_id", width: 140 },
     { title: t("oms.col_comment", "Comment"), field: "comment", width: 180 },
+    { title: t("oms.col_created_at", "Created At"), field: "created_at", width: 170 },
     { title: t("oms.col_updated_at", "Updated At"), field: "updated_at", width: 170 },
+    { title: t("oms.col_closed_at", "Closed At"), field: "closed_at", width: 170 },
     {
       title: "",
       field: "_save",
@@ -1367,129 +2310,165 @@ function setupTables() {
           await changeOpenOrderInline(row);
         } catch (err) {
           eventLog("open_order_inline_error", { action, error: String(err), row });
+          uiLog("error", `Open order action failed (${action})`, { error: String(err), row });
         }
       },
     },
   ]);
-  state.tables.historyPositions = makeTable("historyPositionsTable", baseCols());
-  state.tables.historyOrders = makeTable("historyOrdersTable", baseCols());
+  state.tables.historyPositions = makeTable("historyPositionsTable", [
+    omsRowNumberColumn("historyPositions"),
+    { title: t("oms.col_id", "ID"), field: "id", width: 84 },
+    { title: t("oms.col_account_id", "Account ID"), field: "account_id", width: 96 },
+    { title: t("oms.col_strategy_id", "Strategy ID"), field: "strategy_id", width: 100 },
+    { title: t("oms.col_symbol", "Symbol"), field: "symbol", width: 120 },
+    { title: t("oms.col_side", "Side"), field: "side", width: 90, formatter: (cell) => sideBadge(cell.getValue()) },
+    { title: t("oms.col_qty", "Qty"), field: "qty", width: 110 },
+    { title: t("oms.col_avg_price", "Avg Price"), field: "avg_price", width: 130 },
+    { title: t("oms.col_stop_loss", "Stop Loss"), field: "stop_loss", width: 120 },
+    { title: t("oms.col_stop_gain", "Stop Gain"), field: "stop_gain", width: 120 },
+    { title: t("oms.col_state", "State"), field: "state", width: 90 },
+    { title: t("oms.col_reason", "Reason"), field: "reason", width: 120 },
+    { title: t("oms.col_comment", "Comment"), field: "comment", width: 180 },
+    { title: t("oms.col_opened_at", "Opened At"), field: "opened_at", width: 170 },
+    { title: t("oms.col_updated_at", "Updated At"), field: "updated_at", width: 170 },
+    { title: t("oms.col_closed_at", "Closed At"), field: "closed_at", width: 170 },
+  ]);
+  state.tables.historyOrders = makeTable("historyOrdersTable", [
+    omsRowNumberColumn("historyOrders"),
+    { title: t("oms.col_command_id", "Command ID"), field: "command_id", width: 100 },
+    { title: t("oms.col_id", "ID"), field: "id", width: 84 },
+    { title: t("oms.col_account_id", "Account ID"), field: "account_id", width: 96 },
+    { title: t("oms.col_strategy_id", "Strategy ID"), field: "strategy_id", width: 100 },
+    { title: t("oms.col_position_id", "Position ID"), field: "position_id", width: 100 },
+    { title: t("oms.col_symbol", "Symbol"), field: "symbol", width: 120 },
+    { title: t("oms.col_side", "Side"), field: "side", width: 80, formatter: (cell) => sideBadge(cell.getValue()) },
+    { title: t("oms.col_order_type", "Order Type"), field: "order_type", width: 100 },
+    { title: t("oms.col_status", "Status"), field: "status", width: 110 },
+    { title: t("oms.col_qty", "Qty"), field: "qty", width: 100 },
+    { title: t("oms.col_price", "Price"), field: "price", width: 110 },
+    { title: t("oms.col_stop_loss", "Stop Loss"), field: "stop_loss", width: 120 },
+    { title: t("oms.col_stop_gain", "Stop Gain"), field: "stop_gain", width: 120 },
+    { title: t("oms.col_filled_qty", "Filled Qty"), field: "filled_qty", width: 100 },
+    { title: t("oms.col_avg_fill_price", "Avg Fill Price"), field: "avg_fill_price", width: 120 },
+    { title: t("oms.col_reason", "Reason"), field: "reason", width: 120 },
+    { title: t("oms.col_comment", "Comment"), field: "comment", width: 180 },
+    { title: t("oms.col_client_order_id", "Client Order ID"), field: "client_order_id", width: 140 },
+    { title: t("oms.col_exchange_order_id", "Exchange Order ID"), field: "exchange_order_id", width: 140 },
+    { title: t("oms.col_created_at", "Created At"), field: "created_at", width: 170 },
+    { title: t("oms.col_updated_at", "Updated At"), field: "updated_at", width: 170 },
+    { title: t("oms.col_closed_at", "Closed At"), field: "closed_at", width: 170 },
+  ]);
   state.tables.deals = makeTable("dealsTable", [
+    omsRowNumberColumn("deals"),
     { title: t("oms.col_id", "ID"), field: "id", width: 84 },
     { title: t("oms.col_account_id", "Account ID"), field: "account_id", width: 96 },
     { title: t("oms.col_order_id", "Order ID"), field: "order_id", width: 84 },
     { title: t("oms.col_position_id", "Position ID"), field: "position_id", width: 90 },
+    { title: t("oms.col_strategy_id", "Strategy ID"), field: "strategy_id", width: 100 },
     { title: t("oms.col_symbol", "Symbol"), field: "symbol", width: 120 },
-    { title: t("oms.col_side", "Side"), field: "side", width: 80 },
+    { title: t("oms.col_side", "Side"), field: "side", width: 80, formatter: (cell) => sideBadge(cell.getValue()) },
     { title: t("oms.col_qty", "Qty"), field: "qty", width: 100 },
     { title: t("oms.col_price", "Price"), field: "price", width: 120 },
+    { title: t("oms.col_fee", "Fee"), field: "fee", width: 100 },
+    { title: t("oms.col_fee_currency", "Fee Ccy"), field: "fee_currency", width: 100 },
+    { title: t("oms.col_pnl", "PnL"), field: "pnl", width: 100 },
+    { title: t("oms.col_reason", "Reason"), field: "reason", width: 120 },
+    { title: t("oms.col_reconciled", "Reconciled"), field: "reconciled", width: 110 },
     { title: t("oms.col_comment", "Comment"), field: "comment", width: 180 },
     { title: t("oms.col_exchange_trade_id", "Exchange Trade ID"), field: "exchange_trade_id", width: 130 },
+    { title: t("oms.col_created_at", "Created At"), field: "created_at", width: 170 },
     { title: t("oms.col_executed_at", "Executed At"), field: "executed_at", width: 170 },
   ]);
   state.tables.ccxtTrades = makeTable("ccxtTradesTable", [
-    { title: "account_id", field: "account_id", width: 96 },
-    { title: "exchange_trade_id", field: "exchange_trade_id", width: 140 },
-    { title: "exchange_order_id", field: "exchange_order_id", width: 140 },
-    { title: "symbol", field: "symbol", width: 120 },
-    { title: "side", field: "side", width: 80 },
-    { title: "qty", field: "qty", width: 100 },
-    { title: "price", field: "price", width: 120 },
-    { title: "observed_at", field: "observed_at", width: 170 },
-    { title: "raw", field: "raw_json", widthGrow: 1 },
+    omsRowNumberColumn("ccxtTrades"),
+    { title: t("oms.col_id", "ID"), field: "id", width: 84 },
+    { title: t("oms.col_account_id", "Account ID"), field: "account_id", width: 96 },
+    { title: t("system.col_exchange_id", "Exchange ID"), field: "exchange_id", width: 110 },
+    { title: t("oms.col_exchange_trade_id", "Exchange Trade ID"), field: "exchange_trade_id", width: 150 },
+    { title: t("oms.col_exchange_order_id", "Exchange Order ID"), field: "exchange_order_id", width: 150 },
+    { title: t("oms.col_symbol", "Symbol"), field: "symbol", width: 120 },
+    { title: t("system.col_raw", "Raw"), field: "raw_json", widthGrow: 1, formatter: jsonCellFormatter },
+    { title: t("system.col_observed_at", "Observed At"), field: "observed_at", width: 170 },
   ]);
   state.tables.ccxtOrders = makeTable("ccxtOrdersTable", [
-    { title: "account_id", field: "account_id", width: 96 },
-    { title: "exchange_order_id", field: "exchange_order_id", width: 140 },
-    { title: "client_order_id", field: "client_order_id", width: 130 },
-    { title: "symbol", field: "symbol", width: 120 },
-    { title: "side", field: "side", width: 80 },
-    { title: "status", field: "status", width: 110 },
-    { title: "price", field: "price", width: 120 },
-    { title: "amount", field: "amount", width: 100 },
-    { title: "observed_at", field: "observed_at", width: 170 },
-    { title: "raw", field: "raw_json", widthGrow: 1 },
+    omsRowNumberColumn("ccxtOrders"),
+    { title: t("oms.col_id", "ID"), field: "id", width: 84 },
+    { title: t("oms.col_account_id", "Account ID"), field: "account_id", width: 96 },
+    { title: t("system.col_exchange_id", "Exchange ID"), field: "exchange_id", width: 110 },
+    { title: t("oms.col_exchange_order_id", "Exchange Order ID"), field: "exchange_order_id", width: 150 },
+    { title: t("oms.col_client_order_id", "Client Order ID"), field: "client_order_id", width: 150 },
+    { title: t("oms.col_symbol", "Symbol"), field: "symbol", width: 120 },
+    { title: t("system.col_raw", "Raw"), field: "raw_json", widthGrow: 1, formatter: jsonCellFormatter },
+    { title: t("system.col_observed_at", "Observed At"), field: "observed_at", width: 170 },
   ]);
   state.tables.events = makeTable("eventsTable", [
-    { title: "seq", field: "seq", width: 70 },
-    { title: "at", field: "at", width: 185 },
-    { title: "kind", field: "kind", width: 170 },
-    { title: "payload", field: "payload", widthGrow: 1 },
+    { title: t("system.col_seq", "Seq"), field: "seq", width: 70 },
+    { title: t("system.col_at", "At"), field: "at", width: 185 },
+    { title: t("system.col_kind", "Kind"), field: "kind", width: 170 },
+    { title: t("system.col_payload", "Payload"), field: "payload", widthGrow: 1 },
   ]);
   state.tables.uiLogs = makeTable("uiLogsTable", [
-    { title: "seq", field: "seq", width: 70 },
-    { title: "at", field: "at", width: 185 },
-    { title: "level", field: "level", width: 110 },
-    { title: "message", field: "message", width: 300 },
-    { title: "payload", field: "payload", widthGrow: 1 },
-  ]);
+    { title: t("system.col_seq", "Seq"), field: "seq", width: 70 },
+    { title: t("system.col_at", "At"), field: "at", width: 185 },
+    { title: t("system.col_level", "Level"), field: "level", width: 110 },
+    { title: t("system.col_message", "Message"), field: "message", width: 300 },
+    { title: t("system.col_payload", "Payload"), field: "payload", widthGrow: 1 },
+  ], {
+    pagination: true,
+    paginationMode: "local",
+    paginationSize: 100,
+    paginationSizeSelector: [50, 100, 200, 500, 1000],
+  });
+  state.tables.postTrading = makeTable("postTradingTable", [
+    { title: t("oms.col_id", "ID"), field: "id", width: 84 },
+    { title: t("oms.col_account_id", "Account ID"), field: "account_id", width: 100 },
+    { title: t("system.col_exchange_id", "Exchange"), field: "exchange_id", width: 120 },
+    { title: t("oms.col_exchange_order_id", "Exchange Order ID"), field: "exchange_order_id", width: 150 },
+    { title: t("oms.col_symbol", "Symbol"), field: "symbol", width: 130 },
+    { title: t("oms.col_side", "Side"), field: "side", width: 80, formatter: (cell) => sideBadge(cell.getValue()) },
+    { title: t("oms.col_qty", "Qty"), field: "qty", width: 120, hozAlign: "right", headerHozAlign: "right" },
+    { title: t("oms.col_price", "Price"), field: "price", width: 120, hozAlign: "right", headerHozAlign: "right" },
+    { title: t("oms.col_filled_qty", "Filled Qty"), field: "filled_qty", width: 120, hozAlign: "right", headerHozAlign: "right" },
+    { title: t("oms.col_avg_fill_price", "Avg Fill Price"), field: "avg_fill_price", width: 130, hozAlign: "right", headerHozAlign: "right" },
+    { title: t("oms.col_status", "Status"), field: "status", width: 120 },
+    { title: t("oms.col_reconciled", "Reconciled"), field: "reconciled", width: 110 },
+    { title: t("post_trading.col_target_strategy_id", "Target Strategy ID"), field: "target_strategy_id", width: 140, editor: "input", hozAlign: "right", headerHozAlign: "right" },
+    { title: t("oms.col_strategy_id", "Current Strategy ID"), field: "strategy_id", width: 140, hozAlign: "right", headerHozAlign: "right" },
+    { title: t("oms.col_created_at", "Created At"), field: "created_at", width: 170 },
+    { title: t("oms.col_executed_at", "Executed At"), field: "executed_at", width: 170 },
+  ], {
+    selectableRows: true,
+    rowHeader: {
+      formatter: "rowSelection",
+      titleFormatter: "rowSelection",
+      hozAlign: "center",
+      headerSort: false,
+      resizable: false,
+      frozen: true,
+      width: 40,
+      minWidth: 40,
+    },
+  });
   state.tables.tradeStrategies = makeTable("tradeStrategiesTable", buildTradeStrategiesColumns());
-  state.tables.adminStrategies = makeTable("adminStrategiesTable", [
-    { title: "strategy_id", field: "strategy_id", width: 100 },
-    { title: "client_strategy_id", field: "client_strategy_id", editor: "input", width: 140 },
-    { title: "name", field: "name", editor: "input", width: 220 },
-    { title: "status", field: "status", width: 110 },
+  state.tables.adminOms = makeTable(
+    "adminOmsTable",
+    adminOmsColumnsForView("open_orders"),
     {
-      title: "account_ids",
-      field: "account_ids",
-      widthGrow: 1,
-      editor: "input",
-      formatter: (cell) => {
-        const arr = cell.getValue();
-        if (Array.isArray(arr)) return arr.join(", ");
-        return String(arr || "");
+      selectableRows: true,
+      movableColumns: true,
+      maxHeight: "420px",
+      rowHeader: {
+        formatter: "rowSelection",
+        titleFormatter: "rowSelection",
+        hozAlign: "center",
+        headerSort: false,
+        resizable: false,
+        frozen: true,
+        width: 40,
+        minWidth: 40,
       },
     },
-    {
-      title: "save",
-      field: "_save",
-      hozAlign: "center",
-      formatter: () => t("common.save", "Save"),
-      cellClick: async (_ev, cell) => {
-        const row = cell.getRow().getData();
-        try {
-          const cfg = requireConfig();
-          const out = await apiRequest(`/admin/strategies/${row.strategy_id}`, {
-            method: "PATCH",
-            body: {
-              name: String(row.name || "").trim() || null,
-              client_strategy_id: parseNullablePositiveInt(row.client_strategy_id, "client_strategy_id"),
-              account_ids: parseAccountIdsValue(row.account_ids, state.availableAccountIds),
-            },
-          }, cfg);
-          eventLog("admin_update_strategy_name", out);
-          await loadStrategies(cfg);
-        } catch (err) {
-          eventLog("admin_update_strategy_name_error", { error: String(err), strategy_id: row.strategy_id });
-        }
-      },
-    },
-    {
-      title: "toggle",
-      field: "_toggle",
-      hozAlign: "center",
-      formatter: (cell) => {
-        const row = cell.getRow().getData();
-        return row.status === "active"
-          ? t("common.disable", "Disable")
-          : t("common.enable", "Enable");
-      },
-      cellClick: async (_ev, cell) => {
-        const row = cell.getRow().getData();
-        const nextStatus = row.status === "active" ? "disabled" : "active";
-        try {
-          const cfg = requireConfig();
-          const out = await apiRequest(`/admin/strategies/${row.strategy_id}`, {
-            method: "PATCH",
-            body: { status: nextStatus },
-          }, cfg);
-          eventLog("admin_update_strategy_status", out);
-          await loadStrategies(cfg);
-        } catch (err) {
-          eventLog("admin_update_strategy_status_error", { error: String(err), strategy_id: row.strategy_id });
-        }
-      },
-    },
-  ]);
+  );
   state.tables.adminAccounts = makeTable("adminAccountsTable", [
     { title: "account_id", field: "account_id", width: 100 },
     { title: "label", field: "label", editor: "input", width: 180 },
@@ -1572,8 +2551,85 @@ function setupTables() {
     { title: "role", field: "role", width: 90 },
     { title: "user_status", field: "user_status", width: 100 },
     { title: "api_key_id", field: "api_key_id", width: 100 },
-    { title: "api_key_status", field: "api_key_status", width: 110 },
+    {
+      title: "api_key_status",
+      field: "api_key_status",
+      editor: "list",
+      editorParams: { values: ["active", "disabled"] },
+      width: 130,
+    },
     { title: "created_at", field: "created_at", width: 180 },
+    {
+      title: "",
+      field: "_save",
+      hozAlign: "center",
+      headerSort: false,
+      width: 56,
+      minWidth: 56,
+      formatter: () => '<i class="fa-solid fa-floppy-disk icon-save" title="Save" aria-hidden="true"></i>',
+      cellClick: async (_ev, cell) => {
+        const row = cell.getRow().getData();
+        try {
+          const cfg = requireConfig();
+          const apiKeyId = Number(row.api_key_id || 0);
+          if (!Number.isFinite(apiKeyId) || apiKeyId <= 0) throw new Error("api_key_id inválido");
+          const status = String(row.api_key_status || "").trim().toLowerCase();
+          if (!["active", "disabled"].includes(status)) throw new Error("api_key_status inválido");
+          const out = await apiRequest(`/admin/api-keys/${apiKeyId}`, {
+            method: "PATCH",
+            body: { status },
+          }, cfg);
+          eventLog("admin_update_api_key_status", out);
+          await loadAdminUsersKeys(cfg);
+        } catch (err) {
+          eventLog("admin_update_api_key_status_error", { error: String(err) });
+          uiLog("error", "Admin update API key status failed", { error: String(err) });
+        }
+      },
+    },
+  ]);
+  state.tables.userApiKeys = makeTable("userApiKeysTable", [
+    { title: "api_key_id", field: "api_key_id", width: 110, hozAlign: "right", headerHozAlign: "right" },
+    { title: "user_id", field: "user_id", width: 100, hozAlign: "right", headerHozAlign: "right" },
+    { title: "user_name", field: "user_name", width: 200 },
+    { title: "role", field: "role", width: 120 },
+    {
+      title: "status",
+      field: "status",
+      editor: "list",
+      editorParams: { values: ["active", "disabled"] },
+      width: 130,
+    },
+    { title: "created_at", field: "created_at", width: 180 },
+    {
+      title: "",
+      field: "_save",
+      hozAlign: "center",
+      headerSort: false,
+      width: 56,
+      minWidth: 56,
+      formatter: () => '<i class="fa-solid fa-floppy-disk icon-save" title="Save" aria-hidden="true"></i>',
+      cellClick: async (_ev, cell) => {
+        const row = cell.getRow().getData();
+        try {
+          const cfg = requireConfig();
+          const apiKeyId = Number(row.api_key_id || 0);
+          if (!Number.isFinite(apiKeyId) || apiKeyId <= 0) throw new Error("api_key_id invalido");
+          const status = String(row.status || "").trim().toLowerCase();
+          if (!["active", "disabled"].includes(status)) throw new Error("status invalido");
+          const out = await apiRequest(`/user/api-keys/${apiKeyId}`, {
+            method: "PATCH",
+            body: { status },
+          }, cfg);
+          eventLog("user_update_api_key_status", out);
+          await loadUserApiKeys(cfg);
+          setUserMessage("success", t("user.api_key_status_updated", "Status da API Key atualizado."));
+        } catch (err) {
+          eventLog("user_update_api_key_status_error", { error: String(err) });
+          setUserMessage("error", `${t("user.api_key_status_update_error", "Erro ao atualizar status da API Key")}: ${String(err)}`);
+        }
+      },
+    },
   ]);
   state.tables.riskPermissions = makeTable("riskPermissionsTable", [
     { title: "api_key_id", field: "api_key_id", width: 90 },
@@ -1596,12 +2652,6 @@ function setupTables() {
     },
     { title: "status", field: "status", width: 90 },
   ]);
-}
-
-async function loadStrategies(cfgOverride = null) {
-  const cfg = cfgOverride || requireConfig();
-  const res = await apiRequest("/admin/strategies", {}, cfg);
-  state.tables.adminStrategies.setData(res.items || []);
 }
 
 async function loadAdminAccounts(cfgOverride = null) {
@@ -1627,6 +2677,24 @@ async function loadAdminUsers(cfgOverride = null) {
   const cfg = cfgOverride || requireConfig();
   const res = await apiRequest("/admin/users", {}, cfg);
   state.tables.adminUsers.setData(res.items || []);
+}
+
+async function loadUserProfile(cfgOverride = null) {
+  const cfg = cfgOverride || requireConfig();
+  const res = await apiRequest("/user/profile", {}, cfg);
+  $("userProfileUserId").value = String(res.user_id || "");
+  $("userProfileName").value = String(res.user_name || "");
+  $("userProfileRole").value = String(res.role || "");
+  $("userProfileStatus").value = String(res.status || "");
+  $("userProfileApiKeyId").value = String(res.api_key_id || "");
+  return res;
+}
+
+async function loadUserApiKeys(cfgOverride = null) {
+  const cfg = cfgOverride || requireConfig();
+  const res = await apiRequest("/user/api-keys", {}, cfg);
+  state.tables.userApiKeys.setData(res.items || []);
+  return res;
 }
 
 async function loadTradeStrategies(cfgOverride = null) {
@@ -1718,7 +2786,6 @@ async function loadAccountsByApiKey(cfgOverride = null) {
     if (!$("cancelOrderAccountId").value) $("cancelOrderAccountId").value = String(ids[0]);
     if (!$("ccxtAccountId").value) $("ccxtAccountId").value = String(ids[0]);
     if (!$("changeOrderAccountId").value) $("changeOrderAccountId").value = String(ids[0]);
-    if (!$("cancelAllAccountId").value) $("cancelAllAccountId").value = String(ids[0]);
     if (!$("positionChangeAccountId").value) $("positionChangeAccountId").value = String(ids[0]);
     if (!$("closeByAccountId").value) $("closeByAccountId").value = String(ids[0]);
     if (!$("riskAccountId").value) $("riskAccountId").value = String(ids[0]);
@@ -1772,6 +2839,7 @@ function bindForms() {
         $("baseUrl").value = loginBaseUrl;
         $("apiKey").value = key;
         persistCurrentValues();
+        await reloadUiLogsForCurrentScope();
         await loadAccountsByApiKey({ baseUrl: loginBaseUrl, apiKey: key, viewAccountIds: [] });
         await loadTradeStrategies({ baseUrl: loginBaseUrl, apiKey: key, viewAccountIds: [] });
         eventLog("login_api_key_ok", { base_url: loginBaseUrl });
@@ -1794,6 +2862,7 @@ function bindForms() {
         $("apiKey").value = token;
         state.userRole = String(json.role || "").trim().toLowerCase();
         persistCurrentValues();
+        await reloadUiLogsForCurrentScope();
         await loadAccountsByApiKey({ baseUrl: loginBaseUrl, apiKey: token, viewAccountIds: [] });
         await loadTradeStrategies({ baseUrl: loginBaseUrl, apiKey: token, viewAccountIds: [] });
         eventLog("login_user_password_ok", {
@@ -1846,8 +2915,6 @@ function bindForms() {
       eventLog("accounts_error", { error: String(err) });
     }
   });
-  $("clearOpenPositionsBtn").addEventListener("click", () => state.tables.openPositions.clearData());
-  $("clearOpenOrdersBtn").addEventListener("click", () => state.tables.openOrders.clearData());
   $("refreshOpenPositionsBtn").addEventListener("click", async () => {
     try {
       await refreshOpenPositionsTable();
@@ -1864,38 +2931,256 @@ function bindForms() {
       eventLog("refresh_open_orders_error", { error: String(err) });
     }
   });
-  $("clearHistoryPositionsBtn").addEventListener("click", () => state.tables.historyPositions.clearData());
-  $("clearHistoryOrdersBtn").addEventListener("click", () => state.tables.historyOrders.clearData());
-  $("clearDealsBtn").addEventListener("click", () => state.tables.deals.clearData());
+  $("refreshDealsBtn").addEventListener("click", async () => {
+    try {
+      await refreshHistoryTable("deals", true);
+      eventLog("refresh_deals_ok", {});
+    } catch (err) {
+      eventLog("refresh_deals_error", { error: String(err) });
+    }
+  });
+  $("refreshHistoryPositionsBtn").addEventListener("click", async () => {
+    try {
+      await refreshHistoryTable("historyPositions", true);
+      eventLog("refresh_history_positions_ok", {});
+    } catch (err) {
+      eventLog("refresh_history_positions_error", { error: String(err) });
+    }
+  });
+  $("refreshHistoryOrdersBtn").addEventListener("click", async () => {
+    try {
+      await refreshHistoryTable("historyOrders", true);
+      eventLog("refresh_history_orders_ok", {});
+    } catch (err) {
+      eventLog("refresh_history_orders_error", { error: String(err) });
+    }
+  });
+
+  for (const key of OMS_PAGER_KEYS) {
+    const prevBtn = document.getElementById(`${key}PrevPageBtn`);
+    const nextBtn = document.getElementById(`${key}NextPageBtn`);
+    const pageInput = document.getElementById(`${key}PageInput`);
+    const pageSize = document.getElementById(`${key}PageSize`);
+    const copyBtn = document.getElementById(`${key}CopyBtn`);
+    const exportCsvBtn = document.getElementById(`${key}ExportCsvBtn`);
+    const exportExcelBtn = document.getElementById(`${key}ExportExcelBtn`);
+    const exportJsonBtn = document.getElementById(`${key}ExportJsonBtn`);
+    const exportHtmlBtn = document.getElementById(`${key}ExportHtmlBtn`);
+    if (prevBtn) {
+      prevBtn.addEventListener("click", async () => {
+        try {
+          await goToOmsPage(key, (state.omsPager[key]?.page || 1) - 1);
+        } catch (err) {
+          eventLog("oms_pager_prev_error", { key, error: String(err) });
+        }
+      });
+    }
+    if (nextBtn) {
+      nextBtn.addEventListener("click", async () => {
+        try {
+          await goToOmsPage(key, (state.omsPager[key]?.page || 1) + 1);
+        } catch (err) {
+          eventLog("oms_pager_next_error", { key, error: String(err) });
+        }
+      });
+    }
+    if (pageInput) {
+      pageInput.addEventListener("keydown", async (ev) => {
+        if (ev.key !== "Enter") return;
+        ev.preventDefault();
+        try {
+          await goToOmsPage(key, Number(pageInput.value || 1));
+        } catch (err) {
+          eventLog("oms_pager_page_input_error", { key, error: String(err) });
+        }
+      });
+      pageInput.addEventListener("blur", async () => {
+        try {
+          await goToOmsPage(key, Number(pageInput.value || 1));
+        } catch (err) {
+          eventLog("oms_pager_page_blur_error", { key, error: String(err) });
+        }
+      });
+    }
+    if (pageSize) {
+      pageSize.addEventListener("change", async () => {
+        try {
+          await setOmsPageSize(key, Number(pageSize.value || state.omsPageSize));
+        } catch (err) {
+          eventLog("oms_pager_size_error", { key, error: String(err) });
+        }
+      });
+    }
+    if (copyBtn) {
+      copyBtn.addEventListener("click", async () => {
+        try {
+          await copyOmsTable(key);
+        } catch (err) {
+          eventLog("oms_copy_error", { key, error: String(err) });
+          uiLog("error", `OMS copy failed (${key})`, { error: String(err) });
+        }
+      });
+    }
+    if (exportCsvBtn) {
+      exportCsvBtn.addEventListener("click", () => {
+        try {
+          exportOmsTable(key, "csv");
+        } catch (err) {
+          eventLog("oms_export_csv_error", { key, error: String(err) });
+        }
+      });
+    }
+    if (exportExcelBtn) {
+      exportExcelBtn.addEventListener("click", () => {
+        try {
+          exportOmsTable(key, "excel");
+        } catch (err) {
+          eventLog("oms_export_excel_error", { key, error: String(err) });
+        }
+      });
+    }
+    if (exportJsonBtn) {
+      exportJsonBtn.addEventListener("click", () => {
+        try {
+          exportOmsTable(key, "json");
+        } catch (err) {
+          eventLog("oms_export_json_error", { key, error: String(err) });
+        }
+      });
+    }
+    if (exportHtmlBtn) {
+      exportHtmlBtn.addEventListener("click", () => {
+        try {
+          exportOmsTable(key, "html");
+        } catch (err) {
+          eventLog("oms_export_html_error", { key, error: String(err) });
+        }
+      });
+    }
+  }
   $("closeByModalCancelBtn").addEventListener("click", () => closeCloseByModal());
   $("closeByModalConfirmBtn").addEventListener("click", async () => {
     try {
       await confirmCloseByModal();
     } catch (err) {
       eventLog("open_position_close_by_inline_error", { error: String(err) });
+      uiLog("error", "Open position action failed (close_by)", { error: String(err) });
     }
   });
-  $("clearCcxtTradesBtn").addEventListener("click", () => state.tables.ccxtTrades.clearData());
-  $("clearCcxtOrdersBtn").addEventListener("click", () => state.tables.ccxtOrders.clearData());
+  $("refreshCcxtOrdersBtn").addEventListener("click", async () => {
+    try {
+      await refreshHistoryTable("ccxtOrders", true);
+      eventLog("refresh_ccxt_orders_ok", {});
+    } catch (err) {
+      eventLog("refresh_ccxt_orders_error", { error: String(err) });
+      uiLog("error", "Refresh CCXT orders failed", { error: String(err) });
+    }
+  });
+  $("refreshCcxtTradesBtn").addEventListener("click", async () => {
+    try {
+      await refreshHistoryTable("ccxtTrades", true);
+      eventLog("refresh_ccxt_trades_ok", {});
+    } catch (err) {
+      eventLog("refresh_ccxt_trades_error", { error: String(err) });
+      uiLog("error", "Refresh CCXT trades failed", { error: String(err) });
+    }
+  });
+  $("postTradingPreviewBtn").addEventListener("click", async () => {
+    try {
+      await loadPostTradingPreview(true);
+      eventLog("post_trading_preview_ok", {});
+    } catch (err) {
+      eventLog("post_trading_preview_error", { error: String(err) });
+      setPostTradingMessage("error", `${t("post_trading.preview_error", "Preview failed")}: ${String(err)}`);
+    }
+  });
+  $("postTradingApplyBtn").addEventListener("click", async () => {
+    try {
+      await applyPostTradingReassign();
+    } catch (err) {
+      const msg = String(err || "");
+      if (msg.includes("post_trading_select_rows")) {
+        setPostTradingMessage("error", t("post_trading.select_rows", "Select one or more rows to apply reassign."));
+      } else if (msg.includes("post_trading_target_strategy_required")) {
+        setPostTradingMessage("error", t("post_trading.target_strategy_required", "Preencha o ID da estratégia alvo (> 0) nas linhas selecionadas."));
+      } else {
+        setPostTradingMessage("error", `${t("post_trading.apply_error", "Apply reassign failed")}: ${msg}`);
+      }
+      eventLog("post_trading_apply_error", { error: String(err) });
+    }
+  });
   $("clearEventsBtn").addEventListener("click", () => state.tables.events.clearData());
-  $("clearUiLogsBtn").addEventListener("click", () => state.tables.uiLogs.clearData());
+  $("clearUiLogsViewBtn").addEventListener("click", () => {
+    state.tables.uiLogs.clearData();
+    state.uiLogSeq = 0;
+    updateUiLogsPagerInfo();
+    uiLog("info", "UI logs view cleared", { scope_hash: currentUiLogScopeHash() });
+  });
+  $("clearUiLogsDbBtn").addEventListener("click", async () => {
+    try {
+      await clearUiLogsStorage();
+      state.tables.uiLogs.clearData();
+      state.uiLogSeq = 0;
+      updateUiLogsPagerInfo();
+      uiLog("warn", "UI logs local db cleared", { scope_hash: currentUiLogScopeHash() });
+    } catch (err) {
+      uiLog("error", "UI logs local db clear failed", { error: String(err) });
+    }
+  });
+  $("uiLogsPrevPageBtn").addEventListener("click", async () => {
+    try {
+      await goToUiLogsPage(Number(state.tables.uiLogs.getPage?.() || 1) - 1);
+    } catch (err) {
+      eventLog("ui_logs_pager_prev_error", { error: String(err) });
+    }
+  });
+  $("uiLogsNextPageBtn").addEventListener("click", async () => {
+    try {
+      await goToUiLogsPage(Number(state.tables.uiLogs.getPage?.() || 1) + 1);
+    } catch (err) {
+      eventLog("ui_logs_pager_next_error", { error: String(err) });
+    }
+  });
+  $("uiLogsPageInput").addEventListener("keydown", async (ev) => {
+    if (ev.key !== "Enter") return;
+    ev.preventDefault();
+    try {
+      await goToUiLogsPage(Number($("uiLogsPageInput").value || 1));
+    } catch (err) {
+      eventLog("ui_logs_pager_input_error", { error: String(err) });
+    }
+  });
+  $("uiLogsPageInput").addEventListener("blur", async () => {
+    try {
+      await goToUiLogsPage(Number($("uiLogsPageInput").value || 1));
+    } catch (err) {
+      eventLog("ui_logs_pager_blur_error", { error: String(err) });
+    }
+  });
+  $("uiLogsPageSize").addEventListener("change", async () => {
+    try {
+      await setUiLogsPageSize(Number($("uiLogsPageSize").value || 100));
+    } catch (err) {
+      eventLog("ui_logs_pager_size_error", { error: String(err) });
+    }
+  });
   $("selectAllAccountsBtn").addEventListener("click", () => {
     for (const opt of $("viewAccountsSelect").options) opt.selected = true;
   });
   $("clearAccountsBtn").addEventListener("click", () => {
     for (const opt of $("viewAccountsSelect").options) opt.selected = false;
   });
-  $("strategyAccountsAllBtn").addEventListener("click", () => {
-    for (const opt of $("strategyAccountIds").options) opt.selected = true;
-  });
-  $("strategyAccountsClearBtn").addEventListener("click", () => {
-    for (const opt of $("strategyAccountIds").options) opt.selected = false;
-  });
   $("tradeStrategyAccountsAllBtn").addEventListener("click", () => {
     for (const opt of $("tradeStrategyAccountIds").options) opt.selected = true;
   });
   $("tradeStrategyAccountsClearBtn").addEventListener("click", () => {
     for (const opt of $("tradeStrategyAccountIds").options) opt.selected = false;
+  });
+  $("goToCreateStrategyBtn").addEventListener("click", () => {
+    switchTab("strategies");
+    const node = document.getElementById("tradeCreateStrategyForm");
+    const nameInput = node ? node.querySelector("input[name='name']") : null;
+    if (nameInput && typeof nameInput.focus === "function") nameInput.focus();
   });
   const applyCcxtMode = () => {
     const mode = $("ccxtMode").value;
@@ -1934,17 +3219,45 @@ function bindForms() {
       let symbols = [];
       if (Array.isArray(result)) {
         symbols = result
-          .map((item) => (item && typeof item === "object" ? String(item.symbol || "") : ""))
-          .filter((s) => s.includes("/"));
+          .map((item) => {
+            if (!item || typeof item !== "object") return "";
+            const symbol = String(item.symbol || "").trim();
+            if (symbol) return symbol;
+            const id = String(item.id || "").trim();
+            if (id) return id;
+            const base = String(item.base || "").trim();
+            const quote = String(item.quote || "").trim();
+            if (base && quote) return `${base}/${quote}`;
+            return "";
+          })
+          .filter((s) => !!s);
       } else if (result && typeof result === "object") {
-        symbols = Object.keys(result).filter((s) => String(s).includes("/"));
+        symbols = Object.entries(result).map(([key, value]) => {
+          const k = String(key || "").trim();
+          const v = (value && typeof value === "object") ? value : {};
+          const symbol = String(v.symbol || "").trim();
+          if (symbol) return symbol;
+          if (k) return k;
+          const id = String(v.id || "").trim();
+          if (id) return id;
+          const base = String(v.base || "").trim();
+          const quote = String(v.quote || "").trim();
+          if (base && quote) return `${base}/${quote}`;
+          return "";
+        }).filter((s) => !!s);
       }
       symbols = [...new Set(symbols)].sort();
       renderHistory("symbolHistory", symbols.slice(0, 2000));
       if (!$("sendSymbol").value && symbols[0]) $("sendSymbol").value = symbols[0];
       eventLog("load_symbols", { account_id: accountId, count: symbols.length });
+      uiLog("info", "Load symbols ok", {
+        account_id: accountId,
+        count: symbols.length,
+        sample: symbols.slice(0, 5),
+      });
     } catch (err) {
       eventLog("load_symbols_error", { error: String(err) });
+      uiLog("error", "Load symbols failed", { error: String(err) });
     }
   });
 
@@ -1964,18 +3277,33 @@ function bindForms() {
           order_type: String(fd.get("order_type") || "market"),
           qty: String(fd.get("qty") || ""),
           strategy_id: strategyId,
-          position_id: 0,
+          position_id: Number(fd.get("position_id") || 0) || 0,
+          post_only: fd.get("post_only") === "on",
           reduce_only: fd.get("reduce_only") === "on",
         },
       };
+      const tif = String(fd.get("time_in_force") || "").trim();
       const price = String(fd.get("price") || "").trim();
+      const triggerPrice = String(fd.get("trigger_price") || "").trim();
+      const stopPrice = String(fd.get("stop_price") || "").trim();
+      const takeProfitPrice = String(fd.get("take_profit_price") || "").trim();
+      const trailingAmount = String(fd.get("trailing_amount") || "").trim();
+      const trailingPercent = String(fd.get("trailing_percent") || "").trim();
       if (price) body.payload.price = price;
-      const stopLoss = String(fd.get("stop_loss") || "").trim();
-      const stopGain = String(fd.get("stop_gain") || "").trim();
+      if (tif) body.payload.time_in_force = tif;
+      if (triggerPrice) body.payload.trigger_price = triggerPrice;
+      if (stopPrice) body.payload.stop_price = stopPrice;
+      if (takeProfitPrice) body.payload.take_profit_price = takeProfitPrice;
+      if (trailingAmount) body.payload.trailing_amount = trailingAmount;
+      if (trailingPercent) body.payload.trailing_percent = trailingPercent;
+      const stopLoss = String(fd.get("oms_stop_loss") || "").trim();
+      const stopGain = String(fd.get("oms_stop_gain") || "").trim();
       const comment = String(fd.get("comment") || "").trim();
-      if (stopLoss) body.payload.stop_loss = stopLoss;
-      if (stopGain) body.payload.stop_gain = stopGain;
+      const paramsJson = String(fd.get("params_json") || "").trim();
+      if (stopLoss) body.payload.oms_stop_loss = stopLoss;
+      if (stopGain) body.payload.oms_stop_gain = stopGain;
       if (comment) body.payload.comment = comment;
+      if (paramsJson) body.payload.params = parseJsonInput(paramsJson, {});
       const out = await apiRequest("/oms/commands", { method: "POST", body }, cfg);
       eventLog("send_order", out);
     } catch (err) {
@@ -2011,7 +3339,7 @@ function bindForms() {
   $("cancelAllBtn").addEventListener("click", async () => {
     try {
       const cfg = requireConfig();
-      const accountId = requireAccountId("cancelAllAccountId", "cancel_all_orders");
+      const accountId = requireAccountId("cancelOrderAccountId", "cancel_all_orders");
       const strategiesCsv = String($("cancelAllStrategyIdsCsv").value || "").trim();
       const strategyIds = parseCsvIntList(strategiesCsv);
       const body = {
@@ -2057,14 +3385,14 @@ function bindForms() {
       const fd = new FormData(ev.currentTarget);
       const positionId = Number(fd.get("position_id"));
       const payload = { position_id: positionId };
-      const stopLoss = String(fd.get("stop_loss") || "").trim();
-      const stopGain = String(fd.get("stop_gain") || "").trim();
+      const stopLoss = String(fd.get("oms_stop_loss") || "").trim();
+      const stopGain = String(fd.get("oms_stop_gain") || "").trim();
       const comment = String(fd.get("comment") || "").trim();
       const useStopLoss = $("positionChangeUseStopLoss").checked;
       const useStopGain = $("positionChangeUseStopGain").checked;
       const useComment = $("positionChangeUseComment").checked;
-      if (useStopLoss) payload.stop_loss = stopLoss ? stopLoss : null;
-      if (useStopGain) payload.stop_gain = stopGain ? stopGain : null;
+      if (useStopLoss) payload.oms_stop_loss = stopLoss ? stopLoss : null;
+      if (useStopGain) payload.oms_stop_gain = stopGain ? stopGain : null;
       if (useComment) payload.comment = comment ? comment : null;
       if (!useStopLoss && !useStopGain && !useComment) {
         throw new Error("marque ao menos um campo para alterar");
@@ -2085,15 +3413,20 @@ function bindForms() {
       const fd = new FormData(ev.currentTarget);
       const positionId = Number(fd.get("position_id"));
       if (!Number.isFinite(positionId) || positionId <= 0) throw new Error("position_id is required");
-      const orderType = String(fd.get("order_type") || "market").trim() || "market";
-      const price = String(fd.get("price") || "").trim();
+      const stopLoss = String(fd.get("oms_stop_loss") || "").trim();
+      const stopGain = String(fd.get("oms_stop_gain") || "").trim();
       const comment = String(fd.get("comment") || "").trim();
+      const paramsJson = String(fd.get("params_json") || "").trim();
       const payload = {
         position_id: positionId,
-        order_type: orderType,
+        order_type: "market",
+        post_only: fd.get("post_only") === "on",
+        reduce_only: fd.get("reduce_only") === "on",
       };
-      if (price) payload.price = price;
+      if (stopLoss) payload.oms_stop_loss = stopLoss;
+      if (stopGain) payload.oms_stop_gain = stopGain;
       if (comment) payload.comment = comment;
+      if (paramsJson) payload.params = parseJsonInput(paramsJson, {});
       const body = { account_id: accountId, command: "close_position", payload };
       const out = await apiRequest("/oms/commands", { method: "POST", body }, cfg);
       eventLog("close_position", { account_id: accountId, position_id: positionId, out });
@@ -2112,6 +3445,7 @@ function bindForms() {
       const positionIdB = Number(fd.get("position_id_b"));
       if (!Number.isFinite(positionIdA) || positionIdA <= 0) throw new Error("position_id_a is required");
       if (!Number.isFinite(positionIdB) || positionIdB <= 0) throw new Error("position_id_b is required");
+      const qtyRaw = String(fd.get("qty") || "").trim();
       const body = {
         account_id: accountId,
         command: "close_by",
@@ -2120,10 +3454,39 @@ function bindForms() {
           position_id_b: positionIdB,
         },
       };
+      if (qtyRaw) body.payload.qty = qtyRaw;
       const out = await apiRequest("/oms/commands", { method: "POST", body }, cfg);
       eventLog("close_by", { account_id: accountId, out });
     } catch (err) {
       eventLog("close_by_error", { error: String(err) });
+    }
+  });
+
+  $("mergePositionsForm").addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    try {
+      const cfg = requireConfig();
+      const accountId = requireAccountId("mergePositionsAccountId", "merge_positions");
+      const fd = new FormData(ev.currentTarget);
+      const sourceId = Number(fd.get("source_position_id"));
+      const targetId = Number(fd.get("target_position_id"));
+      if (!Number.isFinite(sourceId) || sourceId <= 0) throw new Error("source_position_id is required");
+      if (!Number.isFinite(targetId) || targetId <= 0) throw new Error("target_position_id is required");
+      if (sourceId === targetId) throw new Error("source_position_id and target_position_id must differ");
+      const payload = {
+        source_position_id: sourceId,
+        target_position_id: targetId,
+        stop_mode: String(fd.get("stop_mode") || "keep").trim() || "keep",
+      };
+      const stopLoss = String(fd.get("oms_stop_loss") || "").trim();
+      const stopGain = String(fd.get("oms_stop_gain") || "").trim();
+      if (stopLoss) payload.oms_stop_loss = stopLoss;
+      if (stopGain) payload.oms_stop_gain = stopGain;
+      const body = { account_id: accountId, command: "merge_positions", payload };
+      const out = await apiRequest("/oms/commands", { method: "POST", body }, cfg);
+      eventLog("merge_positions", { account_id: accountId, out });
+    } catch (err) {
+      eventLog("merge_positions_error", { error: String(err) });
     }
   });
 
@@ -2192,6 +3555,88 @@ function bindForms() {
     }
   });
 
+  $("userProfileForm").addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    try {
+      const cfg = requireConfig();
+      const userName = String($("userProfileName").value || "").trim();
+      if (!userName) throw new Error("user_name is required");
+      const out = await apiRequest("/user/profile", {
+        method: "PATCH",
+        body: { user_name: userName },
+      }, cfg);
+      eventLog("user_profile_update", out);
+      await loadUserProfile(cfg);
+      setUserMessage("success", t("user.profile_updated", "Perfil atualizado com sucesso."));
+    } catch (err) {
+      eventLog("user_profile_update_error", { error: String(err) });
+      setUserMessage("error", `${t("user.profile_update_error", "Erro ao atualizar perfil")}: ${String(err)}`);
+    }
+  });
+
+  $("userPasswordForm").addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    try {
+      const cfg = requireConfig();
+      const currentPassword = String($("userCurrentPassword").value || "");
+      const newPassword = String($("userNewPassword").value || "");
+      if (!currentPassword || !newPassword) throw new Error("current_password and new_password are required");
+      const out = await apiRequest("/user/password", {
+        method: "POST",
+        body: { current_password: currentPassword, new_password: newPassword },
+      }, cfg);
+      eventLog("user_password_update", out);
+      $("userCurrentPassword").value = "";
+      $("userNewPassword").value = "";
+      setUserMessage("success", t("user.password_updated", "Senha atualizada com sucesso."));
+    } catch (err) {
+      eventLog("user_password_update_error", { error: String(err) });
+      setUserMessage("error", `${t("user.password_update_error", "Erro ao atualizar senha")}: ${String(err)}`);
+    }
+  });
+
+  $("userCreateApiKeyForm").addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    try {
+      const cfg = requireConfig();
+      const apiKeyRaw = String($("userNewApiKeyValue").value || "").trim();
+      const body = {};
+      if (apiKeyRaw) body.api_key = apiKeyRaw;
+      const out = await apiRequest("/user/api-keys", {
+        method: "POST",
+        body,
+      }, cfg);
+      eventLog("user_create_api_key", out);
+      $("userNewApiKeyValue").value = "";
+      const box = $("userCreatedApiKeyBox");
+      box.textContent = t("user.api_key_created", "API Key criada. id={api_key_id} key={key}")
+        .replace("{api_key_id}", String(out.api_key_id || ""))
+        .replace("{key}", String(out.api_key_plain || ""));
+      box.classList.remove("is-hidden", "notice-error");
+      box.classList.add("notice-info");
+      await loadUserApiKeys(cfg);
+      setUserMessage("success", t("user.api_key_created_success", "API Key criada com sucesso."));
+    } catch (err) {
+      eventLog("user_create_api_key_error", { error: String(err) });
+      const box = $("userCreatedApiKeyBox");
+      box.textContent = `${t("user.api_key_create_error", "Erro ao criar API Key")}: ${String(err)}`;
+      box.classList.remove("is-hidden", "notice-info");
+      box.classList.add("notice-error");
+      setUserMessage("error", `${t("user.api_key_create_error", "Erro ao criar API Key")}: ${String(err)}`);
+    }
+  });
+
+  $("loadUserApiKeysBtn").addEventListener("click", async () => {
+    try {
+      const cfg = requireConfig();
+      await Promise.all([loadUserProfile(cfg), loadUserApiKeys(cfg)]);
+      setUserMessage("info", t("user.reloaded", "Dados do usuário recarregados."));
+    } catch (err) {
+      eventLog("user_load_error", { error: String(err) });
+      setUserMessage("error", `${t("user.load_error", "Erro ao carregar dados do usuário")}: ${String(err)}`);
+    }
+  });
+
   $("adminCreateUserApiKeyForm").addEventListener("submit", async (ev) => {
     ev.preventDefault();
     try {
@@ -2220,32 +3665,77 @@ function bindForms() {
     }
   });
 
-  $("adminCreateStrategyForm").addEventListener("submit", async (ev) => {
-    ev.preventDefault();
+  const adminOmsViewTabs = document.getElementById("adminOmsViewTabs");
+  if (adminOmsViewTabs) {
+    const syncFromTabs = () => {
+      const active = String(adminOmsViewTabs.active || adminOmsViewTabs.getAttribute("active") || "open_orders");
+      state.adminOmsView = active || "open_orders";
+    };
+    syncFromTabs();
+    adminOmsViewTabs.addEventListener("click", async (ev) => {
+      const tabEl = ev.target && ev.target.closest ? ev.target.closest("wa-tab") : null;
+      const panel = String(tabEl?.getAttribute?.("panel") || "").trim();
+      if (!panel) return;
+      state.adminOmsView = panel;
+      adminOmsViewTabs.active = panel;
+      adminOmsViewTabs.setAttribute("active", panel);
+      try {
+        await loadAdminOms(true);
+      } catch (err) {
+        eventLog("admin_oms_change_view_error", { error: String(err) });
+      }
+    });
+    adminOmsViewTabs.addEventListener("wa-tab-show", async () => {
+      syncFromTabs();
+      try {
+        await loadAdminOms(true);
+      } catch (err) {
+        eventLog("admin_oms_change_view_error", { error: String(err) });
+      }
+    });
+  }
+  $("adminOmsLoadBtn").addEventListener("click", async () => {
     try {
-      const cfg = requireConfig();
-      const fd = new FormData(ev.currentTarget);
-      const accountIds = selectedStrategyAccountIds();
-      const out = await apiRequest("/admin/strategies", {
-        method: "POST",
-        body: {
-          name: String(fd.get("name") || "").trim(),
-          account_ids: accountIds,
-          client_strategy_id: parseNullablePositiveInt(fd.get("client_strategy_id"), "client_strategy_id"),
-        },
-      }, cfg);
-      eventLog("admin_create_strategy", out);
-      await loadStrategies(cfg);
+      await loadAdminOms(true);
+      setAdminOmsMessage("info", "");
+      eventLog("admin_oms_load", { ok: true });
     } catch (err) {
-      eventLog("admin_create_strategy_error", { error: String(err) });
+      eventLog("admin_oms_load_error", { error: String(err) });
+      setAdminOmsMessage("error", `${t("admin.oms_load_error", "Erro ao carregar Admin OMS")}: ${String(err)}`);
+      uiLog("error", "Admin OMS load failed", { error: String(err) });
     }
   });
-  $("loadStrategiesBtn").addEventListener("click", async () => {
+  $("adminOmsAddRowBtn").addEventListener("click", () => addAdminOmsRow());
+  $("adminOmsSaveSelectedBtn").addEventListener("click", async () => {
     try {
-      await loadStrategies();
-      eventLog("admin_load_strategies", { ok: true });
+      await saveSelectedAdminOmsRows();
     } catch (err) {
-      eventLog("admin_load_strategies_error", { error: String(err) });
+      eventLog("admin_oms_save_error", { error: String(err) });
+      const msg = String(err || "");
+      if (msg.includes("admin_oms_unlock_required")) {
+        setAdminOmsMessage("error", t("admin.oms_unlock_before_save", "Ative 'Unlock dangerous mode' antes de salvar."));
+      } else if (msg.includes("admin_oms_select_rows")) {
+        setAdminOmsMessage("error", t("admin.oms_select_rows", "Selecione uma ou mais linhas no checkbox da esquerda."));
+      } else {
+        setAdminOmsMessage("error", `${t("admin.oms_save_error", "Erro ao salvar")}: ${msg}`);
+      }
+      uiLog("error", "Admin OMS save failed", { error: String(err) });
+    }
+  });
+  $("adminOmsDeleteSelectedBtn").addEventListener("click", async () => {
+    try {
+      await deleteSelectedAdminOmsRows();
+    } catch (err) {
+      eventLog("admin_oms_delete_error", { error: String(err) });
+      const msg = String(err || "");
+      if (msg.includes("admin_oms_unlock_required")) {
+        setAdminOmsMessage("error", t("admin.oms_unlock_before_delete", "Ative 'Unlock dangerous mode' antes de deletar."));
+      } else if (msg.includes("admin_oms_select_rows")) {
+        setAdminOmsMessage("error", t("admin.oms_select_rows", "Selecione uma ou mais linhas no checkbox da esquerda."));
+      } else {
+        setAdminOmsMessage("error", `${t("admin.oms_delete_error", "Erro ao deletar")}: ${msg}`);
+      }
+      uiLog("error", "Admin OMS delete failed", { error: String(err) });
     }
   });
   $("loadAdminAccountsBtn").addEventListener("click", async () => {
@@ -2272,6 +3762,35 @@ function bindForms() {
       eventLog("admin_load_users_error", { error: String(err) });
     }
   });
+  $("adminCreateApiKeyForm").addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    try {
+      const cfg = requireConfig();
+      const userId = Number($("adminApiKeyUserId").value || 0);
+      if (!Number.isFinite(userId) || userId <= 0) throw new Error("user_id inválido");
+      const apiKeyRaw = String($("adminApiKeyValue").value || "").trim();
+      const body = { user_id: userId };
+      if (apiKeyRaw) body.api_key = apiKeyRaw;
+      const out = await apiRequest("/admin/api-keys", {
+        method: "POST",
+        body,
+      }, cfg);
+      eventLog("admin_create_api_key", out);
+      const plain = String(out.api_key_plain || "");
+      setAdminApiKeyMessage(
+        "success",
+        t("admin.api_key_created", "API Key criada. user_id={user_id} api_key_id={api_key_id} key={key}")
+          .replace("{user_id}", String(out.user_id))
+          .replace("{api_key_id}", String(out.api_key_id))
+          .replace("{key}", plain),
+      );
+      await loadAdminUsersKeys(cfg);
+    } catch (err) {
+      eventLog("admin_create_api_key_error", { error: String(err) });
+      setAdminApiKeyMessage("error", `${t("admin.api_key_create_error", "Erro ao criar API Key")}: ${String(err)}`);
+      uiLog("error", "Admin create API key failed", { error: String(err) });
+    }
+  });
   $("loadCcxtExchangesBtn").addEventListener("click", async () => {
     try {
       await loadCcxtExchanges();
@@ -2296,7 +3815,6 @@ function bindForms() {
       }, cfg);
       eventLog("trade_create_strategy", out);
       await loadTradeStrategies(cfg);
-      await loadStrategies(cfg);
     } catch (err) {
       eventLog("trade_create_strategy_error", { error: String(err) });
     }
@@ -2451,35 +3969,67 @@ function bindForms() {
 }
 
 function switchTab(tab) {
-  const allowedTabs = new Set(["login", "commands", "positions", "system", "strategies", "risk", "admin"]);
+  const allowedTabs = new Set([
+    "login",
+    "user",
+    "commands",
+    "positions",
+    "postTrading",
+    "system",
+    "strategies",
+    "risk",
+    "admin",
+    "adminUsers",
+    "adminApiKeys",
+    "adminOms",
+  ]);
   const nextTab = allowedTabs.has(tab) ? tab : "login";
   localStorage.setItem(STORAGE.activeMenu, nextTab);
   const isLogin = nextTab === "login";
+  const isUser = nextTab === "user";
   const isCommands = nextTab === "commands";
   const isPositions = nextTab === "positions";
+  const isPostTrading = nextTab === "postTrading";
   const isSystem = nextTab === "system";
   const isStrategies = nextTab === "strategies";
   const isRisk = nextTab === "risk";
   const isAdmin = nextTab === "admin";
+  const isAdminUsers = nextTab === "adminUsers";
+  const isAdminApiKeys = nextTab === "adminApiKeys";
+  const isAdminOms = nextTab === "adminOms";
   const setMenuActive = (id, active) => {
     const node = $(id);
     node.classList.toggle("active", active);
     node.setAttribute("variant", "neutral");
   };
   setMenuActive("tabLoginBtn", isLogin);
+  setMenuActive("tabUserBtn", isUser);
   setMenuActive("tabCommandsBtn", isCommands);
   setMenuActive("tabPositionsBtn", isPositions);
+  setMenuActive("tabPostTradingBtn", isPostTrading);
   setMenuActive("tabSystemBtn", isSystem);
   setMenuActive("tabStrategiesBtn", isStrategies);
   setMenuActive("tabRiskBtn", isRisk);
   setMenuActive("tabAdminBtn", isAdmin);
+  setMenuActive("tabAdminUsersBtn", isAdminUsers);
+  setMenuActive("tabAdminApiKeysBtn", isAdminApiKeys);
+  setMenuActive("tabAdminOmsBtn", isAdminOms);
+  const inAdminGroup = isAdmin || isAdminUsers || isAdminApiKeys || isAdminOms;
+  $("tabAdminGroupBtn").classList.toggle("active", inAdminGroup);
+  $("adminSubmenu").classList.toggle("is-hidden", !inAdminGroup);
   $("loginPanel").classList.toggle("is-hidden", !isLogin);
+  $("userPanel").classList.toggle("is-hidden", !isUser);
   $("commandsPanel").classList.toggle("is-hidden", !isCommands);
   $("positionsPanel").classList.toggle("is-hidden", !isPositions);
+  $("postTradingPanel").classList.toggle("is-hidden", !isPostTrading);
   $("systemPanel").classList.toggle("is-hidden", !isSystem);
   $("strategiesPanel").classList.toggle("is-hidden", !isStrategies);
   $("riskPanel").classList.toggle("is-hidden", !isRisk);
-  $("adminPanel").classList.toggle("is-hidden", !isAdmin);
+  $("adminPanel").classList.toggle("is-hidden", !(isAdmin || isAdminUsers || isAdminApiKeys));
+  $("adminOmsPanel").classList.toggle("is-hidden", !isAdminOms);
+  $("adminAccountsSection").classList.toggle("is-hidden", !isAdmin);
+  $("adminUsersSection").classList.toggle("is-hidden", !isAdminUsers);
+  $("adminApiKeysSection").classList.toggle("is-hidden", !isAdminApiKeys);
   // Keep navigation predictable: every menu change starts at top.
   window.scrollTo({ top: 0, left: 0, behavior: "auto" });
   const mainContent = document.querySelector(".main-content");
@@ -2487,14 +4037,33 @@ function switchTab(tab) {
     mainContent.scrollTo({ top: 0, left: 0, behavior: "auto" });
   }
   if (isAdmin) {
-    Promise.all([
-      loadStrategies(),
-      loadAdminAccounts(),
-      loadAdminUsers(),
-      loadAdminUsersKeys(),
-      loadCcxtExchanges(),
-    ]).catch((err) => {
-      eventLog("admin_load_error", { error: String(err) });
+    Promise.all([loadAdminAccounts(), loadCcxtExchanges()]).catch((err) => {
+      eventLog("admin_load_accounts_error", { error: String(err) });
+    });
+  }
+  if (isAdminUsers) {
+    Promise.all([loadAdminUsers()]).catch((err) => {
+      eventLog("admin_load_users_error", { error: String(err) });
+    });
+  }
+  if (isAdminApiKeys) {
+    Promise.all([loadAdminUsersKeys()]).catch((err) => {
+      eventLog("admin_load_users_keys_error", { error: String(err) });
+    });
+  }
+  if (isAdminOms) {
+    loadAdminOms(true).catch((err) => {
+      eventLog("admin_oms_load_error", { error: String(err) });
+    });
+  }
+  if (isUser) {
+    Promise.all([loadUserProfile(), loadUserApiKeys()]).catch((err) => {
+      eventLog("user_load_error", { error: String(err) });
+    });
+  }
+  if (isPostTrading) {
+    loadPostTradingPreview(true).catch((err) => {
+      eventLog("post_trading_load_error", { error: String(err) });
     });
   }
   if (isCommands || isStrategies) {
@@ -2528,7 +4097,7 @@ function bootstrapDefaults() {
   const accountDefault = accounts[0] ? String(accounts[0]) : "1";
   $("sendAccountId").value = accountDefault;
   $("ccxtAccountId").value = accountDefault;
-  $("cancelAllAccountId").value = accountDefault;
+  $("cancelOrderAccountId").value = accountDefault;
   $("closePositionAccountId").value = accountDefault;
   $("riskAccountId").value = accountDefault;
   $("riskStrategyAccountId").value = accountDefault;
@@ -2548,12 +4117,425 @@ function bootstrapDefaults() {
     exchangeSelect.appendChild(opt);
     exchangeSelect.value = "binance";
   }
+  applyDefaultHistoryDates();
+  for (const key of OMS_PAGER_KEYS) {
+    const sizeNode = document.getElementById(`${key}PageSize`);
+    const size = Math.max(1, Number(sizeNode?.value || state.omsPageSize));
+    state.omsPager[key] = { page: 1, pageSize: size, total: 0, totalPages: 1 };
+    updatePagerInfo(key);
+  }
   renderAllHistories();
+}
+
+function adminOmsCurrentView() {
+  return String(state.adminOmsView || "open_orders");
+}
+
+function setPostTradingMessage(kind, text) {
+  const node = document.getElementById("postTradingMessage");
+  if (!node) return;
+  if (!text) {
+    node.textContent = "";
+    node.classList.add("is-hidden");
+    node.classList.remove("notice-success", "notice-error", "notice-info");
+    return;
+  }
+  node.textContent = String(text);
+  node.classList.remove("is-hidden", "notice-success", "notice-error", "notice-info");
+  if (kind === "success") node.classList.add("notice-success");
+  else if (kind === "error") node.classList.add("notice-error");
+  else node.classList.add("notice-info");
+  uiLog(kind, String(text), { source: "post_trading" });
+}
+
+function postTradingAccountIdsCsv() {
+  const manual = String(document.getElementById("postTradingAccountIds")?.value || "").trim();
+  if (manual) return manual;
+  const ids = getSelectedViewAccountIds();
+  if (ids.length > 0) return ids.join(",");
+  return "";
+}
+
+function postTradingFilters(resetPage = false) {
+  const pager = state.omsPager.postTrading;
+  const page = resetPage ? 1 : Math.max(1, Number(pager?.page || 1));
+  const pageSize = Math.max(1, Number(pager?.pageSize || state.omsPageSize));
+  const startDate = String(document.getElementById("postTradingStartDate")?.value || "").trim();
+  const endDate = String(document.getElementById("postTradingEndDate")?.value || "").trim();
+  const reconciledNode = document.getElementById("postTradingReconciled");
+  const reconciledValues = reconciledNode
+    ? [...reconciledNode.selectedOptions].map((opt) => String(opt.value || "").trim().toLowerCase()).filter((x) => !!x)
+    : ["true", "false"];
+  const statusesCsv = String(document.getElementById("postTradingOrderStatuses")?.value || "").trim();
+  const reconciledSet = new Set(reconciledValues);
+  const hasTrue = reconciledSet.has("true");
+  const hasFalse = reconciledSet.has("false");
+  const reconciled = hasTrue && !hasFalse ? true : hasFalse && !hasTrue ? false : undefined;
+  const orderStatuses = statusesCsv
+    ? statusesCsv.split(",").map((x) => String(x || "").trim()).filter((x) => !!x)
+    : [];
+  return {
+    account_ids: postTradingAccountIdsCsv(),
+    start_date: startDate || null,
+    end_date: endDate || null,
+    ...(reconciled === undefined ? {} : { reconciled }),
+    reconciled_values: reconciledValues,
+    order_statuses: orderStatuses,
+    kinds: ["order"],
+    preview: true,
+    page,
+    page_size: pageSize,
+  };
+}
+
+async function loadPostTradingPreview(resetPage = false) {
+  const cfg = requireConfig();
+  const body = postTradingFilters(resetPage);
+  const out = await apiRequest("/oms/reassign", { method: "POST", body }, cfg);
+  let items = Array.isArray(out.items) ? out.items : [];
+  const selectedReconciled = new Set((body.reconciled_values || []).map((x) => String(x || "").toLowerCase()));
+  if (selectedReconciled.size > 0 && selectedReconciled.size < 2) {
+    items = items.filter((row) => {
+      const v = row?.reconciled;
+      if (v === null || v === undefined) return false;
+      const key = Boolean(v) ? "true" : "false";
+      return selectedReconciled.has(key);
+    });
+  }
+  const normalizedItems = items.map((row) => {
+    const currentStrategy = Number(row?.strategy_id || 0);
+    return {
+      ...row,
+      target_strategy_id: currentStrategy > 0 ? currentStrategy : null,
+    };
+  });
+  state.tables.postTrading.setData(normalizedItems);
+  state.postTradingLastPreview = out;
+  setPagerFromTotal(
+    "postTrading",
+    Number((out.deals_total || 0) + (out.orders_total || 0)),
+    Number(out.page || body.page),
+    Number(out.page_size || body.page_size),
+  );
+  setPostTradingMessage(
+    "info",
+    t("post_trading.preview_result", "Preview: deals={deals} orders={orders}")
+      .replace("{deals}", String(out.deals_total || 0))
+      .replace("{orders}", String(out.orders_total || 0)),
+  );
+}
+
+async function applyPostTradingReassign() {
+  const table = state.tables.postTrading;
+  if (!table) return;
+  const selected = table.getSelectedData ? table.getSelectedData() : [];
+  if (!Array.isArray(selected) || selected.length === 0) {
+    throw new Error("post_trading_select_rows");
+  }
+  const cfg = requireConfig();
+  const base = postTradingFilters(false);
+  const groups = new Map();
+  for (const row of selected) {
+    const orderId = Number(row?.id || 0);
+    const targetStrategyId = Number(row?.target_strategy_id || 0);
+    if (!Number.isFinite(orderId) || orderId <= 0) continue;
+    if (!Number.isFinite(targetStrategyId) || targetStrategyId <= 0) {
+      throw new Error("post_trading_target_strategy_required");
+    }
+    const key = String(targetStrategyId);
+    if (!groups.has(key)) groups.set(key, { targetStrategyId, orderIds: [] });
+    groups.get(key).orderIds.push(orderId);
+  }
+  if (groups.size === 0) throw new Error("post_trading_select_rows");
+  let dealsUpdated = 0;
+  let ordersUpdated = 0;
+  for (const group of groups.values()) {
+    const out = await apiRequest("/oms/reassign", {
+      method: "POST",
+      body: {
+        ...base,
+        preview: false,
+        target_strategy_id: Number(group.targetStrategyId),
+        order_ids: [...new Set(group.orderIds)],
+      },
+    }, cfg);
+    dealsUpdated += Number(out?.deals_updated || 0);
+    ordersUpdated += Number(out?.orders_updated || 0);
+  }
+  setPostTradingMessage(
+    "success",
+    t("post_trading.apply_result", "Applied: deals_updated={deals} orders_updated={orders}")
+      .replace("{deals}", String(dealsUpdated))
+      .replace("{orders}", String(ordersUpdated)),
+  );
+  eventLog("post_trading_apply", { deals_updated: dealsUpdated, orders_updated: ordersUpdated, groups: groups.size });
+  await loadPostTradingPreview(false);
+}
+
+function adminOmsEntityByView(view) {
+  if (view === "open_orders" || view === "history_orders") return "orders";
+  if (view === "open_positions" || view === "history_positions") return "positions";
+  return "deals";
+}
+
+function adminOmsDateRange() {
+  const start = String(document.getElementById("adminOmsStartDate")?.value || "").trim();
+  const end = String(document.getElementById("adminOmsEndDate")?.value || "").trim();
+  if ((start && !end) || (!start && end)) throw new Error("start_date and end_date must be together");
+  return { start, end };
+}
+
+function adminOmsAccountIdsCsv() {
+  const manual = String(document.getElementById("adminOmsAccountIds")?.value || "").trim();
+  if (manual) return manual;
+  const ids = getSelectedViewAccountIds();
+  if (ids.length > 0) return ids.join(",");
+  return "";
+}
+
+function adminOmsDangerUnlocked() {
+  return Boolean(document.getElementById("adminOmsUnsafeToggle")?.checked);
+}
+
+function confirmAdminOmsAction(message) {
+  return new Promise((resolve) => {
+    const dialog = document.getElementById("adminOmsConfirmDialog");
+    const text = document.getElementById("adminOmsConfirmText");
+    const okBtn = document.getElementById("adminOmsConfirmOkBtn");
+    const cancelBtn = document.getElementById("adminOmsConfirmCancelBtn");
+    if (!dialog || !okBtn || !cancelBtn) {
+      resolve(false);
+      return;
+    }
+    if (text) text.textContent = String(message || "Confirm?");
+    const cleanup = () => {
+      okBtn.removeEventListener("click", onOk);
+      cancelBtn.removeEventListener("click", onCancel);
+      dialog.open = false;
+    };
+    const onOk = () => {
+      cleanup();
+      resolve(true);
+    };
+    const onCancel = () => {
+      cleanup();
+      resolve(false);
+    };
+    okBtn.addEventListener("click", onOk);
+    cancelBtn.addEventListener("click", onCancel);
+    dialog.open = true;
+  });
+}
+
+function normalizeAdminOmsRowForPayload(row) {
+  const out = {};
+  for (const [k, v] of Object.entries(row || {})) {
+    if (k.startsWith("_")) continue;
+    if (v === undefined) continue;
+    out[k] = v;
+  }
+  return out;
+}
+
+function nowUtcSqlDateTime() {
+  const d = new Date();
+  const y = d.getUTCFullYear();
+  const m = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(d.getUTCDate()).padStart(2, "0");
+  const hh = String(d.getUTCHours()).padStart(2, "0");
+  const mm = String(d.getUTCMinutes()).padStart(2, "0");
+  const ss = String(d.getUTCSeconds()).padStart(2, "0");
+  return `${y}-${m}-${day} ${hh}:${mm}:${ss}`;
+}
+
+function ensureAdminOmsInsertDefaults(row) {
+  const out = { ...(row || {}) };
+  const nowTs = nowUtcSqlDateTime();
+  const fillIfEmpty = (key) => {
+    const raw = out[key];
+    const text = String(raw ?? "").trim().toLowerCase();
+    if (raw === null || raw === undefined || text === "" || text === "null") {
+      out[key] = nowTs;
+    }
+  };
+  for (const key of ["created_at", "updated_at", "opened_at", "executed_at"]) {
+    fillIfEmpty(key);
+  }
+  return out;
+}
+
+function assertAdminOmsMutateSuccess(out) {
+  const results = Array.isArray(out?.results) ? out.results : [];
+  const failed = results.filter((item) => item && item.ok === false);
+  if (failed.length === 0) return;
+  const first = failed[0] || {};
+  const msg = String(first.error || "unknown_error");
+  throw new Error(msg);
+}
+
+function adminOmsResultIdsText(out) {
+  const results = Array.isArray(out?.results) ? out.results : [];
+  const ids = results
+    .filter((item) => item && item.ok === true && Number(item.id || 0) > 0)
+    .map((item) => Number(item.id))
+    .filter((id, idx, arr) => arr.indexOf(id) === idx);
+  if (ids.length === 0) return "";
+  return ` IDs: ${ids.join(", ")}`;
+}
+
+async function loadAdminOms(resetPage = false) {
+  const cfg = requireConfig();
+  const view = adminOmsCurrentView();
+  const pager = state.omsPager.adminOms;
+  const page = resetPage ? 1 : Math.max(1, Number(pager?.page || 1));
+  const pageSize = Math.max(1, Number(pager?.pageSize || state.omsPageSize));
+  const { start, end } = adminOmsDateRange();
+  const accountIds = adminOmsAccountIdsCsv();
+  const query = new URLSearchParams({
+    account_ids: accountIds,
+    page: String(page),
+    page_size: String(pageSize),
+  });
+  if (start && end) {
+    query.set("start_date", start);
+    query.set("end_date", end);
+  }
+  const out = await apiRequest(`/admin/oms/${encodeURIComponent(view)}?${query.toString()}`, {}, cfg);
+  const table = state.tables.adminOms;
+  if (table) {
+    const cols = adminOmsColumnsForView(view);
+    table.setColumns(normalizeTabulatorColumns(cols));
+    table.setData(Array.isArray(out.items) ? out.items : []);
+  }
+  setPagerFromTotal("adminOms", Number(out.total || 0), Number(out.page || page), Number(out.page_size || pageSize));
+}
+
+function addAdminOmsRow() {
+  const view = adminOmsCurrentView();
+  const table = state.tables.adminOms;
+  if (!table) return;
+  const fallbackAccountId = Number((getSelectedViewAccountIds()[0] || state.availableAccountIds[0] || 0));
+  const base = {
+    account_id: fallbackAccountId > 0 ? fallbackAccountId : "",
+    created_at: nowUtcSqlDateTime(),
+  };
+  if (view.includes("orders")) {
+    Object.assign(base, {
+      symbol: "BTC/USDT",
+      side: "buy",
+      order_type: "market",
+      status: "SUBMITTED",
+      qty: "0",
+      strategy_id: 0,
+      position_id: 0,
+      reason: "admin",
+      filled_qty: "0",
+    });
+  } else if (view.includes("positions")) {
+    Object.assign(base, {
+      symbol: "BTC/USDT",
+      side: "buy",
+      qty: "0",
+      avg_price: "0",
+      strategy_id: 0,
+      state: "open",
+      reason: "admin",
+    });
+  } else {
+    Object.assign(base, {
+      order_id: null,
+      position_id: 0,
+      symbol: "BTC/USDT",
+      side: "buy",
+      qty: "0",
+      price: "0",
+      strategy_id: 0,
+      reason: "admin",
+      reconciled: true,
+    });
+  }
+  const added = table.addData([base], true);
+  if (added && typeof added.then === "function") {
+    added.then((rows) => {
+      if (Array.isArray(rows) && rows[0] && typeof rows[0].select === "function") rows[0].select();
+    }).catch(() => {});
+    return;
+  }
+  if (Array.isArray(added) && added[0] && typeof added[0].select === "function") added[0].select();
+}
+
+async function saveSelectedAdminOmsRows() {
+  const cfg = requireConfig();
+  const table = state.tables.adminOms;
+  if (!table) return;
+  const rows = table.getSelectedData ? table.getSelectedData() : [];
+  if (!Array.isArray(rows) || rows.length === 0) throw new Error("admin_oms_select_rows");
+  if (!adminOmsDangerUnlocked()) throw new Error("admin_oms_unlock_required");
+  const ok = await confirmAdminOmsAction(
+    t("admin.oms_confirm_save", `Save ${rows.length} row(s) to database?`).replace("{count}", String(rows.length)),
+  );
+  if (!ok) return;
+  const view = adminOmsCurrentView();
+  const entity = adminOmsEntityByView(view);
+  const operations = rows.map((row) => {
+    let payload = normalizeAdminOmsRowForPayload(row);
+    const id = Number(payload.id || 0);
+    if (id <= 0) payload = ensureAdminOmsInsertDefaults(payload);
+    return {
+      op: id > 0 ? "update" : "insert",
+      row: payload,
+    };
+  });
+  const out = await apiRequest(`/admin/oms/${entity}/mutate`, {
+    method: "POST",
+    body: operations,
+  }, cfg);
+  assertAdminOmsMutateSuccess(out);
+  eventLog("admin_oms_save_selected", out);
+  uiLog("info", "Admin OMS save selected", { entity, count: operations.length });
+  setAdminOmsMessage(
+    "success",
+    t("admin.oms_save_success", `Saved successfully (${operations.length} row(s)).`).replace("{count}", String(operations.length))
+      + adminOmsResultIdsText(out),
+  );
+  await loadAdminOms(false);
+}
+
+async function deleteSelectedAdminOmsRows() {
+  const cfg = requireConfig();
+  const table = state.tables.adminOms;
+  if (!table) return;
+  const rows = table.getSelectedData ? table.getSelectedData() : [];
+  if (!Array.isArray(rows) || rows.length === 0) throw new Error("admin_oms_select_rows");
+  if (!adminOmsDangerUnlocked()) throw new Error("admin_oms_unlock_required");
+  const view = adminOmsCurrentView();
+  const entity = adminOmsEntityByView(view);
+  const operations = rows
+    .map((row) => normalizeAdminOmsRowForPayload(row))
+    .filter((row) => Number(row.id || 0) > 0)
+    .map((row) => ({ op: "delete", row: { id: Number(row.id), account_id: Number(row.account_id || 0) || null } }));
+  if (operations.length === 0) throw new Error("only rows with id can be deleted");
+  const ok = await confirmAdminOmsAction(t("admin.oms_confirm_delete", `DELETE ${operations.length} row(s) from database?`).replace("{count}", String(operations.length)));
+  if (!ok) return;
+  const out = await apiRequest(`/admin/oms/${entity}/mutate`, {
+    method: "POST",
+    body: operations,
+  }, cfg);
+  assertAdminOmsMutateSuccess(out);
+  eventLog("admin_oms_delete_selected", out);
+  uiLog("warn", "Admin OMS delete selected", { entity, count: operations.length });
+  setAdminOmsMessage(
+    "success",
+    t("admin.oms_delete_success", `Deleted successfully (${operations.length} row(s)).`).replace("{count}", String(operations.length))
+      + adminOmsResultIdsText(out),
+  );
+  await loadAdminOms(false);
 }
 
 setupTables();
 bootstrapDefaults();
 bindForms();
+loadUiLogsFromStorage().catch(() => {});
 {
   const savedTab = String(localStorage.getItem(STORAGE.activeMenu) || "login").trim();
   switchTab(savedTab);

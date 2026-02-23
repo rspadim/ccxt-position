@@ -11,12 +11,23 @@
         </div>
         <div class="menu">
           <wa-button id="tabLoginBtn" class="tab" variant="neutral"><i class="fa-solid fa-sliders" aria-hidden="true"></i><span>Login / Config</span></wa-button>
+          <wa-button id="tabUserBtn" class="tab" variant="neutral"><i class="fa-solid fa-user" aria-hidden="true"></i><span>Usuário</span></wa-button>
           <wa-button id="tabStrategiesBtn" class="tab" variant="neutral"><i class="fa-solid fa-diagram-project" aria-hidden="true"></i><span>Strategies</span></wa-button>
           <wa-button id="tabPositionsBtn" class="tab" variant="neutral"><i class="fa-solid fa-layer-group" aria-hidden="true"></i><span>OMS</span></wa-button>
+          <wa-button id="tabPostTradingGroupBtn" class="tab" variant="neutral"><i class="fa-solid fa-shuffle" aria-hidden="true"></i><span>Post Trading</span></wa-button>
+          <div id="postTradingSubmenu" class="menu-submenu is-hidden">
+            <wa-button id="tabPostTradingOrdersBtn" class="tab submenu-item" variant="neutral"><i class="fa-solid fa-file-import" aria-hidden="true"></i><span>Ordens Externas</span></wa-button>
+          </div>
           <wa-button id="tabCommandsBtn" class="tab active" variant="brand"><i class="fa-solid fa-terminal" aria-hidden="true"></i><span>CCXT Commands</span></wa-button>
           <wa-button id="tabSystemBtn" class="tab" variant="neutral"><i class="fa-solid fa-wave-square" aria-hidden="true"></i><span>System Monitor</span></wa-button>
           <wa-button id="tabRiskBtn" class="tab" variant="neutral"><i class="fa-solid fa-shield-halved" aria-hidden="true"></i><span>Risk</span></wa-button>
-          <wa-button id="tabAdminBtn" class="tab" variant="neutral"><i class="fa-solid fa-user-gear" aria-hidden="true"></i><span>Admin</span></wa-button>
+          <wa-button id="tabAdminGroupBtn" class="tab" variant="neutral"><i class="fa-solid fa-user-gear" aria-hidden="true"></i><span>Administração</span></wa-button>
+          <div id="adminSubmenu" class="menu-submenu is-hidden">
+            <wa-button id="tabAdminBtn" class="tab submenu-item" variant="neutral"><i class="fa-solid fa-building-columns" aria-hidden="true"></i><span>Contas</span></wa-button>
+            <wa-button id="tabAdminUsersBtn" class="tab submenu-item" variant="neutral"><i class="fa-solid fa-users" aria-hidden="true"></i><span>Usuários</span></wa-button>
+            <wa-button id="tabAdminApiKeysBtn" class="tab submenu-item" variant="neutral"><i class="fa-solid fa-key" aria-hidden="true"></i><span>API Keys</span></wa-button>
+            <wa-button id="tabAdminOmsBtn" class="tab submenu-item" variant="neutral"><i class="fa-solid fa-skull-crossbones" aria-hidden="true"></i><span>OMS CRUD</span></wa-button>
+          </div>
         </div>
         <div class="theme-row">
           <wa-button id="themeModeBtn" variant="neutral" type="button" aria-label="Alternar tema">
@@ -108,121 +119,214 @@
         </section>
       </div>
 
+      <section class="card forms is-hidden" id="userPanel">
+        <h2 data-i18n="menu.user">Usuário</h2>
+        <div id="userMessage" class="notice notice-info is-hidden"></div>
+        <div class="grid cols-2">
+          <form id="userProfileForm">
+            <h3 data-i18n="user.profile">Meu Perfil</h3>
+            <label><span data-i18n="user.user_id">ID do Usuário</span><input id="userProfileUserId" readonly /></label>
+            <label><span data-i18n="user.role">Perfil</span><input id="userProfileRole" readonly /></label>
+            <label><span data-i18n="user.status">Status</span><input id="userProfileStatus" readonly /></label>
+            <label><span data-i18n="user.current_api_key_id">API Key Atual</span><input id="userProfileApiKeyId" readonly /></label>
+            <label><span data-i18n="user.user_name">Nome do Usuário</span><input id="userProfileName" /></label>
+            <wa-button id="userSaveProfileBtn" type="submit" variant="brand" data-i18n="user.save_profile">Salvar Perfil</wa-button>
+          </form>
+          <form id="userPasswordForm">
+            <h3 data-i18n="user.change_password">Alterar Senha</h3>
+            <label><span data-i18n="user.current_password">Senha Atual</span><input id="userCurrentPassword" type="password" /></label>
+            <label><span data-i18n="user.new_password">Nova Senha</span><input id="userNewPassword" type="password" /></label>
+            <wa-button id="userSavePasswordBtn" type="submit" variant="brand" data-i18n="user.save_password">Salvar Senha</wa-button>
+          </form>
+        </div>
+        <div class="card">
+          <form id="userCreateApiKeyForm">
+            <h3 data-i18n="user.api_keys">Minhas API Keys</h3>
+            <label><span data-i18n="user.new_api_key_optional">Nova API Key (opcional)</span><input id="userNewApiKeyValue" placeholder="" /></label>
+            <wa-button id="userCreateApiKeyBtn" type="submit" variant="brand" data-i18n="user.create_api_key">Criar API Key</wa-button>
+          </form>
+          <div id="userCreatedApiKeyBox" class="notice notice-info is-hidden"></div>
+          <div class="actions">
+            <wa-button id="loadUserApiKeysBtn" type="button" variant="neutral" data-i18n="user.load_api_keys">Recarregar API Keys</wa-button>
+          </div>
+          <div id="userApiKeysTable"></div>
+        </div>
+      </section>
+
       <section class="card forms" id="commandsPanel">
         <h2 data-i18n="trade.commands">Commands</h2>
-        <div class="grid cols-2">
+        <wa-tab-group id="commandTabs" class="primary-tabs" active="sendOrder" placement="top" activation="auto">
+          <wa-tab slot="nav" panel="sendOrder" data-i18n="cmd.send_order">Send Order</wa-tab>
+          <wa-tab slot="nav" panel="cancelOrder" data-i18n="cmd.cancel_order">Cancel Order</wa-tab>
+          <wa-tab slot="nav" panel="changeOrder" data-i18n="cmd.change_order">Change Order</wa-tab>
+          <wa-tab slot="nav" panel="positionChange" data-i18n="cmd.position_change">Position Change</wa-tab>
+          <wa-tab slot="nav" panel="positionClose" data-i18n="cmd.position_close">Position Close</wa-tab>
+          <wa-tab slot="nav" panel="positionCloseBy" data-i18n="cmd.position_close_by">Position Close By</wa-tab>
+          <wa-tab slot="nav" panel="mergePositions" data-i18n="cmd.merge_positions">Merge Positions</wa-tab>
+          <wa-tab slot="nav" panel="directCcxt" data-i18n="cmd.direct_ccxt">Direct CCXT Call</wa-tab>
+
+          <wa-tab-panel name="sendOrder">
           <form id="sendOrderForm">
             <h3 data-i18n="cmd.send_order">Send Order</h3>
-            <label>Account ID<input id="sendAccountId" list="accountHistory" placeholder="9 ou 9 - binance-testnet" /></label>
-            <label>Strategy
+            <label><span data-i18n="common.account_id">Account ID</span><input id="sendAccountId" list="accountHistory" data-i18n-placeholder="common.account_id_placeholder" placeholder="ex: 1" /></label>
+            <label><span data-i18n="cmd.field.strategy">Strategy</span>
               <div class="inline-input">
                 <select id="sendStrategyId"></select>
-                <input id="sendNewStrategyName" placeholder="novo nome (opcional)" />
-                <wa-button id="createSendStrategyBtn" type="button" class="ghost inline-btn" data-i18n="common.create">Criar</wa-button>
+                <wa-button id="goToCreateStrategyBtn" type="button" class="ghost inline-btn" data-i18n="trade.create_strategy">Adicionar estratégia</wa-button>
               </div>
             </label>
-            <label>Symbol
+            <label><span data-i18n="cmd.field.symbol">Symbol</span>
               <div class="inline-input">
                 <input id="sendSymbol" name="symbol" list="symbolHistory" value="BTC/USDT" />
                 <wa-button id="loadSymbolsBtn" type="button" class="ghost inline-btn" data-i18n="cmd.load_symbols">Load Symbols</wa-button>
               </div>
             </label>
+            <label><span data-i18n="cmd.field.position_id">ID da Posição</span><input name="position_id" type="number" min="0" placeholder="0" /></label>
             <datalist id="symbolHistory"></datalist>
-            <label>Side
+            <label><span data-i18n="cmd.field.side">Side</span>
               <select name="side">
                 <option value="buy">buy</option>
                 <option value="sell">sell</option>
               </select>
             </label>
-            <label>Type
+            <label><span data-i18n="cmd.field.type">Type</span>
               <select name="order_type">
                 <option value="market">market</option>
                 <option value="limit">limit</option>
+                <option value="stop_market">stop_market</option>
+                <option value="stop_limit">stop_limit</option>
+                <option value="take_profit_market">take_profit_market</option>
+                <option value="take_profit_limit">take_profit_limit</option>
               </select>
             </label>
-            <label>Qty<input name="qty" value="0.001" /></label>
-            <label>Price<input name="price" placeholder="required for limit" /></label>
-            <label>Stop Loss<input name="stop_loss" placeholder="opcional" /></label>
-            <label>Stop Gain<input name="stop_gain" placeholder="opcional" /></label>
-            <label>Comment<input name="comment" placeholder="opcional" /></label>
-            <label class="inline"><input name="reduce_only" type="checkbox" /> reduce_only</label>
-            <wa-button type="submit" data-i18n="common.send">Send</wa-button>
+            <label><span data-i18n="cmd.field.time_in_force">Time in Force</span>
+              <select name="time_in_force">
+                <option value="">(default)</option>
+                <option value="GTC">GTC</option>
+                <option value="IOC">IOC</option>
+                <option value="FOK">FOK</option>
+                <option value="PO">PO</option>
+              </select>
+            </label>
+            <label><span data-i18n="cmd.field.qty">Qty</span><input name="qty" value="0.001" /></label>
+            <label><span data-i18n="cmd.field.price">Price</span><input name="price" data-i18n-placeholder="cmd.placeholder.required_for_limit" placeholder="required for limit" /></label>
+            <label><span data-i18n="cmd.field.trigger_price">Trigger Price</span><input name="trigger_price" data-i18n-placeholder="common.optional" placeholder="optional" /></label>
+            <label><span data-i18n="cmd.field.stop_price">Stop Price</span><input name="stop_price" data-i18n-placeholder="common.optional" placeholder="optional" /></label>
+            <label><span data-i18n="cmd.field.take_profit_price">Take Profit Price</span><input name="take_profit_price" data-i18n-placeholder="common.optional" placeholder="optional" /></label>
+            <label><span data-i18n="cmd.field.trailing_amount">Trailing Amount</span><input name="trailing_amount" data-i18n-placeholder="common.optional" placeholder="optional" /></label>
+            <label><span data-i18n="cmd.field.trailing_percent">Trailing Percent</span><input name="trailing_percent" data-i18n-placeholder="common.optional" placeholder="optional" /></label>
+            <label><span data-i18n="cmd.field.stop_loss">OMS Stop Loss</span><input name="oms_stop_loss" data-i18n-placeholder="common.optional" placeholder="opcional" /></label>
+            <label><span data-i18n="cmd.field.stop_gain">OMS Stop Gain</span><input name="oms_stop_gain" data-i18n-placeholder="common.optional" placeholder="opcional" /></label>
+            <label><span data-i18n="cmd.field.comment">Comment</span><input name="comment" placeholder="opcional" /></label>
+            <label><span data-i18n="cmd.field.params_json">Params JSON</span><textarea name="params_json">{}</textarea></label>
+            <label class="inline"><input name="post_only" type="checkbox" /> <span data-i18n="cmd.field.post_only">post_only</span></label>
+            <label class="inline"><input name="reduce_only" type="checkbox" /> <span data-i18n="cmd.field.reduce_only">reduce_only</span></label>
+            <wa-button type="submit" variant="brand" data-i18n="common.send">Send</wa-button>
           </form>
+          </wa-tab-panel>
 
+          <wa-tab-panel name="cancelOrder">
           <form id="cancelOrderForm">
             <h3 data-i18n="cmd.cancel_order">Cancel Order</h3>
-            <label>Account ID<input id="cancelOrderAccountId" list="accountHistory" placeholder="9 ou 9 - binance-testnet" /></label>
-            <label>Order IDs (1 ou CSV)<input name="order_ids_csv" placeholder="123 ou 123,124,125" /></label>
-            <label>Account ID (Cancel All)<input id="cancelAllAccountId" list="accountHistory" placeholder="obrigatorio para cancel all" /></label>
-            <label>Strategy IDs CSV (Cancel All, opcional)<input id="cancelAllStrategyIdsCsv" placeholder="vazio = todas (ex: 1,2,3)" /></label>
+            <label><span data-i18n="common.account_id">Account ID</span><input id="cancelOrderAccountId" list="accountHistory" data-i18n-placeholder="common.account_id_placeholder" placeholder="ex: 1" /></label>
+            <label><span data-i18n="cmd.field.order_ids_csv">Order IDs (1 ou CSV)</span><input name="order_ids_csv" placeholder="123 ou 123,124,125" /></label>
+            <label><span data-i18n="cmd.field.strategy_ids_csv_cancel_all">Strategy IDs CSV (Cancel All, opcional)</span><input id="cancelAllStrategyIdsCsv" placeholder="vazio = todas (ex: 1,2,3)" /></label>
             <div class="actions">
-              <wa-button id="cancelByIdsBtn" type="submit" data-i18n="cmd.cancel_ids">Cancel IDs</wa-button>
-              <wa-button id="cancelAllBtn" type="button" variant="neutral" data-i18n="cmd.cancel_all_open">Cancel All Open</wa-button>
+                <wa-button id="cancelByIdsBtn" type="submit" class="danger-btn" data-i18n="cmd.cancel_ids">Cancel IDs</wa-button>
+                <wa-button id="cancelAllBtn" type="button" class="danger-btn" data-i18n="cmd.cancel_all_open">Cancel All Open</wa-button>
             </div>
           </form>
+          </wa-tab-panel>
 
+          <wa-tab-panel name="changeOrder">
           <form id="changeOrderForm">
-            <h3 data-i18n="cmd.change_order">Change Order</h3>
-            <label>Account ID<input id="changeOrderAccountId" list="accountHistory" placeholder="9 ou 9 - binance-testnet" /></label>
-            <label>Order ID<input name="order_id" type="number" min="1" /></label>
-            <label>New Qty<input name="new_qty" /></label>
-            <label>New Price<input name="new_price" /></label>
-            <wa-button type="submit" data-i18n="common.change">Change</wa-button>
+            <h3 data-i18n="cmd.change_order">Alterar ordem</h3>
+            <label><span data-i18n="common.account_id">ID da Conta</span><input id="changeOrderAccountId" list="accountHistory" data-i18n-placeholder="common.account_id_placeholder" placeholder="ex: 1" /></label>
+            <label><span data-i18n="cmd.field.order_id">ID da Ordem</span><input name="order_id" type="number" min="1" /></label>
+            <label><span data-i18n="cmd.field.new_qty">Nova Quantidade</span><input name="new_qty" /></label>
+            <label><span data-i18n="cmd.field.new_price">Novo Preço</span><input name="new_price" /></label>
+            <wa-button type="submit" variant="brand" data-i18n="common.change">Alterar</wa-button>
           </form>
+          </wa-tab-panel>
 
+          <wa-tab-panel name="positionChange">
           <form id="positionChangeForm">
             <h3 data-i18n="cmd.position_change">Position Change</h3>
-            <label>Account ID<input id="positionChangeAccountId" list="accountHistory" placeholder="9 ou 9 - binance-testnet" /></label>
-            <label>Position ID<input name="position_id" type="number" min="1" /></label>
+            <label><span data-i18n="common.account_id">Account ID</span><input id="positionChangeAccountId" list="accountHistory" data-i18n-placeholder="common.account_id_placeholder" placeholder="ex: 1" /></label>
+            <label><span data-i18n="cmd.field.position_id">Position ID</span><input name="position_id" type="number" min="1" /></label>
             <label class="inline"><input id="positionChangeUseStopLoss" type="checkbox" /> Alterar Stop Loss</label>
-            <label>Stop Loss<input name="stop_loss" placeholder="valor ou null" /></label>
+            <label><span data-i18n="cmd.field.stop_loss">OMS Stop Loss</span><input name="oms_stop_loss" data-i18n-placeholder="common.value_or_null" placeholder="valor ou null" /></label>
             <label class="inline"><input id="positionChangeUseStopGain" type="checkbox" /> Alterar Stop Gain</label>
-            <label>Stop Gain<input name="stop_gain" placeholder="valor ou null" /></label>
+            <label><span data-i18n="cmd.field.stop_gain">OMS Stop Gain</span><input name="oms_stop_gain" data-i18n-placeholder="common.value_or_null" placeholder="valor ou null" /></label>
             <label class="inline"><input id="positionChangeUseComment" type="checkbox" /> Alterar Comment</label>
-            <label>Comment<input name="comment" placeholder="texto ou null" /></label>
-            <wa-button type="submit" data-i18n="common.apply">Apply</wa-button>
+            <label><span data-i18n="cmd.field.comment">Comment</span><input name="comment" placeholder="texto ou null" /></label>
+            <wa-button type="submit" variant="brand" data-i18n="common.apply">Apply</wa-button>
           </form>
+          </wa-tab-panel>
 
+          <wa-tab-panel name="positionClose">
           <form id="closePositionForm">
             <h3 data-i18n="cmd.position_close">Position Close</h3>
-            <label>Account ID<input id="closePositionAccountId" list="accountHistory" placeholder="9 ou 9 - binance-testnet" /></label>
-            <label>Position ID<input name="position_id" type="number" min="1" /></label>
-            <label>Order Type
-              <select name="order_type">
-                <option value="market">market</option>
-                <option value="limit">limit</option>
-              </select>
-            </label>
-            <label>Price<input name="price" placeholder="required for limit" /></label>
-            <label>Comment<input name="comment" placeholder="opcional" /></label>
-            <wa-button type="submit" data-i18n="cmd.position_close">Close Position</wa-button>
+            <label><span data-i18n="common.account_id">Account ID</span><input id="closePositionAccountId" list="accountHistory" data-i18n-placeholder="common.account_id_placeholder" placeholder="ex: 1" /></label>
+            <label><span data-i18n="cmd.field.position_id">Position ID</span><input name="position_id" type="number" min="1" /></label>
+            <label><span data-i18n="cmd.field.stop_loss">OMS Stop Loss</span><input name="oms_stop_loss" data-i18n-placeholder="common.optional" placeholder="opcional" /></label>
+            <label><span data-i18n="cmd.field.stop_gain">OMS Stop Gain</span><input name="oms_stop_gain" data-i18n-placeholder="common.optional" placeholder="opcional" /></label>
+            <label><span data-i18n="cmd.field.comment">Comment</span><input name="comment" placeholder="opcional" /></label>
+            <label><span data-i18n="cmd.field.params_json">Params JSON</span><textarea name="params_json">{}</textarea></label>
+            <label class="inline"><input name="post_only" type="checkbox" /> <span data-i18n="cmd.field.post_only">post_only</span></label>
+            <label class="inline"><input name="reduce_only" type="checkbox" checked /> <span data-i18n="cmd.field.reduce_only">reduce_only</span></label>
+            <wa-button type="submit" variant="brand" data-i18n="cmd.position_close">Close Position</wa-button>
           </form>
+          </wa-tab-panel>
 
+          <wa-tab-panel name="positionCloseBy">
           <form id="closeByForm">
             <h3 data-i18n="cmd.position_close_by">Position Close By</h3>
-            <label>Account ID<input id="closeByAccountId" list="accountHistory" placeholder="9 ou 9 - binance-testnet" /></label>
-            <label>Position ID A<input name="position_id_a" type="number" min="1" /></label>
-            <label>Position ID B<input name="position_id_b" type="number" min="1" /></label>
-            <wa-button type="submit" data-i18n="cmd.position_close_by">Position Close By</wa-button>
+            <label><span data-i18n="common.account_id">Account ID</span><input id="closeByAccountId" list="accountHistory" data-i18n-placeholder="common.account_id_placeholder" placeholder="ex: 1" /></label>
+            <label><span data-i18n="cmd.field.position_id_a">Position ID A</span><input name="position_id_a" type="number" min="1" /></label>
+            <label><span data-i18n="cmd.field.position_id_b">Position ID B</span><input name="position_id_b" type="number" min="1" /></label>
+            <label><span data-i18n="cmd.field.close_by_qty">Close By Qty</span><input name="qty" data-i18n-placeholder="common.optional" placeholder="optional" /></label>
+            <wa-button type="submit" variant="brand" data-i18n="cmd.position_close_by">Position Close By</wa-button>
           </form>
+          </wa-tab-panel>
 
+          <wa-tab-panel name="mergePositions">
+          <form id="mergePositionsForm">
+            <h3 data-i18n="cmd.merge_positions">Merge Positions</h3>
+            <label><span data-i18n="common.account_id">Account ID</span><input id="mergePositionsAccountId" list="accountHistory" data-i18n-placeholder="common.account_id_placeholder" placeholder="ex: 1" /></label>
+            <label><span data-i18n="cmd.field.source_position_id">Source Position ID</span><input name="source_position_id" type="number" min="1" /></label>
+            <label><span data-i18n="cmd.field.target_position_id">Target Position ID</span><input name="target_position_id" type="number" min="1" /></label>
+            <label><span data-i18n="cmd.field.stop_mode">Stop Mode</span>
+              <select name="stop_mode">
+                <option value="keep">keep</option>
+                <option value="clear">clear</option>
+                <option value="set">set</option>
+              </select>
+            </label>
+            <label><span data-i18n="cmd.field.stop_loss">OMS Stop Loss</span><input name="oms_stop_loss" data-i18n-placeholder="common.optional" placeholder="optional" /></label>
+            <label><span data-i18n="cmd.field.stop_gain">OMS Stop Gain</span><input name="oms_stop_gain" data-i18n-placeholder="common.optional" placeholder="optional" /></label>
+            <wa-button type="submit" variant="brand" data-i18n="cmd.merge_positions">Merge Positions</wa-button>
+          </form>
+          </wa-tab-panel>
+
+          <wa-tab-panel name="directCcxt">
           <form id="ccxtCallForm">
             <h3 data-i18n="cmd.direct_ccxt">Direct CCXT Call</h3>
-            <label>Account ID<input id="ccxtAccountId" list="accountHistory" placeholder="9 ou 9 - binance-testnet" /></label>
-            <label>Strategy ID<input id="ccxtStrategyId" list="strategyHistory" type="number" min="0" value="0" /></label>
-            <label>Mode
+            <label><span data-i18n="common.account_id">Account ID</span><input id="ccxtAccountId" list="accountHistory" data-i18n-placeholder="common.account_id_placeholder" placeholder="ex: 1" /></label>
+            <label><span data-i18n="cmd.field.strategy">Strategy ID</span><input id="ccxtStrategyId" list="strategyHistory" type="number" min="0" value="0" /></label>
+            <label><span data-i18n="cmd.field.mode">Mode</span>
               <select id="ccxtMode">
                 <option value="generic">generic</option>
                 <option value="core">core comuns</option>
               </select>
             </label>
             <div id="ccxtGenericFields">
-              <label>Func<input name="func" value="fetch_ticker" /></label>
-              <label>Args JSON<textarea name="args">["BTC/USDT"]</textarea></label>
-              <label>Kwargs JSON<textarea name="kwargs">{}</textarea></label>
+              <label><span data-i18n="cmd.field.func">Func</span><input name="func" value="fetch_ticker" /></label>
+              <label><span data-i18n="cmd.field.args_json">Args JSON</span><textarea name="args">["BTC/USDT"]</textarea></label>
+              <label><span data-i18n="cmd.field.kwargs_json">Kwargs JSON</span><textarea name="kwargs">{}</textarea></label>
             </div>
             <div id="ccxtCoreFields" class="is-hidden">
-              <label>Core Func
+              <label><span data-i18n="cmd.field.core_func">Core Func</span>
                 <select id="ccxtCoreFunc" name="core_func">
                   <option value="fetch_balance">fetch_balance</option>
                   <option value="fetch_open_orders">fetch_open_orders</option>
@@ -231,12 +335,13 @@
                   <option value="create_order">create_order</option>
                 </select>
               </label>
-              <label>Body JSON<textarea id="ccxtCoreBody" name="core_body">{}</textarea></label>
+              <label><span data-i18n="cmd.field.body_json">Body JSON</span><textarea id="ccxtCoreBody" name="core_body">{}</textarea></label>
             </div>
-            <label>Result JSON<textarea id="ccxtResultBox" readonly placeholder="resultado do Run CCXT"></textarea></label>
-            <wa-button type="submit" data-i18n="cmd.run_ccxt">Run CCXT</wa-button>
+            <label><span data-i18n="cmd.field.result_json">Result JSON</span><textarea id="ccxtResultBox" readonly placeholder="resultado do Run CCXT"></textarea></label>
+            <wa-button type="submit" variant="brand" data-i18n="cmd.run_ccxt">Run CCXT</wa-button>
           </form>
-        </div>
+          </wa-tab-panel>
+        </wa-tab-group>
       </section>
 
       <section class="card is-hidden" id="strategiesPanel">
@@ -278,75 +383,255 @@
           <wa-tab slot="nav" panel="historyOrders" data-i18n="positions.history_orders">History Orders</wa-tab>
 
           <wa-tab-panel name="openPositions">
-            <div class="actions">
-              <wa-button id="refreshOpenPositionsBtn" variant="neutral" data-i18n="common.refresh">Refresh</wa-button>
-              <wa-button id="clearOpenPositionsBtn" variant="neutral" data-i18n="common.clear">Clear</wa-button>
+            <div class="oms-table-card">
+              <div class="actions">
+                <wa-button id="refreshOpenPositionsBtn" variant="neutral" data-i18n="common.refresh">Refresh</wa-button>
+              </div>
+              <div class="pager-row">
+                <div class="pager-group">
+                  <wa-button id="openPositionsPrevPageBtn" type="button" variant="neutral"><i class="fa-solid fa-chevron-left" aria-hidden="true"></i></wa-button>
+                  <wa-button id="openPositionsNextPageBtn" type="button" variant="neutral"><i class="fa-solid fa-chevron-right" aria-hidden="true"></i></wa-button>
+                  <label class="pager-label"><span data-i18n="common.items_per_page">Items/Page</span><select id="openPositionsPageSize"><option value="50">50</option><option value="100" selected>100</option><option value="200">200</option><option value="500">500</option></select></label>
+                  <label class="pager-label"><span data-i18n="common.page">Page</span><input id="openPositionsPageInput" type="number" min="1" value="1" /></label>
+                  <div id="openPositionsPageInfo" class="pager-info">1 / 1</div>
+                  <wa-button id="openPositionsCopyBtn" type="button" variant="neutral"><i class="fa-solid fa-copy" aria-hidden="true"></i></wa-button>
+                  <wa-button id="openPositionsExportCsvBtn" type="button" variant="neutral"><i class="fa-solid fa-file-csv" aria-hidden="true"></i></wa-button>
+                  <wa-button id="openPositionsExportExcelBtn" type="button" variant="neutral"><i class="fa-solid fa-file-excel" aria-hidden="true"></i></wa-button>
+                  <wa-button id="openPositionsExportJsonBtn" type="button" variant="neutral"><i class="fa-solid fa-file-lines" aria-hidden="true"></i></wa-button>
+                  <wa-button id="openPositionsExportHtmlBtn" type="button" variant="neutral"><i class="fa-solid fa-file-code" aria-hidden="true"></i></wa-button>
+                </div>
+              </div>
+              <div id="openPositionsTable"></div>
             </div>
-            <div id="openPositionsTable"></div>
           </wa-tab-panel>
 
           <wa-tab-panel name="openOrders">
-            <div class="actions">
-              <wa-button id="refreshOpenOrdersBtn" variant="neutral" data-i18n="common.refresh">Refresh</wa-button>
-              <wa-button id="clearOpenOrdersBtn" variant="neutral" data-i18n="common.clear">Clear</wa-button>
+            <div class="oms-table-card">
+              <div class="actions">
+                <wa-button id="refreshOpenOrdersBtn" variant="neutral" data-i18n="common.refresh">Refresh</wa-button>
+              </div>
+              <div class="pager-row">
+                <div class="pager-group">
+                  <wa-button id="openOrdersPrevPageBtn" type="button" variant="neutral"><i class="fa-solid fa-chevron-left" aria-hidden="true"></i></wa-button>
+                  <wa-button id="openOrdersNextPageBtn" type="button" variant="neutral"><i class="fa-solid fa-chevron-right" aria-hidden="true"></i></wa-button>
+                  <label class="pager-label"><span data-i18n="common.items_per_page">Items/Page</span><select id="openOrdersPageSize"><option value="50">50</option><option value="100" selected>100</option><option value="200">200</option><option value="500">500</option></select></label>
+                  <label class="pager-label"><span data-i18n="common.page">Page</span><input id="openOrdersPageInput" type="number" min="1" value="1" /></label>
+                  <div id="openOrdersPageInfo" class="pager-info">1 / 1</div>
+                  <wa-button id="openOrdersCopyBtn" type="button" variant="neutral"><i class="fa-solid fa-copy" aria-hidden="true"></i></wa-button>
+                  <wa-button id="openOrdersExportCsvBtn" type="button" variant="neutral"><i class="fa-solid fa-file-csv" aria-hidden="true"></i></wa-button>
+                  <wa-button id="openOrdersExportExcelBtn" type="button" variant="neutral"><i class="fa-solid fa-file-excel" aria-hidden="true"></i></wa-button>
+                  <wa-button id="openOrdersExportJsonBtn" type="button" variant="neutral"><i class="fa-solid fa-file-lines" aria-hidden="true"></i></wa-button>
+                  <wa-button id="openOrdersExportHtmlBtn" type="button" variant="neutral"><i class="fa-solid fa-file-code" aria-hidden="true"></i></wa-button>
+                </div>
+              </div>
+              <div id="openOrdersTable"></div>
             </div>
-            <div id="openOrdersTable"></div>
           </wa-tab-panel>
 
           <wa-tab-panel name="deals">
-            <div class="actions"><wa-button id="clearDealsBtn" variant="neutral" data-i18n="common.clear">Clear</wa-button></div>
-            <div id="dealsTable"></div>
+            <div class="oms-table-card">
+              <div class="actions history-filters">
+                <label><span data-i18n="common.start_date">Start Date</span><input id="dealsStartDate" type="date" /></label>
+                <label><span data-i18n="common.end_date">End Date</span><input id="dealsEndDate" type="date" /></label>
+                <wa-button id="refreshDealsBtn" variant="neutral" data-i18n="common.filter">Filter</wa-button>
+              </div>
+              <div class="pager-row">
+                <div class="pager-group">
+                  <wa-button id="dealsPrevPageBtn" type="button" variant="neutral"><i class="fa-solid fa-chevron-left" aria-hidden="true"></i></wa-button>
+                  <wa-button id="dealsNextPageBtn" type="button" variant="neutral"><i class="fa-solid fa-chevron-right" aria-hidden="true"></i></wa-button>
+                  <label class="pager-label"><span data-i18n="common.items_per_page">Items/Page</span><select id="dealsPageSize"><option value="50">50</option><option value="100" selected>100</option><option value="200">200</option><option value="500">500</option></select></label>
+                  <label class="pager-label"><span data-i18n="common.page">Page</span><input id="dealsPageInput" type="number" min="1" value="1" /></label>
+                  <div id="dealsPageInfo" class="pager-info">1 / 1</div>
+                  <wa-button id="dealsCopyBtn" type="button" variant="neutral"><i class="fa-solid fa-copy" aria-hidden="true"></i></wa-button>
+                  <wa-button id="dealsExportCsvBtn" type="button" variant="neutral"><i class="fa-solid fa-file-csv" aria-hidden="true"></i></wa-button>
+                  <wa-button id="dealsExportExcelBtn" type="button" variant="neutral"><i class="fa-solid fa-file-excel" aria-hidden="true"></i></wa-button>
+                  <wa-button id="dealsExportJsonBtn" type="button" variant="neutral"><i class="fa-solid fa-file-lines" aria-hidden="true"></i></wa-button>
+                  <wa-button id="dealsExportHtmlBtn" type="button" variant="neutral"><i class="fa-solid fa-file-code" aria-hidden="true"></i></wa-button>
+                </div>
+              </div>
+              <div id="dealsTable"></div>
+            </div>
           </wa-tab-panel>
 
           <wa-tab-panel name="historyPositions">
-            <div class="actions"><wa-button id="clearHistoryPositionsBtn" variant="neutral" data-i18n="common.clear">Clear</wa-button></div>
-            <div id="historyPositionsTable"></div>
+            <div class="oms-table-card">
+              <div class="actions history-filters">
+                <label><span data-i18n="common.start_date">Start Date</span><input id="historyPositionsStartDate" type="date" /></label>
+                <label><span data-i18n="common.end_date">End Date</span><input id="historyPositionsEndDate" type="date" /></label>
+                <wa-button id="refreshHistoryPositionsBtn" variant="neutral" data-i18n="common.filter">Filter</wa-button>
+              </div>
+              <div class="pager-row">
+                <div class="pager-group">
+                  <wa-button id="historyPositionsPrevPageBtn" type="button" variant="neutral"><i class="fa-solid fa-chevron-left" aria-hidden="true"></i></wa-button>
+                  <wa-button id="historyPositionsNextPageBtn" type="button" variant="neutral"><i class="fa-solid fa-chevron-right" aria-hidden="true"></i></wa-button>
+                  <label class="pager-label"><span data-i18n="common.items_per_page">Items/Page</span><select id="historyPositionsPageSize"><option value="50">50</option><option value="100" selected>100</option><option value="200">200</option><option value="500">500</option></select></label>
+                  <label class="pager-label"><span data-i18n="common.page">Page</span><input id="historyPositionsPageInput" type="number" min="1" value="1" /></label>
+                  <div id="historyPositionsPageInfo" class="pager-info">1 / 1</div>
+                  <wa-button id="historyPositionsCopyBtn" type="button" variant="neutral"><i class="fa-solid fa-copy" aria-hidden="true"></i></wa-button>
+                  <wa-button id="historyPositionsExportCsvBtn" type="button" variant="neutral"><i class="fa-solid fa-file-csv" aria-hidden="true"></i></wa-button>
+                  <wa-button id="historyPositionsExportExcelBtn" type="button" variant="neutral"><i class="fa-solid fa-file-excel" aria-hidden="true"></i></wa-button>
+                  <wa-button id="historyPositionsExportJsonBtn" type="button" variant="neutral"><i class="fa-solid fa-file-lines" aria-hidden="true"></i></wa-button>
+                  <wa-button id="historyPositionsExportHtmlBtn" type="button" variant="neutral"><i class="fa-solid fa-file-code" aria-hidden="true"></i></wa-button>
+                </div>
+              </div>
+              <div id="historyPositionsTable"></div>
+            </div>
           </wa-tab-panel>
 
           <wa-tab-panel name="historyOrders">
-            <div class="actions"><wa-button id="clearHistoryOrdersBtn" variant="neutral" data-i18n="common.clear">Clear</wa-button></div>
-            <div id="historyOrdersTable"></div>
+            <div class="oms-table-card">
+              <div class="actions history-filters">
+                <label><span data-i18n="common.start_date">Start Date</span><input id="historyOrdersStartDate" type="date" /></label>
+                <label><span data-i18n="common.end_date">End Date</span><input id="historyOrdersEndDate" type="date" /></label>
+                <wa-button id="refreshHistoryOrdersBtn" variant="neutral" data-i18n="common.filter">Filter</wa-button>
+              </div>
+              <div class="pager-row">
+                <div class="pager-group">
+                  <wa-button id="historyOrdersPrevPageBtn" type="button" variant="neutral"><i class="fa-solid fa-chevron-left" aria-hidden="true"></i></wa-button>
+                  <wa-button id="historyOrdersNextPageBtn" type="button" variant="neutral"><i class="fa-solid fa-chevron-right" aria-hidden="true"></i></wa-button>
+                  <label class="pager-label"><span data-i18n="common.items_per_page">Items/Page</span><select id="historyOrdersPageSize"><option value="50">50</option><option value="100" selected>100</option><option value="200">200</option><option value="500">500</option></select></label>
+                  <label class="pager-label"><span data-i18n="common.page">Page</span><input id="historyOrdersPageInput" type="number" min="1" value="1" /></label>
+                  <div id="historyOrdersPageInfo" class="pager-info">1 / 1</div>
+                  <wa-button id="historyOrdersCopyBtn" type="button" variant="neutral"><i class="fa-solid fa-copy" aria-hidden="true"></i></wa-button>
+                  <wa-button id="historyOrdersExportCsvBtn" type="button" variant="neutral"><i class="fa-solid fa-file-csv" aria-hidden="true"></i></wa-button>
+                  <wa-button id="historyOrdersExportExcelBtn" type="button" variant="neutral"><i class="fa-solid fa-file-excel" aria-hidden="true"></i></wa-button>
+                  <wa-button id="historyOrdersExportJsonBtn" type="button" variant="neutral"><i class="fa-solid fa-file-lines" aria-hidden="true"></i></wa-button>
+                  <wa-button id="historyOrdersExportHtmlBtn" type="button" variant="neutral"><i class="fa-solid fa-file-code" aria-hidden="true"></i></wa-button>
+                </div>
+              </div>
+              <div id="historyOrdersTable"></div>
+            </div>
           </wa-tab-panel>
         </wa-tab-group>
       </section>
 
       <section class="card is-hidden" id="systemPanel">
         <h2 data-i18n="menu.system_monitor">System Monitor</h2>
-        <wa-tab-group id="systemTabs" active="ccxtOrders">
+        <wa-tab-group id="systemTabs" class="primary-tabs" active="ccxtOrders" placement="top" activation="auto">
           <wa-tab slot="nav" panel="ccxtOrders" data-i18n="system.ccxt_orders">CCXT Orders</wa-tab>
           <wa-tab slot="nav" panel="ccxtTrades" data-i18n="system.ccxt_trades">CCXT Trades</wa-tab>
           <wa-tab slot="nav" panel="wsEvents" data-i18n="system.ws_events">WS Events</wa-tab>
           <wa-tab slot="nav" panel="uiLogs" data-i18n="system.ui_logs">UI Logs</wa-tab>
 
           <wa-tab-panel name="ccxtOrders">
-            <div class="actions"><wa-button id="clearCcxtOrdersBtn" variant="neutral" data-i18n="common.clear">Clear</wa-button></div>
-            <div id="ccxtOrdersTable"></div>
+            <div class="oms-table-card">
+              <div class="actions history-filters">
+                <label><span data-i18n="common.start_date">Start Date</span><input id="ccxtOrdersStartDate" type="date" /></label>
+                <label><span data-i18n="common.end_date">End Date</span><input id="ccxtOrdersEndDate" type="date" /></label>
+                <wa-button id="refreshCcxtOrdersBtn" variant="neutral" data-i18n="common.filter">Filter</wa-button>
+              </div>
+              <div class="pager-row">
+                <div class="pager-group">
+                  <wa-button id="ccxtOrdersPrevPageBtn" type="button" variant="neutral"><i class="fa-solid fa-chevron-left" aria-hidden="true"></i></wa-button>
+                  <wa-button id="ccxtOrdersNextPageBtn" type="button" variant="neutral"><i class="fa-solid fa-chevron-right" aria-hidden="true"></i></wa-button>
+                  <label class="pager-label"><span data-i18n="common.items_per_page">Items/Page</span><select id="ccxtOrdersPageSize"><option value="50">50</option><option value="100" selected>100</option><option value="200">200</option><option value="500">500</option></select></label>
+                  <label class="pager-label"><span data-i18n="common.page">Page</span><input id="ccxtOrdersPageInput" type="number" min="1" value="1" /></label>
+                  <div id="ccxtOrdersPageInfo" class="pager-info">1 / 1</div>
+                  <wa-button id="ccxtOrdersCopyBtn" type="button" variant="neutral"><i class="fa-solid fa-copy" aria-hidden="true"></i></wa-button>
+                  <wa-button id="ccxtOrdersExportCsvBtn" type="button" variant="neutral"><i class="fa-solid fa-file-csv" aria-hidden="true"></i></wa-button>
+                  <wa-button id="ccxtOrdersExportExcelBtn" type="button" variant="neutral"><i class="fa-solid fa-file-excel" aria-hidden="true"></i></wa-button>
+                  <wa-button id="ccxtOrdersExportJsonBtn" type="button" variant="neutral"><i class="fa-solid fa-file-lines" aria-hidden="true"></i></wa-button>
+                  <wa-button id="ccxtOrdersExportHtmlBtn" type="button" variant="neutral"><i class="fa-solid fa-file-code" aria-hidden="true"></i></wa-button>
+                </div>
+              </div>
+              <div id="ccxtOrdersTable"></div>
+            </div>
           </wa-tab-panel>
 
           <wa-tab-panel name="ccxtTrades">
-            <div class="actions"><wa-button id="clearCcxtTradesBtn" variant="neutral" data-i18n="common.clear">Clear</wa-button></div>
-            <div id="ccxtTradesTable"></div>
+            <div class="oms-table-card">
+              <div class="actions history-filters">
+                <label><span data-i18n="common.start_date">Start Date</span><input id="ccxtTradesStartDate" type="date" /></label>
+                <label><span data-i18n="common.end_date">End Date</span><input id="ccxtTradesEndDate" type="date" /></label>
+                <wa-button id="refreshCcxtTradesBtn" variant="neutral" data-i18n="common.filter">Filter</wa-button>
+              </div>
+              <div class="pager-row">
+                <div class="pager-group">
+                  <wa-button id="ccxtTradesPrevPageBtn" type="button" variant="neutral"><i class="fa-solid fa-chevron-left" aria-hidden="true"></i></wa-button>
+                  <wa-button id="ccxtTradesNextPageBtn" type="button" variant="neutral"><i class="fa-solid fa-chevron-right" aria-hidden="true"></i></wa-button>
+                  <label class="pager-label"><span data-i18n="common.items_per_page">Items/Page</span><select id="ccxtTradesPageSize"><option value="50">50</option><option value="100" selected>100</option><option value="200">200</option><option value="500">500</option></select></label>
+                  <label class="pager-label"><span data-i18n="common.page">Page</span><input id="ccxtTradesPageInput" type="number" min="1" value="1" /></label>
+                  <div id="ccxtTradesPageInfo" class="pager-info">1 / 1</div>
+                  <wa-button id="ccxtTradesCopyBtn" type="button" variant="neutral"><i class="fa-solid fa-copy" aria-hidden="true"></i></wa-button>
+                  <wa-button id="ccxtTradesExportCsvBtn" type="button" variant="neutral"><i class="fa-solid fa-file-csv" aria-hidden="true"></i></wa-button>
+                  <wa-button id="ccxtTradesExportExcelBtn" type="button" variant="neutral"><i class="fa-solid fa-file-excel" aria-hidden="true"></i></wa-button>
+                  <wa-button id="ccxtTradesExportJsonBtn" type="button" variant="neutral"><i class="fa-solid fa-file-lines" aria-hidden="true"></i></wa-button>
+                  <wa-button id="ccxtTradesExportHtmlBtn" type="button" variant="neutral"><i class="fa-solid fa-file-code" aria-hidden="true"></i></wa-button>
+                </div>
+              </div>
+              <div id="ccxtTradesTable"></div>
+            </div>
           </wa-tab-panel>
 
           <wa-tab-panel name="wsEvents">
-            <div class="actions"><wa-button id="clearEventsBtn" variant="neutral" data-i18n="common.clear">Clear</wa-button></div>
-            <div id="eventsTable"></div>
+            <div class="oms-table-card">
+              <div class="actions"><wa-button id="clearEventsBtn" variant="neutral" data-i18n="common.clear">Clear</wa-button></div>
+              <div id="eventsTable"></div>
+            </div>
           </wa-tab-panel>
 
           <wa-tab-panel name="uiLogs">
-            <div class="actions"><wa-button id="clearUiLogsBtn" variant="neutral" data-i18n="common.clear">Clear</wa-button></div>
-            <div id="uiLogsTable"></div>
+            <div class="oms-table-card">
+              <div class="actions">
+                <wa-button id="clearUiLogsViewBtn" variant="neutral" data-i18n="system.ui_logs_clear_view">Clear View</wa-button>
+                <wa-button id="clearUiLogsDbBtn" class="danger-btn" data-i18n="system.ui_logs_clear_db">Clear Local DB</wa-button>
+              </div>
+              <div class="pager-row">
+                <div class="pager-group">
+                  <wa-button id="uiLogsPrevPageBtn" type="button" variant="neutral"><i class="fa-solid fa-chevron-left" aria-hidden="true"></i></wa-button>
+                  <wa-button id="uiLogsNextPageBtn" type="button" variant="neutral"><i class="fa-solid fa-chevron-right" aria-hidden="true"></i></wa-button>
+                  <label class="pager-label"><span data-i18n="common.items_per_page">Items/Page</span><select id="uiLogsPageSize"><option value="50">50</option><option value="100" selected>100</option><option value="200">200</option><option value="500">500</option></select></label>
+                  <label class="pager-label"><span data-i18n="common.page">Page</span><input id="uiLogsPageInput" type="number" min="1" value="1" /></label>
+                  <div id="uiLogsPageInfo" class="pager-info">1 / 1</div>
+                </div>
+              </div>
+              <div id="uiLogsTable"></div>
+            </div>
           </wa-tab-panel>
         </wa-tab-group>
       </section>
 
+      <section class="card is-hidden" id="postTradingPanel">
+        <h2 data-i18n="post_trading.external_orders">Ordens Externas</h2>
+        <div class="actions history-filters">
+          <label><span data-i18n="post_trading.account_ids">Account IDs CSV</span><input id="postTradingAccountIds" placeholder="1,2,3" /></label>
+          <label><span data-i18n="common.start_date">Start Date</span><input id="postTradingStartDate" type="date" /></label>
+          <label><span data-i18n="common.end_date">End Date</span><input id="postTradingEndDate" type="date" /></label>
+          <label><span data-i18n="post_trading.reconciled">Reconciled</span>
+            <select id="postTradingReconciled" multiple size="2">
+              <option value="true" selected>true</option>
+              <option value="false" selected>false</option>
+            </select>
+          </label>
+          <label><span data-i18n="post_trading.order_statuses">Order Statuses CSV</span><input id="postTradingOrderStatuses" placeholder="OPEN,PARTIALLY_FILLED" /></label>
+          <wa-button id="postTradingPreviewBtn" variant="neutral" data-i18n="post_trading.preview">Preview</wa-button>
+          <wa-button id="postTradingApplyBtn" variant="brand" data-i18n="post_trading.apply">Apply Reassign</wa-button>
+        </div>
+        <div id="postTradingMessage" class="notice notice-info is-hidden"></div>
+        <div class="pager-row">
+          <div class="pager-group">
+            <wa-button id="postTradingPrevPageBtn" type="button" variant="neutral"><i class="fa-solid fa-chevron-left" aria-hidden="true"></i></wa-button>
+            <wa-button id="postTradingNextPageBtn" type="button" variant="neutral"><i class="fa-solid fa-chevron-right" aria-hidden="true"></i></wa-button>
+            <label class="pager-label"><span data-i18n="common.items_per_page">Items/Page</span><select id="postTradingPageSize"><option value="50">50</option><option value="100" selected>100</option><option value="200">200</option><option value="500">500</option></select></label>
+            <label class="pager-label"><span data-i18n="common.page">Page</span><input id="postTradingPageInput" type="number" min="1" value="1" /></label>
+            <div id="postTradingPageInfo" class="pager-info">1 / 1</div>
+            <wa-button id="postTradingCopyBtn" type="button" variant="neutral"><i class="fa-solid fa-copy" aria-hidden="true"></i></wa-button>
+            <wa-button id="postTradingExportCsvBtn" type="button" variant="neutral"><i class="fa-solid fa-file-csv" aria-hidden="true"></i></wa-button>
+            <wa-button id="postTradingExportExcelBtn" type="button" variant="neutral"><i class="fa-solid fa-file-excel" aria-hidden="true"></i></wa-button>
+            <wa-button id="postTradingExportJsonBtn" type="button" variant="neutral"><i class="fa-solid fa-file-lines" aria-hidden="true"></i></wa-button>
+            <wa-button id="postTradingExportHtmlBtn" type="button" variant="neutral"><i class="fa-solid fa-file-code" aria-hidden="true"></i></wa-button>
+          </div>
+        </div>
+        <div id="postTradingTable"></div>
+      </section>
+
       <wa-dialog id="closeByModal" label="Close By" light-dismiss>
         <div class="closeby-card">
-          <label>Source Position ID
+          <label><span id="closeBySourceLabel" data-i18n="closeby.source_position_id">Source Position ID</span>
             <input id="closeBySourceId" readonly />
           </label>
           <div id="closeBySourceInfo" class="modal-muted"></div>
-          <label>Target Open Position
+          <label><span id="closeByTargetLabel" data-i18n="closeby.target_open_position">Target Open Position</span>
             <select id="closeByTargetSelect"></select>
           </label>
         </div>
@@ -356,7 +641,8 @@
 
       <section class="card forms is-hidden" id="adminPanel">
         <h2 data-i18n="menu.admin">Admin</h2>
-        <div class="grid cols-2">
+
+        <div id="adminAccountsSection">
           <form id="adminCreateAccountForm">
             <h3 data-i18n="admin.create_account">Create Account</h3>
             <label>Exchange ID
@@ -377,7 +663,16 @@
             <label>Extra Config JSON<textarea name="extra_config_json">{}</textarea></label>
             <wa-button type="submit" data-i18n="admin.create_account">Create Account</wa-button>
           </form>
+          <div class="card">
+            <h3 data-i18n="admin.accounts">Accounts</h3>
+            <div class="actions">
+              <wa-button id="loadAdminAccountsBtn" type="button" variant="neutral" data-i18n="admin.load_accounts">Load Accounts</wa-button>
+            </div>
+            <div id="adminAccountsTable"></div>
+          </div>
+        </div>
 
+        <div id="adminUsersSection" class="is-hidden">
           <form id="adminCreateUserApiKeyForm">
             <h3 data-i18n="admin.create_user_key">Create User + API Key</h3>
             <label>User Name<input name="user_name" placeholder="trader-bot-01" /></label>
@@ -395,50 +690,76 @@
             <label>Permissions JSON<textarea name="permissions">[{"account_id":1,"can_read":true,"can_trade":true,"can_close_position":true,"can_risk_manage":false,"can_block_new_positions":false,"can_block_account":false,"restrict_to_strategies":false,"strategy_ids":[]}]</textarea></label>
             <wa-button type="submit" data-i18n="admin.create_user_key">Create User + Key</wa-button>
           </form>
-
-          <form id="adminCreateStrategyForm">
-            <h3 id="adminCreateStrategyTitle">Create Strategy</h3>
-            <label>Name<input name="name" placeholder="alpha-mean-reversion" /></label>
-            <label><span id="adminClientStrategyIdLabel" data-i18n="trade.client_strategy_id">Client Strategy ID</span><input id="adminClientStrategyId" name="client_strategy_id" type="number" min="1" step="1" placeholder="1001" /></label>
-            <label><span id="adminStrategyAccountsLabel">Accounts</span>
-              <select id="strategyAccountIds" multiple size="6"></select>
-            </label>
-            <div class="mini-actions">
-              <wa-button id="strategyAccountsAllBtn" type="button" variant="neutral" data-i18n="common.select_all">Selecionar Todas</wa-button>
-              <wa-button id="strategyAccountsClearBtn" type="button" variant="neutral" data-i18n="common.clear">Limpar</wa-button>
+          <div class="card">
+            <h3 data-i18n="admin.users">Users</h3>
+            <div class="actions">
+              <wa-button id="loadAdminUsersBtn" type="button" variant="neutral" data-i18n="admin.load_users">Load Users</wa-button>
             </div>
-            <wa-button id="adminCreateStrategyBtn" type="submit">Create Strategy</wa-button>
+            <div id="adminUsersTable"></div>
+          </div>
+        </div>
+
+        <div id="adminApiKeysSection" class="is-hidden">
+          <form id="adminCreateApiKeyForm">
+            <h3>Adicionar API Key</h3>
+            <label>User ID<input id="adminApiKeyUserId" name="user_id" type="number" min="1" placeholder="1" /></label>
+            <label>API Key (opcional)<input id="adminApiKeyValue" name="api_key" placeholder="vazio = gerar automaticamente" /></label>
+            <wa-button id="adminCreateApiKeyBtn" type="submit" variant="brand">Criar API Key</wa-button>
           </form>
-        </div>
-        <div class="card">
-          <h3 data-i18n="admin.accounts">Accounts</h3>
-          <div class="actions">
-            <wa-button id="loadAdminAccountsBtn" type="button" variant="neutral" data-i18n="admin.load_accounts">Load Accounts</wa-button>
+          <div id="adminCreatedApiKeyBox" class="notice notice-info is-hidden"></div>
+          <div class="card">
+            <h3 data-i18n="admin.users_keys">Users / API Keys</h3>
+            <div class="actions">
+              <wa-button id="loadAdminUsersKeysBtn" type="button" variant="neutral" data-i18n="admin.load_users_keys">Load Users+Keys</wa-button>
+            </div>
+            <div id="adminUsersKeysTable"></div>
           </div>
-          <div id="adminAccountsTable"></div>
         </div>
-        <div class="card">
-          <h3 data-i18n="admin.users">Users</h3>
-          <div class="actions">
-            <wa-button id="loadAdminUsersBtn" type="button" variant="neutral" data-i18n="admin.load_users">Load Users</wa-button>
-          </div>
-          <div id="adminUsersTable"></div>
-        </div>
-        <div class="card">
-          <h3 data-i18n="admin.users_keys">Users / API Keys</h3>
-          <div class="actions">
-            <wa-button id="loadAdminUsersKeysBtn" type="button" variant="neutral" data-i18n="admin.load_users_keys">Load Users+Keys</wa-button>
-          </div>
-          <div id="adminUsersKeysTable"></div>
-        </div>
-        <div class="card">
-          <h3 data-i18n="menu.strategies">Strategies</h3>
-          <div class="actions">
-            <wa-button id="loadStrategiesBtn" type="button" variant="neutral" data-i18n="trade.load_strategies">Load Strategies</wa-button>
-          </div>
-          <div id="adminStrategiesTable"></div>
-        </div>
+
       </section>
+
+      <section class="card forms is-hidden admin-hardcore-card" id="adminOmsPanel">
+        <h2 class="admin-hardcore-title">Admin OMS CRUD</h2>
+        <wa-tab-group id="adminOmsViewTabs" class="primary-tabs" active="open_orders" placement="top" activation="auto">
+          <wa-tab slot="nav" panel="open_orders">Open Orders</wa-tab>
+          <wa-tab slot="nav" panel="history_orders">History Orders</wa-tab>
+          <wa-tab slot="nav" panel="open_positions">Open Positions</wa-tab>
+          <wa-tab slot="nav" panel="history_positions">History Positions</wa-tab>
+          <wa-tab slot="nav" panel="deals">Deals</wa-tab>
+        </wa-tab-group>
+        <div class="actions history-filters">
+          <label>Account IDs CSV<input id="adminOmsAccountIds" placeholder="1,2,3" /></label>
+          <label><span data-i18n="common.start_date">Start Date</span><input id="adminOmsStartDate" type="date" /></label>
+          <label><span data-i18n="common.end_date">End Date</span><input id="adminOmsEndDate" type="date" /></label>
+          <wa-button id="adminOmsLoadBtn" type="button" variant="neutral">Load</wa-button>
+          <wa-button id="adminOmsAddRowBtn" type="button" variant="neutral">Add Row</wa-button>
+          <wa-button id="adminOmsSaveSelectedBtn" type="button" variant="brand">Save Selected</wa-button>
+          <wa-button id="adminOmsDeleteSelectedBtn" type="button" class="danger-btn">Delete Selected</wa-button>
+          <label class="inline"><input id="adminOmsUnsafeToggle" type="checkbox" /> <span data-i18n="admin.oms_unlock_label">Unlock dangerous mode</span></label>
+        </div>
+        <div id="adminOmsMessage" class="notice notice-info is-hidden"></div>
+        <div class="pager-row">
+          <div class="pager-group">
+            <wa-button id="adminOmsPrevPageBtn" type="button" variant="neutral"><i class="fa-solid fa-chevron-left" aria-hidden="true"></i></wa-button>
+            <wa-button id="adminOmsNextPageBtn" type="button" variant="neutral"><i class="fa-solid fa-chevron-right" aria-hidden="true"></i></wa-button>
+            <label class="pager-label"><span data-i18n="common.items_per_page">Items/Page</span><select id="adminOmsPageSize"><option value="50">50</option><option value="100" selected>100</option><option value="200">200</option><option value="500">500</option></select></label>
+            <label class="pager-label"><span data-i18n="common.page">Page</span><input id="adminOmsPageInput" type="number" min="1" value="1" /></label>
+            <div id="adminOmsPageInfo" class="pager-info">1 / 1</div>
+            <wa-button id="adminOmsCopyBtn" type="button" variant="neutral"><i class="fa-solid fa-copy" aria-hidden="true"></i></wa-button>
+            <wa-button id="adminOmsExportCsvBtn" type="button" variant="neutral"><i class="fa-solid fa-file-csv" aria-hidden="true"></i></wa-button>
+            <wa-button id="adminOmsExportExcelBtn" type="button" variant="neutral"><i class="fa-solid fa-file-excel" aria-hidden="true"></i></wa-button>
+            <wa-button id="adminOmsExportJsonBtn" type="button" variant="neutral"><i class="fa-solid fa-file-lines" aria-hidden="true"></i></wa-button>
+            <wa-button id="adminOmsExportHtmlBtn" type="button" variant="neutral"><i class="fa-solid fa-file-code" aria-hidden="true"></i></wa-button>
+          </div>
+        </div>
+        <div id="adminOmsTable"></div>
+      </section>
+
+      <wa-dialog id="adminOmsConfirmDialog" label="Confirm admin operation" light-dismiss>
+        <div id="adminOmsConfirmText">Are you sure?</div>
+        <wa-button id="adminOmsConfirmCancelBtn" slot="footer" variant="neutral" data-i18n="common.cancel">Cancel</wa-button>
+        <wa-button id="adminOmsConfirmOkBtn" slot="footer" class="danger-btn">Confirm</wa-button>
+      </wa-dialog>
 
       <section class="card forms is-hidden" id="riskPanel">
         <h2 data-i18n="menu.risk">Risk</h2>

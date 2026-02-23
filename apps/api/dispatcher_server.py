@@ -205,6 +205,16 @@ class Dispatcher:
         if not allowed:
             raise RuntimeError("strategy_permission_denied")
 
+    async def _can_reassign_account(self, auth: AuthContext, account_id: int) -> bool:
+        if auth.is_admin:
+            return True
+        async with self.db.connection() as conn:
+            perms = await self.repo.fetch_api_key_account_permissions(conn, auth.api_key_id, account_id)
+            await conn.commit()
+        if perms is None:
+            return False
+        return bool(perms.get("can_trade")) or bool(perms.get("can_risk_manage"))
+
     async def _require_oms_command_permission(self, auth: AuthContext, item: CommandInput) -> int:
         account_id = int(item.account_id or 0)
         payload = item.payload.model_dump(by_alias=True, exclude_none=True, mode="json")
@@ -301,6 +311,23 @@ class Dispatcher:
                 await self._require_strategy_permission(auth, account_id, sid_a, for_trade=True)
             if sid_b is not None:
                 await self._require_strategy_permission(auth, account_id, sid_b, for_trade=True)
+            return account_id
+        if command == "merge_positions":
+            if account_id <= 0:
+                raise RuntimeError("missing_account_id")
+            await self._require_account_permission(auth, account_id, require_close_position=True)
+            src_id = int(payload.get("source_position_id", 0) or 0)
+            dst_id = int(payload.get("target_position_id", 0) or 0)
+            if src_id <= 0 or dst_id <= 0 or src_id == dst_id:
+                raise RuntimeError("validation_error")
+            async with self.db.connection() as conn:
+                sid_src = await self.repo.fetch_position_strategy_id(conn, account_id, src_id)
+                sid_dst = await self.repo.fetch_position_strategy_id(conn, account_id, dst_id)
+                await conn.commit()
+            if sid_src is None or sid_dst is None:
+                raise RuntimeError("position_not_found")
+            await self._require_strategy_permission(auth, account_id, int(sid_src), for_trade=True)
+            await self._require_strategy_permission(auth, account_id, int(sid_dst), for_trade=True)
             return account_id
         if command == "position_change":
             position_id = int(payload.get("position_id", 0) or 0)
@@ -705,10 +732,24 @@ class Dispatcher:
             query = str(msg.get("query", "")).strip()
             account_id = int(msg.get("account_id", 0) or 0)
             strategy_id_raw = msg.get("strategy_id")
+            date_from_raw = msg.get("date_from")
+            date_to_raw = msg.get("date_to")
+            open_limit_raw = msg.get("open_limit")
+            date_from = None if date_from_raw in {None, ""} else str(date_from_raw).strip()
+            date_to = None if date_to_raw in {None, ""} else str(date_to_raw).strip()
+            try:
+                open_limit = int(open_limit_raw or 500)
+            except Exception:
+                return {"ok": False, "error": {"code": "validation_error", "message": "open_limit must be integer"}}
             try:
                 strategy_id = None if strategy_id_raw in {None, ""} else int(strategy_id_raw)
             except Exception:
                 return {"ok": False, "error": {"code": "validation_error", "message": "strategy_id must be integer"}}
+            if (date_from and not date_to) or (date_to and not date_from):
+                return {
+                    "ok": False,
+                    "error": {"code": "validation_error", "message": "date_from and date_to must be provided together"},
+                }
             await self._require_account_permission(auth, account_id, require_trade=False)
             async with self.db.connection() as conn:
                 perms = await self.repo.fetch_api_key_account_permissions(conn, auth.api_key_id, account_id)
@@ -729,58 +770,518 @@ class Dispatcher:
                         await conn.commit()
                         return {"ok": False, "error": {"code": "strategy_permission_denied"}}
                 if query == "orders_open":
-                    rows = await self.repo.list_orders(conn, account_id, open_only=True, strategy_id=strategy_id)
+                    rows = await self.repo.list_orders(
+                        conn, account_id, open_only=True, strategy_id=strategy_id, open_limit=open_limit
+                    )
                 elif query == "orders_history":
-                    rows = await self.repo.list_orders(conn, account_id, open_only=False, strategy_id=strategy_id)
+                    rows = await self.repo.list_orders(
+                        conn, account_id, open_only=False, strategy_id=strategy_id, date_from=date_from, date_to=date_to
+                    )
                 elif query == "deals":
-                    rows = await self.repo.list_deals(conn, account_id, strategy_id=strategy_id)
+                    rows = await self.repo.list_deals(
+                        conn, account_id, strategy_id=strategy_id, date_from=date_from, date_to=date_to
+                    )
                 elif query == "positions_open":
-                    rows = await self.repo.list_positions(conn, account_id, open_only=True, strategy_id=strategy_id)
+                    rows = await self.repo.list_positions(
+                        conn, account_id, open_only=True, strategy_id=strategy_id, open_limit=open_limit
+                    )
                 elif query == "positions_history":
-                    rows = await self.repo.list_positions(conn, account_id, open_only=False, strategy_id=strategy_id)
+                    rows = await self.repo.list_positions(
+                        conn, account_id, open_only=False, strategy_id=strategy_id, date_from=date_from, date_to=date_to
+                    )
                 else:
                     await conn.commit()
                     return {"ok": False, "error": {"code": "unsupported_query"}}
                 await conn.commit()
             return {"ok": True, "result": rows}
 
+        if op == "ccxt_raw_query":
+            auth = await self._auth_from_payload(msg)
+            query = str(msg.get("query", "")).strip()
+            account_id = int(msg.get("account_id", 0) or 0)
+            date_from_raw = msg.get("date_from")
+            date_to_raw = msg.get("date_to")
+            date_from = None if date_from_raw in {None, ""} else str(date_from_raw).strip()
+            date_to = None if date_to_raw in {None, ""} else str(date_to_raw).strip()
+            if not date_from or not date_to:
+                return {
+                    "ok": False,
+                    "error": {"code": "validation_error", "message": "date_from and date_to are required"},
+                }
+            await self._require_account_permission(auth, account_id, require_trade=False)
+            async with self.db.connection() as conn:
+                perms = await self.repo.fetch_api_key_account_permissions(conn, auth.api_key_id, account_id)
+                if perms is None or not bool(perms.get("can_read")):
+                    await conn.commit()
+                    return {"ok": False, "error": {"code": "permission_denied"}}
+                if query == "orders_raw":
+                    rows = await self.repo.list_ccxt_orders_raw(conn, account_id, date_from=date_from, date_to=date_to)
+                elif query == "trades_raw":
+                    rows = await self.repo.list_ccxt_trades_raw(conn, account_id, date_from=date_from, date_to=date_to)
+                else:
+                    await conn.commit()
+                    return {"ok": False, "error": {"code": "unsupported_query"}}
+                await conn.commit()
+            return {"ok": True, "result": rows}
+
+        if op == "ccxt_raw_query_multi":
+            auth = await self._auth_from_payload(msg)
+            query = str(msg.get("query", "")).strip()
+            raw_account_ids = msg.get("account_ids")
+            date_from_raw = msg.get("date_from")
+            date_to_raw = msg.get("date_to")
+            page_raw = msg.get("page")
+            page_size_raw = msg.get("page_size")
+
+            account_ids: list[int] = []
+            seen_ids: set[int] = set()
+            if isinstance(raw_account_ids, list):
+                for raw in raw_account_ids:
+                    try:
+                        aid = int(raw or 0)
+                    except Exception:
+                        aid = 0
+                    if aid <= 0 or aid in seen_ids:
+                        continue
+                    seen_ids.add(aid)
+                    account_ids.append(aid)
+            elif isinstance(raw_account_ids, str):
+                for part in raw_account_ids.split(","):
+                    text = str(part).strip()
+                    if not text.isdigit():
+                        continue
+                    aid = int(text)
+                    if aid <= 0 or aid in seen_ids:
+                        continue
+                    seen_ids.add(aid)
+                    account_ids.append(aid)
+            if not account_ids:
+                return {
+                    "ok": False,
+                    "error": {"code": "validation_error", "message": "account_ids is required"},
+                }
+
+            date_from = None if date_from_raw in {None, ""} else str(date_from_raw).strip()
+            date_to = None if date_to_raw in {None, ""} else str(date_to_raw).strip()
+            if not date_from or not date_to:
+                return {
+                    "ok": False,
+                    "error": {"code": "validation_error", "message": "date_from and date_to are required"},
+                }
+            try:
+                page = max(1, int(page_raw or 1))
+                page_size = max(1, min(500, int(page_size_raw or 100)))
+            except Exception:
+                return {
+                    "ok": False,
+                    "error": {"code": "validation_error", "message": "page and page_size must be integers"},
+                }
+            offset = (page - 1) * page_size
+
+            for aid in account_ids:
+                await self._require_account_permission(auth, aid, require_trade=False)
+
+            async with self.db.connection() as conn:
+                if query == "orders_raw":
+                    total = await self.repo.count_ccxt_orders_raw_multi(
+                        conn,
+                        account_ids=account_ids,
+                        date_from=date_from,
+                        date_to=date_to,
+                    )
+                    rows = await self.repo.list_ccxt_orders_raw_multi(
+                        conn,
+                        account_ids=account_ids,
+                        date_from=date_from,
+                        date_to=date_to,
+                        limit=page_size,
+                        offset=offset,
+                    )
+                elif query == "trades_raw":
+                    total = await self.repo.count_ccxt_trades_raw_multi(
+                        conn,
+                        account_ids=account_ids,
+                        date_from=date_from,
+                        date_to=date_to,
+                    )
+                    rows = await self.repo.list_ccxt_trades_raw_multi(
+                        conn,
+                        account_ids=account_ids,
+                        date_from=date_from,
+                        date_to=date_to,
+                        limit=page_size,
+                        offset=offset,
+                    )
+                else:
+                    await conn.commit()
+                    return {"ok": False, "error": {"code": "unsupported_query"}}
+                await conn.commit()
+            return {
+                "ok": True,
+                "result": {
+                    "items": rows,
+                    "total": int(total),
+                    "page": int(page),
+                    "page_size": int(page_size),
+                },
+            }
+
         if op == "oms_reassign":
             auth = await self._auth_from_payload(msg)
             account_id = int(msg.get("account_id", 0) or 0)
-            deal_ids = msg.get("deal_ids") if isinstance(msg.get("deal_ids"), list) else []
-            order_ids = msg.get("order_ids") if isinstance(msg.get("order_ids"), list) else []
+            account_ids_raw = msg.get("account_ids")
+            account_ids: list[int] = []
+            if isinstance(account_ids_raw, list):
+                account_ids = [int(x) for x in account_ids_raw if int(x or 0) > 0]
+            elif isinstance(account_ids_raw, str):
+                account_ids = [int(x.strip()) for x in account_ids_raw.split(",") if x.strip().isdigit() and int(x.strip()) > 0]
+            if account_id > 0:
+                account_ids = [account_id]
+            account_ids = sorted(set([int(x) for x in account_ids if int(x) > 0]))
+            if not account_ids:
+                async with self.db.connection() as conn:
+                    if auth.is_admin:
+                        rows = await self.repo.list_accounts_admin(conn)
+                        candidate_ids = [int(r.get("account_id", 0)) for r in rows if int(r.get("account_id", 0)) > 0]
+                    else:
+                        rows = await self.repo.list_accounts_for_api_key(conn, auth.api_key_id)
+                        candidate_ids = [
+                            int(r.get("account_id", 0))
+                            for r in rows
+                            if int(r.get("account_id", 0)) > 0
+                            and (bool(r.get("can_trade")) or bool(r.get("can_risk_manage")))
+                        ]
+                    await conn.commit()
+                account_ids = sorted(set(candidate_ids))
+            if not account_ids:
+                return {"ok": False, "error": {"code": "validation_error", "message": "no eligible accounts for reassign"}}
+
+            deal_ids = [int(x) for x in (msg.get("deal_ids") if isinstance(msg.get("deal_ids"), list) else []) if int(x or 0) > 0]
+            order_ids = [int(x) for x in (msg.get("order_ids") if isinstance(msg.get("order_ids"), list) else []) if int(x or 0) > 0]
             target_strategy_id = int(msg.get("target_strategy_id", 0) or 0)
-            target_position_id = int(msg.get("target_position_id", 0) or 0)
-            await self._require_account_permission(auth, account_id, require_trade=True)
+            target_position_id_raw = msg.get("target_position_id")
+            target_position_id = None if target_position_id_raw is None else int(target_position_id_raw or 0)
+            date_from = None if msg.get("date_from") is None else str(msg.get("date_from"))
+            date_to = None if msg.get("date_to") is None else str(msg.get("date_to"))
+            reconciled = msg.get("reconciled")
+            order_statuses = msg.get("order_statuses") if isinstance(msg.get("order_statuses"), list) else []
+            preview = bool(msg.get("preview", False))
+            page = max(1, int(msg.get("page", 1) or 1))
+            page_size = max(1, min(500, int(msg.get("page_size", 100) or 100)))
+
+            for aid in account_ids:
+                if not await self._can_reassign_account(auth, aid):
+                    return {"ok": False, "error": {"code": "permission_denied", "message": f"reassign_not_allowed account_id={aid}"}}
+
             async with self.db.connection() as conn:
-                deals_count = await self.repo.reassign_deals(
-                    conn=conn,
-                    account_id=account_id,
-                    deal_ids=[int(x) for x in deal_ids],
-                    target_strategy_id=target_strategy_id,
-                    target_position_id=target_position_id,
+                offset = (page - 1) * page_size
+                # Post-trading reassignment is intentionally order-only.
+                if deal_ids:
+                    await conn.commit()
+                    return {
+                        "ok": False,
+                        "error": {
+                            "code": "validation_error",
+                            "message": "order_only_reassign: deal_ids are not supported",
+                        },
+                    }
+
+                order_preview_items, orders_total = await self.repo.list_reassign_order_candidates(
+                    conn,
+                    account_ids=account_ids,
+                    order_ids=order_ids,
+                    date_from=date_from,
+                    date_to=date_to,
+                    statuses=order_statuses,
+                    reconciled=reconciled,
+                    limit=page_size,
+                    offset=offset,
                 )
-                orders_count = await self.repo.reassign_orders(
-                    conn=conn,
-                    account_id=account_id,
-                    order_ids=[int(x) for x in order_ids],
-                    target_strategy_id=target_strategy_id,
-                    target_position_id=target_position_id,
+                deals_total = 0
+                if preview:
+                    await conn.commit()
+                    merged_items = sorted(
+                        [*order_preview_items],
+                        key=lambda x: (int(x.get("account_id", 0)), str(x.get("kind", "")), int(x.get("id", 0))),
+                    )
+                    return {
+                        "ok": True,
+                        "result": {
+                            "preview": True,
+                            "deals_updated": 0,
+                            "orders_updated": 0,
+                            "deals_total": int(deals_total),
+                            "orders_total": int(orders_total),
+                            "page": page,
+                            "page_size": page_size,
+                            "items": merged_items,
+                        },
+                    }
+
+                if target_strategy_id <= 0:
+                    await conn.commit()
+                    return {
+                        "ok": False,
+                        "error": {
+                            "code": "validation_error",
+                            "message": "target_strategy_id must be > 0",
+                        },
+                    }
+                if target_position_id is not None and int(target_position_id) < 0:
+                    await conn.commit()
+                    return {
+                        "ok": False,
+                        "error": {
+                            "code": "validation_error",
+                            "message": "target_position_id must be >= 0",
+                        },
+                    }
+
+                scoped_order_ids_by_account: dict[int, list[int]] = {}
+                scoped_orders_by_account: dict[int, list[dict[str, Any]]] = {}
+                if order_ids:
+                    for oid in sorted(set(order_ids)):
+                        row = await self.repo.admin_fetch_oms_order_by_id(conn, oid)
+                        if row is None:
+                            await conn.commit()
+                            return {
+                                "ok": False,
+                                "error": {"code": "validation_error", "message": f"order_not_found id={oid}"},
+                            }
+                        aid = int(row.get("account_id", 0) or 0)
+                        if aid not in account_ids:
+                            await conn.commit()
+                            return {
+                                "ok": False,
+                                "error": {
+                                    "code": "validation_error",
+                                    "message": f"order_not_allowed_for_selected_accounts id={oid}",
+                                },
+                            }
+                        scoped_order_ids_by_account.setdefault(aid, []).append(int(oid))
+                        scoped_orders_by_account.setdefault(aid, []).append(row)
+                else:
+                    for row in order_preview_items:
+                        oid = int(row.get("id", 0) or 0)
+                        aid = int(row.get("account_id", 0) or 0)
+                        if oid <= 0 or aid <= 0:
+                            continue
+                        scoped_order_ids_by_account.setdefault(aid, []).append(oid)
+                    for aid, ids in scoped_order_ids_by_account.items():
+                        loaded: list[dict[str, Any]] = []
+                        for oid in sorted(set(ids)):
+                            row = await self.repo.admin_fetch_oms_order_by_id(conn, oid, aid)
+                            if row is not None:
+                                loaded.append(row)
+                        scoped_orders_by_account[aid] = loaded
+                    for aid in list(scoped_order_ids_by_account.keys()):
+                        scoped_order_ids_by_account[aid] = sorted(
+                            set([int(x) for x in scoped_order_ids_by_account[aid] if int(x) > 0])
+                        )
+
+                final_order_ids = sorted(
+                    set(
+                        [
+                            oid
+                            for ids in scoped_order_ids_by_account.values()
+                            for oid in ids
+                            if int(oid) > 0
+                        ]
+                    )
                 )
+                if not final_order_ids:
+                    await conn.commit()
+                    return {
+                        "ok": True,
+                        "result": {
+                            "preview": False,
+                            "deals_updated": 0,
+                            "orders_updated": 0,
+                            "deals_total": int(deals_total),
+                            "orders_total": int(orders_total),
+                            "page": page,
+                            "page_size": page_size,
+                            "items": [],
+                        },
+                    }
+
+                # Safety checks before mutating any row.
+                if target_position_id and len(scoped_order_ids_by_account.keys()) > 1:
+                    await conn.commit()
+                    return {
+                        "ok": False,
+                        "error": {
+                            "code": "validation_error",
+                            "message": "target_position_id requires exactly one account scope",
+                        },
+                    }
+                target_position_row: dict[str, Any] | None = None
+                if target_position_id and int(target_position_id) > 0:
+                    target_position_row = await self.repo.admin_fetch_oms_position_by_id(conn, int(target_position_id))
+                    if target_position_row is None:
+                        await conn.commit()
+                        return {
+                            "ok": False,
+                            "error": {
+                                "code": "validation_error",
+                                "message": f"target_position_not_found id={int(target_position_id)}",
+                            },
+                        }
+
+                orders_count = 0
+                deals_count = 0
+                positions_count = 0
+                before_by_account: dict[int, dict[str, list[dict[str, Any]]]] = {}
+                affected_accounts: set[int] = set()
+                for aid in sorted(scoped_order_ids_by_account.keys()):
+                    scoped_order_ids = sorted(set(scoped_order_ids_by_account.get(aid, [])))
+                    scoped_orders = scoped_orders_by_account.get(aid, [])
+                    if not scoped_order_ids:
+                        continue
+
+                    strategy_ok = await self.repo.strategy_exists_for_account(conn, aid, target_strategy_id)
+                    if not strategy_ok:
+                        await conn.commit()
+                        return {
+                            "ok": False,
+                            "error": {
+                                "code": "validation_error",
+                                "message": f"strategy_not_allowed account_id={aid} strategy_id={target_strategy_id}",
+                            },
+                        }
+
+                    for order_row in scoped_orders:
+                        current_strategy_id = int(order_row.get("strategy_id", 0) or 0)
+                        current_position_id = int(order_row.get("position_id", 0) or 0)
+                        if current_strategy_id > 0 or current_position_id > 0:
+                            await conn.commit()
+                            return {
+                                "ok": False,
+                                "error": {
+                                    "code": "validation_error",
+                                    "message": (
+                                        f"order_already_assigned id={int(order_row.get('id', 0))} "
+                                        f"strategy_id={current_strategy_id} position_id={current_position_id}"
+                                    ),
+                                },
+                            }
+
+                        if target_position_row is not None:
+                            pos_account_id = int(target_position_row.get("account_id", 0) or 0)
+                            if pos_account_id != aid:
+                                await conn.commit()
+                                return {
+                                    "ok": False,
+                                    "error": {
+                                        "code": "validation_error",
+                                        "message": "target_position_account_mismatch",
+                                    },
+                                }
+                            order_symbol = str(order_row.get("symbol", "") or "")
+                            pos_symbol = str(target_position_row.get("symbol", "") or "")
+                            if order_symbol and pos_symbol and (order_symbol.upper() != pos_symbol.upper()):
+                                await conn.commit()
+                                return {
+                                    "ok": False,
+                                    "error": {
+                                        "code": "validation_error",
+                                        "message": (
+                                            f"target_position_symbol_mismatch order_id={int(order_row.get('id', 0))} "
+                                            f"order_symbol={order_symbol} position_symbol={pos_symbol}"
+                                        ),
+                                    },
+                                }
+                            order_side = str(order_row.get("side", "") or "").lower()
+                            pos_side = str(target_position_row.get("side", "") or "").lower()
+                            if order_side and pos_side and (order_side != pos_side):
+                                await conn.commit()
+                                return {
+                                    "ok": False,
+                                    "error": {
+                                        "code": "validation_error",
+                                        "message": (
+                                            f"target_position_side_mismatch order_id={int(order_row.get('id', 0))} "
+                                            f"order_side={order_side} position_side={pos_side}"
+                                        ),
+                                    },
+                                }
+
+                    before = await self.repo.fetch_reassign_before_state(
+                        conn,
+                        account_id=aid,
+                        deal_ids=[],
+                        order_ids=scoped_order_ids,
+                    )
+                    before_by_account[aid] = before
+                    orders_count += await self.repo.reassign_orders(
+                        conn=conn,
+                        account_id=aid,
+                        order_ids=scoped_order_ids,
+                        target_strategy_id=target_strategy_id,
+                        target_position_id=int(target_position_id or 0),
+                    )
+                    deals_count += await self.repo.reassign_deals_strategy_by_orders(
+                        conn=conn,
+                        account_id=aid,
+                        order_ids=scoped_order_ids,
+                        target_strategy_id=target_strategy_id,
+                    )
+                    positions_count += await self.repo.reassign_positions_strategy_by_orders(
+                        conn=conn,
+                        account_id=aid,
+                        order_ids=scoped_order_ids,
+                        target_strategy_id=target_strategy_id,
+                    )
+                    affected_accounts.add(aid)
+
+                for aid in sorted(affected_accounts):
+                    before = before_by_account.get(aid, {"deals": [], "orders": []})
+                    after = {
+                        "target_strategy_id": target_strategy_id,
+                        "target_position_id": target_position_id,
+                    }
+                    await self.repo.insert_event(
+                        conn=conn,
+                        account_id=aid,
+                        namespace="position",
+                        event_type="reassigned",
+                        payload={
+                            "deals_updated": deals_count,
+                            "orders_updated": orders_count,
+                            "positions_updated": positions_count,
+                            "target_strategy_id": target_strategy_id,
+                            "target_position_id": target_position_id,
+                            "before": before,
+                            "after": after,
+                        },
+                    )
                 await self.repo.insert_event(
                     conn=conn,
-                    account_id=account_id,
+                    account_id=account_ids[0],
                     namespace="position",
-                    event_type="reassigned",
+                    event_type="reassign_audit",
                     payload={
                         "deals_updated": deals_count,
                         "orders_updated": orders_count,
+                        "positions_updated": positions_count,
                         "target_strategy_id": target_strategy_id,
                         "target_position_id": target_position_id,
                     },
                 )
                 await conn.commit()
-            return {"ok": True, "result": {"deals_updated": deals_count, "orders_updated": orders_count}}
+            return {
+                "ok": True,
+                "result": {
+                    "preview": False,
+                    "deals_updated": deals_count,
+                    "orders_updated": orders_count,
+                    "deals_total": int(deals_total),
+                    "orders_total": int(orders_total),
+                    "page": page,
+                    "page_size": page_size,
+                    "items": [],
+                },
+            }
 
         if op == "reconcile_now":
             auth = await self._auth_from_payload(msg)
@@ -1151,6 +1652,30 @@ class Dispatcher:
                 await conn.commit()
             return {"ok": True, "result": items}
 
+        if op == "admin_create_api_key":
+            auth = await self._auth_from_payload(msg)
+            self._require_admin(auth)
+            user_id = int(msg.get("user_id", 0) or 0)
+            if user_id <= 0:
+                return {"ok": False, "error": {"code": "validation_error", "message": "user_id is required"}}
+            api_key_plain = str(msg.get("api_key") or secrets.token_urlsafe(32))
+            api_key_hash = hashlib.sha256(api_key_plain.encode("utf-8")).hexdigest()
+            async with self.db.connection() as conn:
+                user = await self.repo.fetch_user_by_id(conn, user_id)
+                if user is None:
+                    await conn.commit()
+                    return {"ok": False, "error": {"code": "not_found", "message": "user not found"}}
+                api_key_id = await self.repo.create_api_key(conn, user_id, api_key_hash)
+                await conn.commit()
+            return {
+                "ok": True,
+                "result": {
+                    "user_id": user_id,
+                    "api_key_id": api_key_id,
+                    "api_key_plain": api_key_plain,
+                },
+            }
+
         if op == "admin_list_api_key_permissions":
             auth = await self._auth_from_payload(msg)
             self._require_admin(auth)
@@ -1277,6 +1802,111 @@ class Dispatcher:
                     "api_key_id": selected_api_key_id,
                 },
             }
+
+        if op == "user_profile_get":
+            auth = await self._auth_from_payload(msg)
+            async with self.db.connection() as conn:
+                user = await self.repo.fetch_user_by_id(conn, auth.user_id)
+                await conn.commit()
+            if user is None:
+                return {"ok": False, "error": {"code": "not_found", "message": "user not found"}}
+            return {
+                "ok": True,
+                "result": {
+                    "user_id": int(user.get("user_id", auth.user_id)),
+                    "user_name": str(user.get("user_name", "")),
+                    "role": str(user.get("role", "")),
+                    "status": str(user.get("status", "")),
+                    "api_key_id": int(auth.api_key_id),
+                },
+            }
+
+        if op == "user_profile_update":
+            auth = await self._auth_from_payload(msg)
+            user_name = str(msg.get("user_name", "")).strip()
+            if not user_name:
+                return {"ok": False, "error": {"code": "validation_error", "message": "user_name is required"}}
+            async with self.db.connection() as conn:
+                rows = await self.repo.update_user_name(conn, auth.user_id, user_name)
+                user = await self.repo.fetch_user_by_id(conn, auth.user_id)
+                await conn.commit()
+            if user is None:
+                return {"ok": False, "error": {"code": "not_found", "message": "user not found"}}
+            return {
+                "ok": True,
+                "result": {
+                    "user_id": int(auth.user_id),
+                    "user_name": str(user.get("user_name", user_name)),
+                },
+            }
+
+        if op == "user_password_update":
+            auth = await self._auth_from_payload(msg)
+            current_password = str(msg.get("current_password", ""))
+            new_password = str(msg.get("new_password", ""))
+            if not current_password or not new_password:
+                return {
+                    "ok": False,
+                    "error": {
+                        "code": "validation_error",
+                        "message": "current_password and new_password are required",
+                    },
+                }
+            async with self.db.connection() as conn:
+                stored_hash = await self.repo.fetch_user_password_hash(conn, auth.user_id)
+                if not self._verify_password(current_password, stored_hash):
+                    await conn.commit()
+                    return {"ok": False, "error": {"code": "invalid_credentials"}}
+                rows = await self.repo.set_user_password_hash(
+                    conn,
+                    auth.user_id,
+                    self._new_password_hash(new_password),
+                )
+                await conn.commit()
+            return {"ok": True, "result": {"user_id": int(auth.user_id), "rows": int(rows)}}
+
+        if op == "user_api_keys_list":
+            auth = await self._auth_from_payload(msg)
+            async with self.db.connection() as conn:
+                items = await self.repo.list_api_keys_for_user(conn, auth.user_id)
+                await conn.commit()
+            return {"ok": True, "result": items}
+
+        if op == "user_api_key_create":
+            auth = await self._auth_from_payload(msg)
+            api_key_plain = str(msg.get("api_key") or secrets.token_urlsafe(32))
+            api_key_hash = hashlib.sha256(api_key_plain.encode("utf-8")).hexdigest()
+            async with self.db.connection() as conn:
+                api_key_id = await self.repo.create_api_key(conn, auth.user_id, api_key_hash)
+                await conn.commit()
+            return {
+                "ok": True,
+                "result": {
+                    "user_id": int(auth.user_id),
+                    "api_key_id": int(api_key_id),
+                    "api_key_plain": api_key_plain,
+                },
+            }
+
+        if op == "user_api_key_update":
+            auth = await self._auth_from_payload(msg)
+            api_key_id = int(msg.get("api_key_id", 0) or 0)
+            status = str(msg.get("status", "")).strip().lower()
+            if api_key_id <= 0:
+                return {"ok": False, "error": {"code": "validation_error", "message": "api_key_id is required"}}
+            if status not in {"active", "disabled"}:
+                return {"ok": False, "error": {"code": "validation_error", "message": "status must be active|disabled"}}
+            async with self.db.connection() as conn:
+                owner = await self.repo.fetch_api_key_owner(conn, api_key_id)
+                if owner is None:
+                    await conn.commit()
+                    return {"ok": False, "error": {"code": "not_found", "message": "api key not found"}}
+                if int(owner.get("user_id", 0) or 0) != int(auth.user_id):
+                    await conn.commit()
+                    return {"ok": False, "error": {"code": "permission_denied"}}
+                rows = await self.repo.set_api_key_status(conn, api_key_id, status)
+                await conn.commit()
+            return {"ok": True, "result": {"api_key_id": api_key_id, "rows": int(rows)}}
 
         if op == "admin_list_users":
             auth = await self._auth_from_payload(msg)
@@ -1422,6 +2052,266 @@ class Dispatcher:
                 await conn.commit()
             return {"ok": True, "result": {"strategy_id": strategy_id, "rows": rows}}
 
+        if op == "admin_oms_query":
+            auth = await self._auth_from_payload(msg)
+            self._require_admin(auth)
+            view = str(msg.get("view", "")).strip()
+            raw_account_ids = msg.get("account_ids")
+            date_from_raw = msg.get("date_from")
+            date_to_raw = msg.get("date_to")
+            page_raw = msg.get("page")
+            page_size_raw = msg.get("page_size")
+            account_ids: list[int] = []
+            seen: set[int] = set()
+            if isinstance(raw_account_ids, list):
+                for raw in raw_account_ids:
+                    try:
+                        aid = int(raw or 0)
+                    except Exception:
+                        aid = 0
+                    if aid <= 0 or aid in seen:
+                        continue
+                    seen.add(aid)
+                    account_ids.append(aid)
+            elif isinstance(raw_account_ids, str):
+                for part in raw_account_ids.split(","):
+                    text = str(part).strip()
+                    if not text.isdigit():
+                        continue
+                    aid = int(text)
+                    if aid <= 0 or aid in seen:
+                        continue
+                    seen.add(aid)
+                    account_ids.append(aid)
+            try:
+                page = max(1, int(page_raw or 1))
+                page_size = max(1, min(500, int(page_size_raw or 100)))
+            except Exception:
+                return {"ok": False, "error": {"code": "validation_error", "message": "page/page_size invalid"}}
+            offset = (page - 1) * page_size
+            date_from = None if date_from_raw in {None, ""} else str(date_from_raw).strip()
+            date_to = None if date_to_raw in {None, ""} else str(date_to_raw).strip()
+            async with self.db.connection() as conn:
+                if view == "open_orders":
+                    items, total = await self.repo.admin_list_oms_orders_multi(
+                        conn,
+                        account_ids=account_ids,
+                        open_only=True,
+                        date_from=None,
+                        date_to=None,
+                        limit=page_size,
+                        offset=offset,
+                    )
+                elif view == "history_orders":
+                    items, total = await self.repo.admin_list_oms_orders_multi(
+                        conn,
+                        account_ids=account_ids,
+                        open_only=False,
+                        date_from=date_from,
+                        date_to=date_to,
+                        limit=page_size,
+                        offset=offset,
+                    )
+                elif view == "open_positions":
+                    items, total = await self.repo.admin_list_oms_positions_multi(
+                        conn,
+                        account_ids=account_ids,
+                        open_only=True,
+                        date_from=None,
+                        date_to=None,
+                        limit=page_size,
+                        offset=offset,
+                    )
+                elif view == "history_positions":
+                    items, total = await self.repo.admin_list_oms_positions_multi(
+                        conn,
+                        account_ids=account_ids,
+                        open_only=False,
+                        date_from=date_from,
+                        date_to=date_to,
+                        limit=page_size,
+                        offset=offset,
+                    )
+                elif view == "deals":
+                    items, total = await self.repo.admin_list_oms_deals_multi(
+                        conn,
+                        account_ids=account_ids,
+                        date_from=date_from,
+                        date_to=date_to,
+                        limit=page_size,
+                        offset=offset,
+                    )
+                else:
+                    await conn.commit()
+                    return {"ok": False, "error": {"code": "validation_error", "message": "unsupported view"}}
+                await conn.commit()
+            return {
+                "ok": True,
+                "result": {
+                    "items": items,
+                    "total": int(total),
+                    "page": int(page),
+                    "page_size": int(page_size),
+                },
+            }
+
+        if op == "admin_oms_mutate":
+            auth = await self._auth_from_payload(msg)
+            self._require_admin(auth)
+            entity = str(msg.get("entity", "")).strip()
+            operations = msg.get("operations") if isinstance(msg.get("operations"), list) else []
+            if entity not in {"orders", "positions", "deals"}:
+                return {"ok": False, "error": {"code": "validation_error", "message": "entity invalid"}}
+            results: list[dict[str, Any]] = []
+            affected_accounts: set[int] = set()
+            pending_events: list[tuple[int, str, dict[str, Any]]] = []
+            async with self.db.connection() as conn:
+                for index, raw in enumerate(operations):
+                    if not isinstance(raw, dict):
+                        results.append({"index": index, "ok": False, "op": "", "error": "invalid operation"})
+                        continue
+                    op_kind = str(raw.get("op", "")).strip().lower()
+                    row = raw.get("row") if isinstance(raw.get("row"), dict) else {}
+                    row = dict(row)
+                    try:
+                        if entity == "orders":
+                            if op_kind == "insert":
+                                row_id = await self.repo.admin_insert_oms_order(conn, row)
+                                after = await self.repo.admin_fetch_oms_order_by_id(conn, row_id)
+                                if after is not None:
+                                    affected_accounts.add(int(after["account_id"]))
+                                    pending_events.append((int(after["account_id"]), "order_updated", dict(after)))
+                                results.append({"index": index, "ok": True, "op": op_kind, "id": int(row_id)})
+                            elif op_kind == "update":
+                                row_id = int(row.get("id", 0) or 0)
+                                if row_id <= 0:
+                                    raise ValueError("id is required for update")
+                                await self.repo.admin_update_oms_order(conn, row_id, row)
+                                after = await self.repo.admin_fetch_oms_order_by_id(conn, row_id)
+                                if after is not None:
+                                    affected_accounts.add(int(after["account_id"]))
+                                    pending_events.append((int(after["account_id"]), "order_updated", dict(after)))
+                                results.append({"index": index, "ok": True, "op": op_kind, "id": int(row_id)})
+                            elif op_kind == "delete":
+                                row_id = int(row.get("id", 0) or 0)
+                                account_id = int(row.get("account_id", 0) or 0) or None
+                                if row_id <= 0:
+                                    raise ValueError("id is required for delete")
+                                before = await self.repo.admin_fetch_oms_order_by_id(conn, row_id, account_id)
+                                await self.repo.admin_delete_oms_order(conn, row_id, account_id)
+                                payload = dict(before or {"id": row_id, "account_id": int(account_id or 0)})
+                                payload["__deleted"] = True
+                                payload["order_id"] = int(row_id)
+                                payload["status"] = payload.get("status") or "CANCELED"
+                                aid = int(payload.get("account_id", 0) or 0)
+                                if aid > 0:
+                                    affected_accounts.add(aid)
+                                    pending_events.append((aid, "order_deleted", payload))
+                                results.append({"index": index, "ok": True, "op": op_kind, "id": int(row_id)})
+                            else:
+                                raise ValueError("op invalid")
+                        elif entity == "positions":
+                            if op_kind == "insert":
+                                row_id = await self.repo.admin_insert_oms_position(conn, row)
+                                after = await self.repo.admin_fetch_oms_position_by_id(conn, row_id)
+                                if after is not None:
+                                    affected_accounts.add(int(after["account_id"]))
+                                    pending_events.append((int(after["account_id"]), "position_updated", dict(after)))
+                                results.append({"index": index, "ok": True, "op": op_kind, "id": int(row_id)})
+                            elif op_kind == "update":
+                                row_id = int(row.get("id", 0) or 0)
+                                if row_id <= 0:
+                                    raise ValueError("id is required for update")
+                                await self.repo.admin_update_oms_position(conn, row_id, row)
+                                after = await self.repo.admin_fetch_oms_position_by_id(conn, row_id)
+                                if after is not None:
+                                    affected_accounts.add(int(after["account_id"]))
+                                    pending_events.append((int(after["account_id"]), "position_updated", dict(after)))
+                                results.append({"index": index, "ok": True, "op": op_kind, "id": int(row_id)})
+                            elif op_kind == "delete":
+                                row_id = int(row.get("id", 0) or 0)
+                                account_id = int(row.get("account_id", 0) or 0) or None
+                                if row_id <= 0:
+                                    raise ValueError("id is required for delete")
+                                before = await self.repo.admin_fetch_oms_position_by_id(conn, row_id, account_id)
+                                await self.repo.admin_delete_oms_position(conn, row_id, account_id)
+                                payload = dict(before or {"id": row_id, "account_id": int(account_id or 0)})
+                                payload["__deleted"] = True
+                                payload["position_id"] = int(row_id)
+                                payload["state"] = payload.get("state") or "closed"
+                                payload["qty"] = "0"
+                                aid = int(payload.get("account_id", 0) or 0)
+                                if aid > 0:
+                                    affected_accounts.add(aid)
+                                    pending_events.append((aid, "position_deleted", payload))
+                                results.append({"index": index, "ok": True, "op": op_kind, "id": int(row_id)})
+                            else:
+                                raise ValueError("op invalid")
+                        else:  # deals
+                            if op_kind == "insert":
+                                row_id = await self.repo.admin_insert_oms_deal(conn, row)
+                                after = await self.repo.admin_fetch_oms_deal_by_id(conn, row_id)
+                                if after is not None:
+                                    affected_accounts.add(int(after["account_id"]))
+                                    pending_events.append((int(after["account_id"]), "deal_updated", dict(after)))
+                                results.append({"index": index, "ok": True, "op": op_kind, "id": int(row_id)})
+                            elif op_kind == "update":
+                                row_id = int(row.get("id", 0) or 0)
+                                if row_id <= 0:
+                                    raise ValueError("id is required for update")
+                                await self.repo.admin_update_oms_deal(conn, row_id, row)
+                                after = await self.repo.admin_fetch_oms_deal_by_id(conn, row_id)
+                                if after is not None:
+                                    affected_accounts.add(int(after["account_id"]))
+                                    pending_events.append((int(after["account_id"]), "deal_updated", dict(after)))
+                                results.append({"index": index, "ok": True, "op": op_kind, "id": int(row_id)})
+                            elif op_kind == "delete":
+                                row_id = int(row.get("id", 0) or 0)
+                                account_id = int(row.get("account_id", 0) or 0) or None
+                                if row_id <= 0:
+                                    raise ValueError("id is required for delete")
+                                before = await self.repo.admin_fetch_oms_deal_by_id(conn, row_id, account_id)
+                                await self.repo.admin_delete_oms_deal(conn, row_id, account_id)
+                                payload = dict(before or {"id": row_id, "account_id": int(account_id or 0)})
+                                payload["__deleted"] = True
+                                aid = int(payload.get("account_id", 0) or 0)
+                                if aid > 0:
+                                    affected_accounts.add(aid)
+                                    pending_events.append((aid, "deal_deleted", payload))
+                                results.append({"index": index, "ok": True, "op": op_kind, "id": int(row_id)})
+                            else:
+                                raise ValueError("op invalid")
+                    except Exception as exc:
+                        results.append({"index": index, "ok": False, "op": op_kind, "error": str(exc)})
+                await conn.commit()
+                # Emit atomic-like UI state events after commit.
+                for account_id, ev_type, payload in pending_events:
+                    await self.repo.insert_event(
+                        conn=conn,
+                        account_id=account_id,
+                        namespace="position",
+                        event_type=ev_type,
+                        payload=payload,
+                    )
+                for aid in sorted(affected_accounts):
+                    open_orders = await self.repo.list_orders(conn, aid, open_only=True, open_limit=5000)
+                    open_positions = await self.repo.list_positions(conn, aid, open_only=True, open_limit=5000)
+                    await self.repo.insert_event(
+                        conn=conn,
+                        account_id=aid,
+                        namespace="position",
+                        event_type="snapshot_open_orders",
+                        payload={"items": open_orders},
+                    )
+                    await self.repo.insert_event(
+                        conn=conn,
+                        account_id=aid,
+                        namespace="position",
+                        event_type="snapshot_open_positions",
+                        payload={"items": open_positions},
+                    )
+            return {"ok": True, "result": {"entity": entity, "results": results}}
+
         if op == "ws_pull_events":
             auth = await self._auth_from_payload(msg)
             account_id = int(msg.get("account_id", 0) or 0)
@@ -1500,7 +2390,6 @@ class Dispatcher:
                 "ccxt_call",
                 "reconcile_now",
                 "oms_query",
-                "oms_reassign",
                 "ws_pull_events",
                 "ws_tail_id",
                 "risk_set_allow_new_positions",

@@ -1,12 +1,14 @@
 import asyncio
 import contextlib
 import json
+from datetime import datetime
 from typing import Any
 import ccxt.async_support as ccxt_async
 
 from fastapi import FastAPI, Header, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
+from fastapi.responses import JSONResponse
 from pydantic import TypeAdapter
 
 from .app.config import load_settings
@@ -29,6 +31,8 @@ from .app.schemas import (
     AdminCreateUserApiKeyInput,
     AdminUsersApiKeysResponse,
     AdminCreateUserApiKeyResponse,
+    AdminCreateApiKeyInput,
+    AdminCreateApiKeyResponse,
     AdminUpdateApiKeyInput,
     AdminUpdateApiKeyResponse,
     AdminApiKeyPermissionsResponse,
@@ -36,6 +40,12 @@ from .app.schemas import (
     AdminStrategiesResponse,
     AdminUpdateStrategyInput,
     AdminUpdateStrategyResponse,
+    AdminOmsView,
+    AdminOmsQueryResponse,
+    AdminOmsMutateResponse,
+    AdminOmsOrderMutation,
+    AdminOmsPositionMutation,
+    AdminOmsDealMutation,
     CreateStrategyInput,
     CreateStrategyResponse,
     StrategiesResponse,
@@ -48,9 +58,21 @@ from .app.schemas import (
     CcxtResponse,
     CcxtBatchItem,
     CcxtBatchResponse,
+    CcxtRawOrdersResponse,
+    CcxtRawTradesResponse,
     CcxtCallInput,
     AuthLoginPasswordInput,
     AuthLoginPasswordResponse,
+    UserProfileResponse,
+    UserUpdateProfileInput,
+    UserUpdateProfileResponse,
+    UserUpdatePasswordInput,
+    UserUpdatePasswordResponse,
+    UserApiKeysResponse,
+    UserCreateApiKeyInput,
+    UserCreateApiKeyResponse,
+    UserUpdateApiKeyInput,
+    UserUpdateApiKeyResponse,
     CcxtExchangesResponse,
     CommandInput,
     CommandsResponse,
@@ -79,6 +101,34 @@ app.add_middleware(
 )
 app.state.loggers = {}
 COMMAND_INPUT_ADAPTER = TypeAdapter(CommandInput)
+
+
+def _map_command_error_code_to_http_status(code: str, message: str = "") -> int:
+    normalized = str(code or "").strip().lower()
+    normalized_message = str(message or "").strip().lower()
+    if normalized_message in {
+        "permission_denied",
+        "admin_read_only",
+        "strategy_permission_denied",
+    }:
+        return 403
+    if normalized_message in {"validation_error", "invalid_strategy_id"}:
+        return 422
+    if normalized_message in {"account_not_found", "position_not_found", "order_not_found"}:
+        return 404
+    if normalized_message in {"risk_blocked"}:
+        return 409
+    if normalized in {"permission_denied", "admin_read_only", "strategy_permission_denied"}:
+        return 403
+    if normalized in {"validation_error", "invalid_strategy_id"}:
+        return 422
+    if normalized in {"account_not_found", "position_not_found", "order_not_found"}:
+        return 404
+    if normalized in {"risk_blocked"}:
+        return 409
+    if normalized in {"dispatcher_error"}:
+        return 502
+    return 400
 
 
 def custom_openapi() -> dict[str, Any]:
@@ -203,7 +253,27 @@ async def post_oms_commands(
     if not dispatched.get("ok"):
         raise HTTPException(status_code=400, detail=dispatched.get("error") or {"code": "dispatcher_error"})
     result = dispatched.get("result", {})
-    return CommandsResponse(results=result.get("results", []))
+    results = result.get("results", [])
+    failed_items = [item for item in results if not bool(item.get("ok"))]
+    if failed_items:
+        if len(failed_items) == len(results):
+            first_error = failed_items[0].get("error") or {}
+            error_code = str(first_error.get("code") or "dispatcher_error")
+            error_message = str(first_error.get("message") or "all commands failed")
+            raise HTTPException(
+                status_code=_map_command_error_code_to_http_status(error_code, error_message),
+                detail={
+                    "code": error_code,
+                    "message": error_message,
+                    "results": results,
+                },
+            )
+        # Partial success: keep batch payload, but expose HTTP 207 explicitly.
+        return JSONResponse(
+            status_code=207,
+            content=CommandsResponse(results=results).model_dump(mode="json"),
+        )
+    return CommandsResponse(results=results)
 
 
 def _normalize_account_targets(
@@ -237,6 +307,9 @@ async def _oms_query_multi_account(
     query: str,
     account_ids: str | list[int] | None,
     strategy_id: int | None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    open_limit: int | None = None,
 ) -> list[dict[str, Any]]:
     targets = _normalize_account_targets(account_ids=account_ids)
     if not targets:
@@ -253,6 +326,9 @@ async def _oms_query_multi_account(
                 "account_id": aid,
                 "query": query,
                 "strategy_id": strategy_id,
+                "date_from": date_from,
+                "date_to": date_to,
+                "open_limit": open_limit,
             },
         )
         for aid in targets
@@ -272,7 +348,68 @@ async def _oms_query_multi_account(
         rows = out.get("result", [])
         if isinstance(rows, list):
             merged.extend(rows)
+    merged.sort(key=lambda row: int(row.get("id", 0) or 0))
     return merged
+
+
+async def _ccxt_raw_query_multi_account(
+    *,
+    x_api_key: str,
+    query: str,
+    account_ids: str | list[int] | None,
+    date_from: str,
+    date_to: str,
+    page: int,
+    page_size: int,
+) -> tuple[list[dict[str, Any]], int, int, int]:
+    targets = _normalize_account_targets(account_ids=account_ids)
+    if not targets:
+        raise HTTPException(status_code=422, detail={"code": "validation_error", "message": "account_ids is required"})
+    dispatched = await dispatch_request(
+        host=settings.dispatcher_host,
+        port=settings.dispatcher_port,
+        timeout_seconds=settings.dispatcher_request_timeout_seconds,
+        payload={
+            "op": "ccxt_raw_query_multi",
+            "x_api_key": x_api_key,
+            "query": query,
+            "account_ids": targets,
+            "date_from": date_from,
+            "date_to": date_to,
+            "page": int(page or 1),
+            "page_size": int(page_size or 100),
+        },
+    )
+    if not dispatched.get("ok"):
+        raise HTTPException(status_code=400, detail=dispatched.get("error") or {"code": "dispatcher_error"})
+    result = dispatched.get("result", {}) if isinstance(dispatched.get("result"), dict) else {}
+    items = result.get("items", [])
+    total = int(result.get("total", 0) or 0)
+    out_page = int(result.get("page", int(page or 1)) or int(page or 1))
+    out_page_size = int(result.get("page_size", int(page_size or 100)) or int(page_size or 100))
+    return (items if isinstance(items, list) else []), total, out_page, out_page_size
+
+
+def _parse_date_yyyy_mm_dd(value: str, field_name: str) -> str:
+    try:
+        parsed = datetime.strptime(str(value).strip(), "%Y-%m-%d").date()
+    except Exception:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "validation_error",
+                "message": f"{field_name} must be YYYY-MM-DD",
+            },
+        ) from None
+    return parsed.isoformat()
+
+
+def _paginate_items(items: list[dict[str, Any]], page: int, page_size: int) -> tuple[list[dict[str, Any]], int]:
+    normalized_page = max(1, int(page or 1))
+    normalized_page_size = max(1, min(500, int(page_size or 100)))
+    total = len(items)
+    offset = (normalized_page - 1) * normalized_page_size
+    return items[offset: offset + normalized_page_size], total
 
 
 def _scope_lookback_seconds(scope: str, account: dict[str, Any] | None = None) -> int:
@@ -480,10 +617,77 @@ async def post_ccxt_batch(
     return CcxtBatchResponse(results=result.get("results", []))
 
 
+@app.get("/ccxt/orders/raw", response_model=CcxtRawOrdersResponse)
+async def get_ccxt_orders_raw(
+    account_ids: str,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    page: int = 1,
+    page_size: int = 100,
+    x_api_key: str = Header(default=""),
+) -> CcxtRawOrdersResponse:
+    if not start_date or not end_date:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "validation_error", "message": "start_date and end_date are required"},
+        )
+    date_from = _parse_date_yyyy_mm_dd(start_date, "start_date")
+    date_to = _parse_date_yyyy_mm_dd(end_date, "end_date")
+    if date_from > date_to:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "validation_error", "message": "start_date must be <= end_date"},
+        )
+    items, total, out_page, out_page_size = await _ccxt_raw_query_multi_account(
+        x_api_key=x_api_key,
+        query="orders_raw",
+        account_ids=account_ids,
+        date_from=date_from,
+        date_to=date_to,
+        page=page,
+        page_size=page_size,
+    )
+    return CcxtRawOrdersResponse(items=items, total=total, page=out_page, page_size=out_page_size)
+
+
+@app.get("/ccxt/trades/raw", response_model=CcxtRawTradesResponse)
+async def get_ccxt_trades_raw(
+    account_ids: str,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    page: int = 1,
+    page_size: int = 100,
+    x_api_key: str = Header(default=""),
+) -> CcxtRawTradesResponse:
+    if not start_date or not end_date:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "validation_error", "message": "start_date and end_date are required"},
+        )
+    date_from = _parse_date_yyyy_mm_dd(start_date, "start_date")
+    date_to = _parse_date_yyyy_mm_dd(end_date, "end_date")
+    if date_from > date_to:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "validation_error", "message": "start_date must be <= end_date"},
+        )
+    items, total, out_page, out_page_size = await _ccxt_raw_query_multi_account(
+        x_api_key=x_api_key,
+        query="trades_raw",
+        account_ids=account_ids,
+        date_from=date_from,
+        date_to=date_to,
+        page=page,
+        page_size=page_size,
+    )
+    return CcxtRawTradesResponse(items=items, total=total, page=out_page, page_size=out_page_size)
+
+
 @app.get("/oms/orders/open", response_model=PositionOrdersResponse)
 async def get_position_orders_open(
     account_ids: str,
     strategy_id: int | None = None,
+    limit: int = 500,
     x_api_key: str = Header(default=""),
 ) -> PositionOrdersResponse:
     rows = await _oms_query_multi_account(
@@ -491,6 +695,7 @@ async def get_position_orders_open(
         query="orders_open",
         account_ids=account_ids,
         strategy_id=strategy_id,
+        open_limit=max(1, min(5000, int(limit or 500))),
     )
     return PositionOrdersResponse(items=rows)
 
@@ -499,36 +704,75 @@ async def get_position_orders_open(
 async def get_position_orders_history(
     account_ids: str,
     strategy_id: int | None = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    page: int = 1,
+    page_size: int = 100,
     x_api_key: str = Header(default=""),
 ) -> PositionOrdersResponse:
+    if not start_date or not end_date:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "validation_error", "message": "start_date and end_date are required"},
+        )
+    date_from = _parse_date_yyyy_mm_dd(start_date, "start_date")
+    date_to = _parse_date_yyyy_mm_dd(end_date, "end_date")
+    if date_from > date_to:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "validation_error", "message": "start_date must be <= end_date"},
+        )
     rows = await _oms_query_multi_account(
         x_api_key=x_api_key,
         query="orders_history",
         account_ids=account_ids,
         strategy_id=strategy_id,
+        date_from=date_from,
+        date_to=date_to,
     )
-    return PositionOrdersResponse(items=rows)
+    paged, total = _paginate_items(rows, page=page, page_size=page_size)
+    return PositionOrdersResponse(items=paged, total=total, page=page, page_size=page_size)
 
 
 @app.get("/oms/deals", response_model=PositionDealsResponse)
 async def get_position_deals(
     account_ids: str,
     strategy_id: int | None = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    page: int = 1,
+    page_size: int = 100,
     x_api_key: str = Header(default=""),
 ) -> PositionDealsResponse:
+    if not start_date or not end_date:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "validation_error", "message": "start_date and end_date are required"},
+        )
+    date_from = _parse_date_yyyy_mm_dd(start_date, "start_date")
+    date_to = _parse_date_yyyy_mm_dd(end_date, "end_date")
+    if date_from > date_to:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "validation_error", "message": "start_date must be <= end_date"},
+        )
     rows = await _oms_query_multi_account(
         x_api_key=x_api_key,
         query="deals",
         account_ids=account_ids,
         strategy_id=strategy_id,
+        date_from=date_from,
+        date_to=date_to,
     )
-    return PositionDealsResponse(items=rows)
+    paged, total = _paginate_items(rows, page=page, page_size=page_size)
+    return PositionDealsResponse(items=paged, total=total, page=page, page_size=page_size)
 
 
 @app.get("/oms/positions/open", response_model=PositionsResponse)
 async def get_position_positions_open(
     account_ids: str,
     strategy_id: int | None = None,
+    limit: int = 500,
     x_api_key: str = Header(default=""),
 ) -> PositionsResponse:
     rows = await _oms_query_multi_account(
@@ -536,6 +780,7 @@ async def get_position_positions_open(
         query="positions_open",
         account_ids=account_ids,
         strategy_id=strategy_id,
+        open_limit=max(1, min(5000, int(limit or 500))),
     )
     return PositionsResponse(items=rows)
 
@@ -544,15 +789,34 @@ async def get_position_positions_open(
 async def get_position_positions_history(
     account_ids: str,
     strategy_id: int | None = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    page: int = 1,
+    page_size: int = 100,
     x_api_key: str = Header(default=""),
 ) -> PositionsResponse:
+    if not start_date or not end_date:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "validation_error", "message": "start_date and end_date are required"},
+        )
+    date_from = _parse_date_yyyy_mm_dd(start_date, "start_date")
+    date_to = _parse_date_yyyy_mm_dd(end_date, "end_date")
+    if date_from > date_to:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "validation_error", "message": "start_date must be <= end_date"},
+        )
     rows = await _oms_query_multi_account(
         x_api_key=x_api_key,
         query="positions_history",
         account_ids=account_ids,
         strategy_id=strategy_id,
+        date_from=date_from,
+        date_to=date_to,
     )
-    return PositionsResponse(items=rows)
+    paged, total = _paginate_items(rows, page=page, page_size=page_size)
+    return PositionsResponse(items=paged, total=total, page=page, page_size=page_size)
 
 
 @app.post("/oms/reassign", response_model=ReassignResponse)
@@ -560,6 +824,22 @@ async def post_oms_reassign(
     req: ReassignInput,
     x_api_key: str = Header(default=""),
 ) -> ReassignResponse:
+    date_from: str | None = None
+    date_to: str | None = None
+    if req.start_date:
+        date_from = _parse_date_yyyy_mm_dd(req.start_date, "start_date")
+    if req.end_date:
+        date_to = _parse_date_yyyy_mm_dd(req.end_date, "end_date")
+    if (date_from and not date_to) or (date_to and not date_from):
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "validation_error", "message": "start_date and end_date must be provided together"},
+        )
+    if date_from and date_to and date_from > date_to:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "validation_error", "message": "start_date must be <= end_date"},
+        )
     out = await dispatch_request(
         host=settings.dispatcher_host,
         port=settings.dispatcher_port,
@@ -568,8 +848,17 @@ async def post_oms_reassign(
             "op": "oms_reassign",
             "x_api_key": x_api_key,
             "account_id": req.account_id,
+            "account_ids": req.account_ids,
             "deal_ids": req.deal_ids,
             "order_ids": req.order_ids,
+            "date_from": date_from,
+            "date_to": date_to,
+            "reconciled": req.reconciled,
+            "order_statuses": req.order_statuses,
+            "kinds": req.kinds,
+            "preview": req.preview,
+            "page": req.page,
+            "page_size": req.page_size,
             "target_strategy_id": req.target_strategy_id,
             "target_position_id": req.target_position_id,
         },
@@ -577,7 +866,17 @@ async def post_oms_reassign(
     if not out.get("ok"):
         raise HTTPException(status_code=400, detail=out.get("error") or {"code": "dispatcher_error"})
     res = out.get("result", {})
-    return ReassignResponse(ok=True, deals_updated=int(res.get("deals_updated", 0)), orders_updated=int(res.get("orders_updated", 0)))
+    return ReassignResponse(
+        ok=True,
+        deals_updated=int(res.get("deals_updated", 0)),
+        orders_updated=int(res.get("orders_updated", 0)),
+        deals_total=int(res.get("deals_total", 0)),
+        orders_total=int(res.get("orders_total", 0)),
+        preview=bool(res.get("preview", False)),
+        page=int(res.get("page", req.page or 1)),
+        page_size=int(res.get("page_size", req.page_size or 100)),
+        items=res.get("items", []),
+    )
 
 
 @app.post("/oms/reconcile", response_model=ReconcileNowResponse)
@@ -923,6 +1222,33 @@ async def get_admin_users_api_keys(
     return AdminUsersApiKeysResponse(items=out.get("result", []))
 
 
+@app.post("/admin/api-keys", response_model=AdminCreateApiKeyResponse)
+async def post_admin_create_api_key(
+    req: AdminCreateApiKeyInput,
+    x_api_key: str = Header(default=""),
+) -> AdminCreateApiKeyResponse:
+    out = await dispatch_request(
+        host=settings.dispatcher_host,
+        port=settings.dispatcher_port,
+        timeout_seconds=settings.dispatcher_request_timeout_seconds,
+        payload={
+            "op": "admin_create_api_key",
+            "x_api_key": x_api_key,
+            "user_id": req.user_id,
+            "api_key": req.api_key,
+        },
+    )
+    if not out.get("ok"):
+        raise HTTPException(status_code=400, detail=out.get("error") or {"code": "dispatcher_error"})
+    res = out.get("result", {})
+    return AdminCreateApiKeyResponse(
+        ok=True,
+        user_id=int(res.get("user_id", req.user_id)),
+        api_key_id=int(res.get("api_key_id", 0)),
+        api_key_plain=str(res.get("api_key_plain", "")),
+    )
+
+
 @app.patch("/admin/api-keys/{api_key_id}", response_model=AdminUpdateApiKeyResponse)
 async def patch_admin_api_key(
     api_key_id: int,
@@ -1048,6 +1374,152 @@ async def post_auth_login_password(
     )
 
 
+@app.get("/user/profile", response_model=UserProfileResponse)
+async def get_user_profile(
+    x_api_key: str = Header(default=""),
+) -> UserProfileResponse:
+    out = await dispatch_request(
+        host=settings.dispatcher_host,
+        port=settings.dispatcher_port,
+        timeout_seconds=settings.dispatcher_request_timeout_seconds,
+        payload={
+            "op": "user_profile_get",
+            "x_api_key": x_api_key,
+        },
+    )
+    if not out.get("ok"):
+        raise HTTPException(status_code=400, detail=out.get("error") or {"code": "dispatcher_error"})
+    res = out.get("result", {})
+    return UserProfileResponse(
+        user_id=int(res.get("user_id", 0)),
+        user_name=str(res.get("user_name", "")),
+        role=str(res.get("role", "")),
+        status=str(res.get("status", "")),
+        api_key_id=int(res.get("api_key_id", 0)),
+    )
+
+
+@app.patch("/user/profile", response_model=UserUpdateProfileResponse)
+async def patch_user_profile(
+    req: UserUpdateProfileInput,
+    x_api_key: str = Header(default=""),
+) -> UserUpdateProfileResponse:
+    out = await dispatch_request(
+        host=settings.dispatcher_host,
+        port=settings.dispatcher_port,
+        timeout_seconds=settings.dispatcher_request_timeout_seconds,
+        payload={
+            "op": "user_profile_update",
+            "x_api_key": x_api_key,
+            "user_name": req.user_name,
+        },
+    )
+    if not out.get("ok"):
+        raise HTTPException(status_code=400, detail=out.get("error") or {"code": "dispatcher_error"})
+    res = out.get("result", {})
+    return UserUpdateProfileResponse(
+        ok=True,
+        user_id=int(res.get("user_id", 0)),
+        user_name=str(res.get("user_name", req.user_name)),
+    )
+
+
+@app.post("/user/password", response_model=UserUpdatePasswordResponse)
+async def post_user_password(
+    req: UserUpdatePasswordInput,
+    x_api_key: str = Header(default=""),
+) -> UserUpdatePasswordResponse:
+    out = await dispatch_request(
+        host=settings.dispatcher_host,
+        port=settings.dispatcher_port,
+        timeout_seconds=settings.dispatcher_request_timeout_seconds,
+        payload={
+            "op": "user_password_update",
+            "x_api_key": x_api_key,
+            "current_password": req.current_password,
+            "new_password": req.new_password,
+        },
+    )
+    if not out.get("ok"):
+        raise HTTPException(status_code=400, detail=out.get("error") or {"code": "dispatcher_error"})
+    res = out.get("result", {})
+    return UserUpdatePasswordResponse(
+        ok=True,
+        user_id=int(res.get("user_id", 0)),
+    )
+
+
+@app.get("/user/api-keys", response_model=UserApiKeysResponse)
+async def get_user_api_keys(
+    x_api_key: str = Header(default=""),
+) -> UserApiKeysResponse:
+    out = await dispatch_request(
+        host=settings.dispatcher_host,
+        port=settings.dispatcher_port,
+        timeout_seconds=settings.dispatcher_request_timeout_seconds,
+        payload={
+            "op": "user_api_keys_list",
+            "x_api_key": x_api_key,
+        },
+    )
+    if not out.get("ok"):
+        raise HTTPException(status_code=400, detail=out.get("error") or {"code": "dispatcher_error"})
+    return UserApiKeysResponse(items=out.get("result", []))
+
+
+@app.post("/user/api-keys", response_model=UserCreateApiKeyResponse)
+async def post_user_api_key(
+    req: UserCreateApiKeyInput,
+    x_api_key: str = Header(default=""),
+) -> UserCreateApiKeyResponse:
+    out = await dispatch_request(
+        host=settings.dispatcher_host,
+        port=settings.dispatcher_port,
+        timeout_seconds=settings.dispatcher_request_timeout_seconds,
+        payload={
+            "op": "user_api_key_create",
+            "x_api_key": x_api_key,
+            "api_key": req.api_key,
+        },
+    )
+    if not out.get("ok"):
+        raise HTTPException(status_code=400, detail=out.get("error") or {"code": "dispatcher_error"})
+    res = out.get("result", {})
+    return UserCreateApiKeyResponse(
+        ok=True,
+        user_id=int(res.get("user_id", 0)),
+        api_key_id=int(res.get("api_key_id", 0)),
+        api_key_plain=str(res.get("api_key_plain", "")),
+    )
+
+
+@app.patch("/user/api-keys/{api_key_id}", response_model=UserUpdateApiKeyResponse)
+async def patch_user_api_key(
+    api_key_id: int,
+    req: UserUpdateApiKeyInput,
+    x_api_key: str = Header(default=""),
+) -> UserUpdateApiKeyResponse:
+    out = await dispatch_request(
+        host=settings.dispatcher_host,
+        port=settings.dispatcher_port,
+        timeout_seconds=settings.dispatcher_request_timeout_seconds,
+        payload={
+            "op": "user_api_key_update",
+            "x_api_key": x_api_key,
+            "api_key_id": api_key_id,
+            "status": req.status,
+        },
+    )
+    if not out.get("ok"):
+        raise HTTPException(status_code=400, detail=out.get("error") or {"code": "dispatcher_error"})
+    res = out.get("result", {})
+    return UserUpdateApiKeyResponse(
+        ok=True,
+        api_key_id=int(res.get("api_key_id", api_key_id)),
+        rows=int(res.get("rows", 0)),
+    )
+
+
 @app.post("/admin/strategies", response_model=AdminCreateStrategyResponse)
 async def post_admin_create_strategy(
     req: AdminCreateStrategyInput,
@@ -1116,6 +1588,124 @@ async def patch_admin_update_strategy(
         strategy_id=int(res.get("strategy_id", strategy_id)),
         rows=int(res.get("rows", 0)),
     )
+
+
+@app.get("/admin/oms/{view}", response_model=AdminOmsQueryResponse)
+async def get_admin_oms_view(
+    view: AdminOmsView,
+    account_ids: str = "",
+    start_date: str | None = None,
+    end_date: str | None = None,
+    page: int = 1,
+    page_size: int = 100,
+    x_api_key: str = Header(default=""),
+) -> AdminOmsQueryResponse:
+    date_from: str | None = None
+    date_to: str | None = None
+    if start_date:
+        date_from = _parse_date_yyyy_mm_dd(start_date, "start_date")
+    if end_date:
+        date_to = _parse_date_yyyy_mm_dd(end_date, "end_date")
+    if (date_from and not date_to) or (date_to and not date_from):
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "validation_error", "message": "start_date and end_date must be provided together"},
+        )
+    if date_from and date_to and date_from > date_to:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "validation_error", "message": "start_date must be <= end_date"},
+        )
+    out = await dispatch_request(
+        host=settings.dispatcher_host,
+        port=settings.dispatcher_port,
+        timeout_seconds=settings.dispatcher_request_timeout_seconds,
+        payload={
+            "op": "admin_oms_query",
+            "x_api_key": x_api_key,
+            "view": view,
+            "account_ids": account_ids,
+            "date_from": date_from,
+            "date_to": date_to,
+            "page": int(page or 1),
+            "page_size": int(page_size or 100),
+        },
+    )
+    if not out.get("ok"):
+        raise HTTPException(status_code=400, detail=out.get("error") or {"code": "dispatcher_error"})
+    res = out.get("result", {}) if isinstance(out.get("result"), dict) else {}
+    return AdminOmsQueryResponse(
+        items=res.get("items", []),
+        total=int(res.get("total", 0) or 0),
+        page=int(res.get("page", page) or page),
+        page_size=int(res.get("page_size", page_size) or page_size),
+    )
+
+
+@app.post("/admin/oms/orders/mutate", response_model=AdminOmsMutateResponse)
+async def post_admin_oms_orders_mutate(
+    operations: list[AdminOmsOrderMutation],
+    x_api_key: str = Header(default=""),
+) -> AdminOmsMutateResponse:
+    out = await dispatch_request(
+        host=settings.dispatcher_host,
+        port=settings.dispatcher_port,
+        timeout_seconds=settings.dispatcher_request_timeout_seconds,
+        payload={
+            "op": "admin_oms_mutate",
+            "x_api_key": x_api_key,
+            "entity": "orders",
+            "operations": [item.model_dump(mode="json") for item in operations],
+        },
+    )
+    if not out.get("ok"):
+        raise HTTPException(status_code=400, detail=out.get("error") or {"code": "dispatcher_error"})
+    res = out.get("result", {}) if isinstance(out.get("result"), dict) else {}
+    return AdminOmsMutateResponse(ok=True, entity="orders", results=res.get("results", []))
+
+
+@app.post("/admin/oms/positions/mutate", response_model=AdminOmsMutateResponse)
+async def post_admin_oms_positions_mutate(
+    operations: list[AdminOmsPositionMutation],
+    x_api_key: str = Header(default=""),
+) -> AdminOmsMutateResponse:
+    out = await dispatch_request(
+        host=settings.dispatcher_host,
+        port=settings.dispatcher_port,
+        timeout_seconds=settings.dispatcher_request_timeout_seconds,
+        payload={
+            "op": "admin_oms_mutate",
+            "x_api_key": x_api_key,
+            "entity": "positions",
+            "operations": [item.model_dump(mode="json") for item in operations],
+        },
+    )
+    if not out.get("ok"):
+        raise HTTPException(status_code=400, detail=out.get("error") or {"code": "dispatcher_error"})
+    res = out.get("result", {}) if isinstance(out.get("result"), dict) else {}
+    return AdminOmsMutateResponse(ok=True, entity="positions", results=res.get("results", []))
+
+
+@app.post("/admin/oms/deals/mutate", response_model=AdminOmsMutateResponse)
+async def post_admin_oms_deals_mutate(
+    operations: list[AdminOmsDealMutation],
+    x_api_key: str = Header(default=""),
+) -> AdminOmsMutateResponse:
+    out = await dispatch_request(
+        host=settings.dispatcher_host,
+        port=settings.dispatcher_port,
+        timeout_seconds=settings.dispatcher_request_timeout_seconds,
+        payload={
+            "op": "admin_oms_mutate",
+            "x_api_key": x_api_key,
+            "entity": "deals",
+            "operations": [item.model_dump(mode="json") for item in operations],
+        },
+    )
+    if not out.get("ok"):
+        raise HTTPException(status_code=400, detail=out.get("error") or {"code": "dispatcher_error"})
+    res = out.get("result", {}) if isinstance(out.get("result"), dict) else {}
+    return AdminOmsMutateResponse(ok=True, entity="deals", results=res.get("results", []))
 
 
 @app.get("/strategies", response_model=StrategiesResponse)

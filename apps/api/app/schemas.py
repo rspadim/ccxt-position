@@ -11,11 +11,12 @@ CommandType = Literal[
     "cancel_all_orders",
     "change_order",
     "close_by",
+    "merge_positions",
     "close_position",
     "position_change",
 ]
 OrderSide = Literal["buy", "sell"]
-OrderType = Literal["market", "limit"]
+OrderType = str
 OrderStatus = Literal[
     "PENDING_SUBMIT",
     "SUBMITTED",
@@ -34,7 +35,8 @@ class StrictModel(BaseModel):
 class SendOrderPayload(StrictModel):
     symbol: str = Field(min_length=1)
     side: OrderSide
-    order_type: OrderType = Field(
+    order_type: str = Field(
+        min_length=1,
         validation_alias=AliasChoices("order_type", "type"),
         serialization_alias="order_type",
     )
@@ -44,8 +46,8 @@ class SendOrderPayload(StrictModel):
         serialization_alias="qty",
     )
     price: Decimal | None = None
-    stop_loss: Decimal | None = None
-    stop_gain: Decimal | None = None
+    stop_loss: Decimal | None = Field(default=None, validation_alias="oms_stop_loss", serialization_alias="oms_stop_loss")
+    stop_gain: Decimal | None = Field(default=None, validation_alias="oms_stop_gain", serialization_alias="oms_stop_gain")
     strategy_id: int = Field(
         default=0,
         validation_alias=AliasChoices("strategy_id"),
@@ -56,13 +58,14 @@ class SendOrderPayload(StrictModel):
     comment: str | None = None
     reduce_only: bool = False
     client_order_id: str | None = None
-
-    @model_validator(mode="after")
-    def validate_limit_price(self) -> "SendOrderPayload":
-        if self.order_type == "limit" and self.price is None:
-            raise ValueError("price is required for limit orders")
-        return self
-
+    params: dict[str, Any] = Field(default_factory=dict)
+    post_only: bool = False
+    time_in_force: str | None = None
+    trigger_price: Decimal | None = None
+    stop_price: Decimal | None = None
+    take_profit_price: Decimal | None = None
+    trailing_amount: Decimal | None = None
+    trailing_percent: Decimal | None = None
 
 class CancelOrderPayload(StrictModel):
     order_id: int | None = Field(default=None, gt=0)
@@ -123,6 +126,7 @@ class ChangeOrderPayload(StrictModel):
 class CloseByPayload(StrictModel):
     position_id_a: int = Field(gt=0)
     position_id_b: int = Field(gt=0)
+    qty: Decimal | None = Field(default=None, gt=Decimal("0"))
     strategy_id: int = Field(
         default=0,
         validation_alias=AliasChoices("strategy_id"),
@@ -130,9 +134,23 @@ class CloseByPayload(StrictModel):
     )
 
 
+class MergePositionsPayload(StrictModel):
+    source_position_id: int = Field(gt=0)
+    target_position_id: int = Field(gt=0)
+    stop_mode: Literal["keep", "clear", "set"] = "keep"
+    stop_loss: Decimal | None = Field(default=None, validation_alias="oms_stop_loss", serialization_alias="oms_stop_loss")
+    stop_gain: Decimal | None = Field(default=None, validation_alias="oms_stop_gain", serialization_alias="oms_stop_gain")
+
+    @model_validator(mode="after")
+    def validate_positions(self) -> "MergePositionsPayload":
+        if int(self.source_position_id) == int(self.target_position_id):
+            raise ValueError("source_position_id and target_position_id must differ")
+        return self
+
+
 class ClosePositionPayload(StrictModel):
     position_id: int = Field(gt=0)
-    order_type: OrderType = "market"
+    order_type: str = Field(default="market", min_length=1)
     price: Decimal | None = None
     qty: Decimal | None = Field(default=None, gt=Decimal("0"))
     strategy_id: int = Field(
@@ -143,13 +161,14 @@ class ClosePositionPayload(StrictModel):
     reason: str = "api"
     comment: str | None = None
     client_order_id: str | None = None
-
-    @model_validator(mode="after")
-    def validate_limit_price(self) -> "ClosePositionPayload":
-        if self.order_type == "limit" and self.price is None:
-            raise ValueError("price is required for limit close")
-        return self
-
+    params: dict[str, Any] = Field(default_factory=dict)
+    post_only: bool = False
+    time_in_force: str | None = None
+    trigger_price: Decimal | None = None
+    stop_price: Decimal | None = None
+    take_profit_price: Decimal | None = None
+    trailing_amount: Decimal | None = None
+    trailing_percent: Decimal | None = None
 
 class BaseCommand(StrictModel):
     account_id: int | None = Field(default=None, gt=0)
@@ -181,6 +200,11 @@ class CloseByCommand(BaseCommand):
     payload: CloseByPayload
 
 
+class MergePositionsCommand(BaseCommand):
+    command: Literal["merge_positions"]
+    payload: MergePositionsPayload
+
+
 class ClosePositionCommand(BaseCommand):
     command: Literal["close_position"]
     payload: ClosePositionPayload
@@ -188,8 +212,8 @@ class ClosePositionCommand(BaseCommand):
 
 class PositionChangePayload(StrictModel):
     position_id: int = Field(gt=0)
-    stop_loss: Decimal | None = None
-    stop_gain: Decimal | None = None
+    stop_loss: Decimal | None = Field(default=None, validation_alias="oms_stop_loss", serialization_alias="oms_stop_loss")
+    stop_gain: Decimal | None = Field(default=None, validation_alias="oms_stop_gain", serialization_alias="oms_stop_gain")
     comment: str | None = None
 
     @model_validator(mode="after")
@@ -211,6 +235,7 @@ CommandInput = Annotated[
     | CancelAllOrdersCommand
     | ChangeOrderCommand
     | CloseByCommand
+    | MergePositionsCommand
     | ClosePositionCommand
     | PositionChangeCommand,
     Field(discriminator="command"),
@@ -237,20 +262,14 @@ class CcxtCallInput(BaseModel):
 class CcxtCoreCreateOrderInput(BaseModel):
     symbol: str = Field(min_length=1)
     side: Literal["buy", "sell"]
-    order_type: Literal["market", "limit"] = Field(
+    order_type: str = Field(
+        min_length=1,
         validation_alias=AliasChoices("order_type", "type"),
         serialization_alias="order_type",
     )
     amount: Decimal = Field(gt=Decimal("0"))
     price: Decimal | None = None
     params: dict[str, Any] = Field(default_factory=dict)
-
-    @model_validator(mode="after")
-    def validate_limit_price(self) -> "CcxtCoreCreateOrderInput":
-        if self.order_type == "limit" and self.price is None:
-            raise ValueError("price is required for limit orders")
-        return self
-
 
 class CcxtCoreCancelOrderInput(BaseModel):
     id: str = Field(min_length=1)
@@ -291,24 +310,84 @@ class CcxtBatchResponse(BaseModel):
     results: list[dict[str, Any]]
 
 
+class CcxtRawOrderModel(BaseModel):
+    id: int
+    account_id: int
+    exchange_id: str
+    exchange_order_id: str | None = None
+    client_order_id: str | None = None
+    symbol: str | None = None
+    raw_json: dict[str, Any]
+    observed_at: datetime
+
+
+class CcxtRawTradeModel(BaseModel):
+    id: int
+    account_id: int
+    exchange_id: str
+    exchange_trade_id: str | None = None
+    exchange_order_id: str | None = None
+    symbol: str | None = None
+    raw_json: dict[str, Any]
+    observed_at: datetime
+
+
+class CcxtRawOrdersResponse(BaseModel):
+    items: list[CcxtRawOrderModel]
+    total: int | None = None
+    page: int | None = None
+    page_size: int | None = None
+
+
+class CcxtRawTradesResponse(BaseModel):
+    items: list[CcxtRawTradeModel]
+    total: int | None = None
+    page: int | None = None
+    page_size: int | None = None
+
+
 class ReassignInput(BaseModel):
-    account_id: int = Field(gt=0)
+    account_id: int | None = Field(default=None, gt=0)
+    account_ids: list[int] | str | None = None
     deal_ids: list[int] = Field(default_factory=list)
     order_ids: list[int] = Field(default_factory=list)
+    start_date: str | None = None
+    end_date: str | None = None
+    reconciled: bool | None = None
+    order_statuses: list[str] = Field(default_factory=list)
+    kinds: list[Literal["order", "deal"]] = Field(default_factory=list)
+    preview: bool = False
+    page: int = Field(default=1, ge=1)
+    page_size: int = Field(default=100, ge=1, le=500)
     target_strategy_id: int = Field(
         default=0,
         validation_alias=AliasChoices("target_strategy_id"),
         serialization_alias="target_strategy_id",
     )
-    target_position_id: int = 0
+    target_position_id: int | None = 0
+
+
+class ReassignPreviewItem(BaseModel):
+    kind: Literal["deal", "order"]
+    id: int
+    account_id: int
+    symbol: str | None = None
+    side: str | None = None
+    status: str | None = None
+    reconciled: bool | None = None
+    strategy_id: int | None = None
+    position_id: int | None = None
+    executed_at: datetime | None = None
+    created_at: datetime | None = None
 
 
 class PositionOrderModel(BaseModel):
     id: int
+    command_id: int | None = None
     account_id: int
     symbol: str
     side: OrderSide
-    order_type: OrderType
+    order_type: str
     status: OrderStatus
     strategy_id: int = Field(validation_alias=AliasChoices("strategy_id"))
     position_id: int
@@ -352,6 +431,7 @@ class PositionModel(BaseModel):
     id: int
     account_id: int
     symbol: str
+    strategy_id: int = Field(validation_alias=AliasChoices("strategy_id"))
     side: OrderSide
     qty: Decimal
     avg_price: Decimal
@@ -390,12 +470,20 @@ class ReassignResponse(BaseModel):
     ok: bool
     deals_updated: int
     orders_updated: int
+    deals_total: int = 0
+    orders_total: int = 0
+    preview: bool = False
+    page: int = 1
+    page_size: int = 100
+    items: list[ReassignPreviewItem] = Field(default_factory=list)
 
 
 class ReconcileNowInput(BaseModel):
     account_id: int | None = Field(default=None, gt=0)
     account_ids: list[int] | str | None = None
     scope: Literal["short", "hourly", "long"] = "short"
+    start_date: str | None = None
+    end_date: str | None = None
 
 
 class ReconcileNowResponse(BaseModel):
@@ -563,6 +651,18 @@ class AdminCreateUserApiKeyResponse(BaseModel):
     api_key_plain: str
 
 
+class AdminCreateApiKeyInput(BaseModel):
+    user_id: int = Field(ge=1)
+    api_key: str | None = None
+
+
+class AdminCreateApiKeyResponse(BaseModel):
+    ok: bool
+    user_id: int
+    api_key_id: int
+    api_key_plain: str
+
+
 class AdminUserApiKeyItem(BaseModel):
     user_id: int
     user_name: str
@@ -653,6 +753,115 @@ class AdminUpdateStrategyResponse(BaseModel):
     rows: int
 
 
+AdminOmsView = Literal[
+    "open_orders",
+    "history_orders",
+    "open_positions",
+    "history_positions",
+    "deals",
+]
+
+
+class AdminOmsQueryResponse(BaseModel):
+    items: list[dict[str, Any]]
+    total: int
+    page: int
+    page_size: int
+
+
+class AdminOmsOrderRow(BaseModel):
+    id: int | None = None
+    command_id: int | None = None
+    account_id: int | None = None
+    symbol: str | None = None
+    side: str | None = None
+    order_type: str | None = None
+    status: str | None = None
+    strategy_id: int | None = None
+    position_id: int | None = None
+    reason: str | None = None
+    comment: str | None = None
+    client_order_id: str | None = None
+    exchange_order_id: str | None = None
+    qty: Decimal | None = None
+    price: Decimal | None = None
+    stop_loss: Decimal | None = None
+    stop_gain: Decimal | None = None
+    filled_qty: Decimal | None = None
+    avg_fill_price: Decimal | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+    closed_at: str | None = None
+
+
+class AdminOmsPositionRow(BaseModel):
+    id: int | None = None
+    account_id: int | None = None
+    symbol: str | None = None
+    strategy_id: int | None = None
+    side: str | None = None
+    qty: Decimal | None = None
+    avg_price: Decimal | None = None
+    stop_loss: Decimal | None = None
+    stop_gain: Decimal | None = None
+    state: str | None = None
+    reason: str | None = None
+    comment: str | None = None
+    opened_at: str | None = None
+    updated_at: str | None = None
+    closed_at: str | None = None
+
+
+class AdminOmsDealRow(BaseModel):
+    id: int | None = None
+    account_id: int | None = None
+    order_id: int | None = None
+    position_id: int | None = None
+    symbol: str | None = None
+    side: str | None = None
+    qty: Decimal | None = None
+    price: Decimal | None = None
+    fee: Decimal | None = None
+    fee_currency: str | None = None
+    pnl: Decimal | None = None
+    strategy_id: int | None = None
+    reason: str | None = None
+    comment: str | None = None
+    reconciled: bool | None = None
+    exchange_trade_id: str | None = None
+    created_at: str | None = None
+    executed_at: str | None = None
+
+
+class AdminOmsOrderMutation(BaseModel):
+    op: Literal["insert", "update", "delete"]
+    row: AdminOmsOrderRow
+
+
+class AdminOmsPositionMutation(BaseModel):
+    op: Literal["insert", "update", "delete"]
+    row: AdminOmsPositionRow
+
+
+class AdminOmsDealMutation(BaseModel):
+    op: Literal["insert", "update", "delete"]
+    row: AdminOmsDealRow
+
+
+class AdminOmsMutateResult(BaseModel):
+    index: int
+    ok: bool
+    op: str
+    id: int | None = None
+    error: str | None = None
+
+
+class AdminOmsMutateResponse(BaseModel):
+    ok: bool
+    entity: Literal["orders", "positions", "deals"]
+    results: list[AdminOmsMutateResult]
+
+
 class StrategyItem(BaseModel):
     strategy_id: int
     client_strategy_id: int | None = None
@@ -690,6 +899,64 @@ class AuthLoginPasswordResponse(BaseModel):
     user_id: int
     role: str
     api_key_id: int
+
+
+class UserProfileResponse(BaseModel):
+    user_id: int
+    user_name: str
+    role: str
+    status: str
+    api_key_id: int
+
+
+class UserUpdateProfileInput(BaseModel):
+    user_name: str = Field(min_length=1)
+
+
+class UserUpdateProfileResponse(BaseModel):
+    ok: bool
+    user_id: int
+    user_name: str
+
+
+class UserUpdatePasswordInput(BaseModel):
+    current_password: str = Field(min_length=1)
+    new_password: str = Field(min_length=1)
+
+
+class UserUpdatePasswordResponse(BaseModel):
+    ok: bool
+    user_id: int
+
+
+class UserApiKeyItem(BaseModel):
+    api_key_id: int
+    user_id: int
+    user_name: str
+    role: str
+    status: str
+    created_at: str
+
+
+class UserApiKeysResponse(BaseModel):
+    items: list[UserApiKeyItem]
+
+
+class UserCreateApiKeyInput(BaseModel):
+    user_id: int | None = Field(default=None, ge=1)
+    api_key: str | None = None
+
+
+class UserCreateApiKeyResponse(BaseModel):
+    ok: bool
+    user_id: int
+    api_key_id: int
+    api_key_plain: str
+
+
+class UserUpdateApiKeyInput(BaseModel):
+    status: Literal["active", "disabled"]
+    user_id: int | None = Field(default=None, ge=1)
 
 
 class CcxtExchangesResponse(BaseModel):

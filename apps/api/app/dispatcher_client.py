@@ -2,6 +2,8 @@ import asyncio
 import json
 from typing import Any
 
+DISPATCH_STREAM_LIMIT_BYTES = 8 * 1024 * 1024
+
 
 async def dispatch_request(
     host: str,
@@ -13,10 +15,18 @@ async def dispatch_request(
     writer: asyncio.StreamWriter | None = None
     try:
         if timeout_seconds is None:
-            reader, writer = await asyncio.open_connection(host=host, port=port)
+            reader, writer = await asyncio.open_connection(
+                host=host,
+                port=port,
+                limit=DISPATCH_STREAM_LIMIT_BYTES,
+            )
         else:
             reader, writer = await asyncio.wait_for(
-                asyncio.open_connection(host=host, port=port),
+                asyncio.open_connection(
+                    host=host,
+                    port=port,
+                    limit=DISPATCH_STREAM_LIMIT_BYTES,
+                ),
                 timeout=max(1, int(timeout_seconds)),
             )
         writer.write((json.dumps(payload, separators=(",", ":")) + "\n").encode("utf-8"))

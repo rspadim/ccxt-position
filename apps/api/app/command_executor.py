@@ -65,7 +65,30 @@ async def execute_command_by_id(
                 if order is None:
                     raise PermanentCommandError("missing local order for send_order")
 
-                params = {}
+                params: dict[str, Any] = {}
+                raw_params = payload.get("params")
+                if isinstance(raw_params, dict):
+                    params.update(raw_params)
+                if bool(payload.get("post_only", False)):
+                    params["postOnly"] = True
+                tif = str(payload.get("time_in_force") or "").strip()
+                if tif:
+                    params["timeInForce"] = tif.upper()
+                trigger_price = payload.get("trigger_price")
+                if trigger_price is not None:
+                    params["triggerPrice"] = trigger_price
+                stop_price = payload.get("stop_price")
+                if stop_price is not None:
+                    params["stopPrice"] = stop_price
+                tp_price = payload.get("take_profit_price")
+                if tp_price is not None:
+                    params["takeProfitPrice"] = tp_price
+                trailing_amount = payload.get("trailing_amount")
+                if trailing_amount is not None:
+                    params["trailingAmount"] = trailing_amount
+                trailing_percent = payload.get("trailing_percent")
+                if trailing_percent is not None:
+                    params["trailingPercent"] = trailing_percent
                 if payload.get("reduce_only") is True:
                     params["reduceOnly"] = True
                 client_order_id = order.get("client_order_id") or str(order["id"])
@@ -251,7 +274,17 @@ async def execute_command_by_id(
 
                 q_a = _dec(qty_a)
                 q_b = _dec(qty_b)
-                close_qty = min(q_a, q_b)
+                close_qty_max = min(q_a, q_b)
+                req_qty_raw = payload.get("qty")
+                if req_qty_raw is None:
+                    close_qty = close_qty_max
+                else:
+                    req_qty = _dec(req_qty_raw)
+                    if req_qty <= 0:
+                        raise PermanentCommandError("close_by qty must be > 0")
+                    if req_qty > close_qty_max:
+                        raise PermanentCommandError("close_by qty exceeds available minimum")
+                    close_qty = req_qty
                 if close_qty <= 0:
                     raise PermanentCommandError("close_by quantity is zero")
 
@@ -316,6 +349,81 @@ async def execute_command_by_id(
                         "position_id_a": pid_a,
                         "position_id_b": pid_b,
                         "qty": str(close_qty),
+                    },
+                )
+            elif command_type == "merge_positions":
+                source_id = int(payload.get("source_position_id", 0) or 0)
+                target_id = int(payload.get("target_position_id", 0) or 0)
+                if source_id <= 0 or target_id <= 0 or source_id == target_id:
+                    raise PermanentCommandError("merge_positions requires different source/target ids")
+                source = await repo.fetch_open_position(conn, account_id, source_id)
+                target = await repo.fetch_open_position(conn, account_id, target_id)
+                if source is None or target is None:
+                    raise PermanentCommandError("merge_positions positions must exist and be open")
+
+                src_pid, src_symbol, src_strategy_id, src_side, src_qty, src_avg = source
+                dst_pid, dst_symbol, dst_strategy_id, dst_side, dst_qty, dst_avg = target
+                if src_symbol != dst_symbol:
+                    raise PermanentCommandError("merge_positions requires same symbol")
+                if src_side != dst_side:
+                    raise PermanentCommandError("merge_positions requires same side")
+
+                q_src = _dec(src_qty)
+                q_dst = _dec(dst_qty)
+                if q_src <= 0 or q_dst <= 0:
+                    raise PermanentCommandError("merge_positions requires positive qty in both positions")
+
+                new_qty = q_src + q_dst
+                new_avg = ((q_src * _dec(src_avg)) + (q_dst * _dec(dst_avg))) / new_qty
+                await repo.update_position_open_qty_price(conn, dst_pid, new_qty, new_avg)
+                await repo.close_position_merged(conn, src_pid)
+
+                stop_mode = str(payload.get("stop_mode", "keep") or "keep").strip().lower()
+                if stop_mode not in {"keep", "clear", "set"}:
+                    raise PermanentCommandError("merge_positions stop_mode invalid")
+                if stop_mode == "clear":
+                    await repo.update_position_targets_comment(
+                        conn=conn,
+                        account_id=account_id,
+                        position_id=dst_pid,
+                        set_stop_loss=True,
+                        stop_loss=None,
+                        set_stop_gain=True,
+                        stop_gain=None,
+                        set_comment=False,
+                        comment=None,
+                    )
+                elif stop_mode == "set":
+                    await repo.update_position_targets_comment(
+                        conn=conn,
+                        account_id=account_id,
+                        position_id=dst_pid,
+                        set_stop_loss=True,
+                        stop_loss=payload.get("oms_stop_loss"),
+                        set_stop_gain=True,
+                        stop_gain=payload.get("oms_stop_gain"),
+                        set_comment=False,
+                        comment=None,
+                    )
+
+                await repo.insert_event(
+                    conn=conn,
+                    account_id=account_id,
+                    namespace="position",
+                    event_type="positions_merged",
+                    payload={
+                        "command_id": command_id,
+                        "source_position_id": src_pid,
+                        "target_position_id": dst_pid,
+                        "symbol": src_symbol,
+                        "side": src_side,
+                        "source_qty": str(q_src),
+                        "target_qty_before": str(q_dst),
+                        "target_qty_after": str(new_qty),
+                        "target_avg_price_after": str(new_avg),
+                        "target_strategy_id": int(dst_strategy_id),
+                        "source_strategy_id": int(src_strategy_id),
+                        "stop_mode": stop_mode,
                     },
                 )
             else:

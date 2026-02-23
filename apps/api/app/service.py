@@ -27,7 +27,7 @@ async def _check_permission(
     can_risk_manage = bool(row[2])
     if command in {"send_order", "cancel_order", "cancel_all_orders", "change_order", "position_change"} and not can_trade:
         raise CommandValidationError("permission_denied", "trade permission required")
-    if command in {"close_by", "close_position"} and not (can_trade or can_risk_manage):
+    if command in {"close_by", "close_position", "merge_positions"} and not (can_trade or can_risk_manage):
         raise CommandValidationError("permission_denied", "trade or risk permission required for close")
 
 
@@ -85,8 +85,8 @@ async def _insert_pending_order(
     order_type = str(payload.get("order_type", payload.get("type", ""))).lower()
     qty = payload.get("qty", payload.get("amount"))
     price = payload.get("price")
-    stop_loss = payload.get("stop_loss")
-    stop_gain = payload.get("stop_gain")
+    stop_loss = payload.get("oms_stop_loss")
+    stop_gain = payload.get("oms_stop_gain")
     comment = payload.get("comment")
     client_order_id = payload.get("client_order_id")
 
@@ -94,13 +94,10 @@ async def _insert_pending_order(
         raise CommandValidationError("validation_error", "payload.symbol is required")
     if side not in {"buy", "sell"}:
         raise CommandValidationError("validation_error", "payload.side must be buy or sell")
-    if order_type not in {"market", "limit"}:
-        raise CommandValidationError("validation_error", "payload.order_type must be market or limit")
+    if not order_type:
+        raise CommandValidationError("validation_error", "payload.order_type is required")
     if qty is None:
         raise CommandValidationError("validation_error", "payload.qty is required")
-
-    if order_type == "limit" and price is None:
-        raise CommandValidationError("validation_error", "payload.price is required for limit orders")
 
     await _validate_position_binding(repo, conn, account_id, position_id, symbol)
     return await repo.insert_position_order_pending_submit(
@@ -127,12 +124,8 @@ def _build_close_position_payload(
 ) -> dict[str, Any]:
     position_id, symbol, _strategy_id, current_side, qty, _avg_price = position_row
     close_side = "sell" if current_side == "buy" else "buy"
-    order_type = str(payload.get("order_type", "market")).lower()
-    if order_type not in {"market", "limit"}:
-        raise CommandValidationError("validation_error", "payload.order_type must be market or limit")
-    price = payload.get("price")
-    if order_type == "limit" and price is None:
-        raise CommandValidationError("validation_error", "payload.price is required for limit close")
+    order_type = "market"
+    price = None
 
     return {
         "symbol": symbol,
@@ -144,9 +137,13 @@ def _build_close_position_payload(
         "strategy_id": payload.get("strategy_id", 0),
         "reason": payload.get("reason", "api"),
         "comment": payload.get("comment"),
-        "reduce_only": True,
+        "oms_stop_loss": payload.get("oms_stop_loss"),
+        "oms_stop_gain": payload.get("oms_stop_gain"),
+        "reduce_only": bool(payload.get("reduce_only", True)),
         "origin_command": "close_position",
         "client_order_id": payload.get("client_order_id"),
+        "params": payload.get("params") if isinstance(payload.get("params"), dict) else {},
+        "post_only": bool(payload.get("post_only", False)),
     }
 
 
@@ -168,11 +165,9 @@ async def _validate_change_order_payload(
     if row is None:
         raise CommandValidationError("order_not_found", "order not found for account")
 
-    _, status, order_type = row
+    _, status, _order_type = row
     if status not in {"PENDING_SUBMIT", "SUBMITTED", "PARTIALLY_FILLED"}:
         raise CommandValidationError("invalid_order_state", "order state does not allow changes")
-    if new_price is not None and order_type != "limit":
-        raise CommandValidationError("validation_error", "new_price allowed only for limit orders")
 
 
 async def process_single_command_direct(
@@ -269,9 +264,9 @@ async def process_single_command_direct(
                     account_id=account_id,
                     position_id=position_id,
                     set_stop_loss=("stop_loss" in payload_fields_set),
-                    stop_loss=payload.get("stop_loss"),
+                    stop_loss=payload.get("oms_stop_loss"),
                     set_stop_gain=("stop_gain" in payload_fields_set),
-                    stop_gain=payload.get("stop_gain"),
+                    stop_gain=payload.get("oms_stop_gain"),
                     set_comment=("comment" in payload_fields_set),
                     comment=payload.get("comment"),
                 )
@@ -286,8 +281,8 @@ async def process_single_command_direct(
                     event_type="position_changed",
                     payload={
                         "position_id": position_id,
-                        "stop_loss": payload.get("stop_loss") if "stop_loss" in payload_fields_set else None,
-                        "stop_gain": payload.get("stop_gain") if "stop_gain" in payload_fields_set else None,
+                        "oms_stop_loss": payload.get("oms_stop_loss") if "stop_loss" in payload_fields_set else None,
+                        "oms_stop_gain": payload.get("oms_stop_gain") if "stop_gain" in payload_fields_set else None,
                         "comment": payload.get("comment") if "comment" in payload_fields_set else None,
                     },
                 )

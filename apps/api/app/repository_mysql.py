@@ -102,6 +102,39 @@ class MySQLCommandRepository:
             "status": str(row[3]),
         }
 
+    async def fetch_user_by_id(self, conn: Any, user_id: int) -> dict[str, Any] | None:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT id, name, role, status
+                FROM users
+                WHERE id = %s
+                LIMIT 1
+                """,
+                (user_id,),
+            )
+            row = await cur.fetchone()
+        if row is None:
+            return None
+        return {
+            "user_id": int(row[0]),
+            "user_name": str(row[1]),
+            "role": str(row[2]),
+            "status": str(row[3]),
+        }
+
+    async def update_user_name(self, conn: Any, user_id: int, user_name: str) -> int:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                UPDATE users
+                SET name = %s
+                WHERE id = %s
+                """,
+                (user_name, user_id),
+            )
+            return int(cur.rowcount or 0)
+
     async def set_user_password_hash(self, conn: Any, user_id: int, password_hash: str) -> int:
         async with conn.cursor() as cur:
             await cur.execute(
@@ -157,6 +190,57 @@ class MySQLCommandRepository:
             )
             rows = await cur.fetchall()
         return [int(row[0]) for row in rows]
+
+    async def list_api_keys_for_user(self, conn: Any, user_id: int) -> list[dict[str, Any]]:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT k.id, u.id, u.name, u.role, k.status, k.created_at
+                FROM user_api_keys k
+                JOIN users u ON u.id = k.user_id
+                WHERE k.user_id = %s
+                ORDER BY k.id ASC
+                """,
+                (user_id,),
+            )
+            rows = await cur.fetchall()
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            out.append(
+                {
+                    "api_key_id": int(row[0]),
+                    "user_id": int(row[1]),
+                    "user_name": str(row[2]),
+                    "role": str(row[3]),
+                    "status": str(row[4]),
+                    "created_at": str(row[5]),
+                }
+            )
+        return out
+
+    async def fetch_api_key_owner(self, conn: Any, api_key_id: int) -> dict[str, Any] | None:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT k.id, u.id, u.name, u.role, u.status, k.status
+                FROM user_api_keys k
+                JOIN users u ON u.id = k.user_id
+                WHERE k.id = %s
+                LIMIT 1
+                """,
+                (api_key_id,),
+            )
+            row = await cur.fetchone()
+        if row is None:
+            return None
+        return {
+            "api_key_id": int(row[0]),
+            "user_id": int(row[1]),
+            "user_name": str(row[2]),
+            "role": str(row[3]),
+            "user_status": str(row[4]),
+            "api_key_status": str(row[5]),
+        }
 
     async def create_auth_token(
         self,
@@ -1018,6 +1102,19 @@ class MySQLCommandRepository:
                 (order_id,),
             )
 
+    async def update_order_position_link(self, conn: Any, order_id: int, position_id: int) -> int:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                UPDATE oms_orders
+                SET position_id = %s,
+                    updated_at = NOW()
+                WHERE id = %s
+                """,
+                (int(position_id), int(order_id)),
+            )
+            return int(cur.rowcount or 0)
+
     async def fetch_account_exchange_credentials(
         self, conn: Any, account_id: int
     ) -> tuple[str, bool, str | None, str | None, str | None, dict[str, Any]]:
@@ -1209,6 +1306,216 @@ class MySQLCommandRepository:
                 (account_id, exchange_id, exchange_trade_id, exchange_order_id, symbol, payload, fingerprint),
             )
 
+    async def list_ccxt_orders_raw(
+        self,
+        conn: Any,
+        account_id: int,
+        date_from: str,
+        date_to: str,
+    ) -> list[dict[str, Any]]:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT id, exchange_id, exchange_order_id, client_order_id, symbol, raw_json, observed_at
+                FROM ccxt_orders_raw
+                WHERE account_id = %s
+                  AND observed_at >= %s
+                  AND observed_at < DATE_ADD(%s, INTERVAL 1 DAY)
+                ORDER BY id ASC
+                """,
+                (account_id, str(date_from), str(date_to)),
+            )
+            rows = await cur.fetchall()
+        out: list[dict[str, Any]] = []
+        for r in rows:
+            out.append(
+                {
+                    "id": int(r[0]),
+                    "account_id": account_id,
+                    "exchange_id": str(r[1]),
+                    "exchange_order_id": None if r[2] is None else str(r[2]),
+                    "client_order_id": None if r[3] is None else str(r[3]),
+                    "symbol": None if r[4] is None else str(r[4]),
+                    "raw_json": _json_column(r[5]),
+                    "observed_at": str(r[6]),
+                }
+            )
+        return out
+
+    async def list_ccxt_trades_raw(
+        self,
+        conn: Any,
+        account_id: int,
+        date_from: str,
+        date_to: str,
+    ) -> list[dict[str, Any]]:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT id, exchange_id, exchange_trade_id, exchange_order_id, symbol, raw_json, observed_at
+                FROM ccxt_trades_raw
+                WHERE account_id = %s
+                  AND observed_at >= %s
+                  AND observed_at < DATE_ADD(%s, INTERVAL 1 DAY)
+                ORDER BY id ASC
+                """,
+                (account_id, str(date_from), str(date_to)),
+            )
+            rows = await cur.fetchall()
+        out: list[dict[str, Any]] = []
+        for r in rows:
+            out.append(
+                {
+                    "id": int(r[0]),
+                    "account_id": account_id,
+                    "exchange_id": str(r[1]),
+                    "exchange_trade_id": None if r[2] is None else str(r[2]),
+                    "exchange_order_id": None if r[3] is None else str(r[3]),
+                    "symbol": None if r[4] is None else str(r[4]),
+                    "raw_json": _json_column(r[5]),
+                    "observed_at": str(r[6]),
+                }
+            )
+        return out
+
+    async def count_ccxt_orders_raw_multi(
+        self,
+        conn: Any,
+        account_ids: list[int],
+        date_from: str,
+        date_to: str,
+    ) -> int:
+        if not account_ids:
+            return 0
+        placeholders = ",".join(["%s"] * len(account_ids))
+        params: list[Any] = [*account_ids, str(date_from), str(date_to)]
+        async with conn.cursor() as cur:
+            await cur.execute(
+                f"""
+                SELECT COUNT(*)
+                FROM ccxt_orders_raw
+                WHERE account_id IN ({placeholders})
+                  AND observed_at >= %s
+                  AND observed_at < DATE_ADD(%s, INTERVAL 1 DAY)
+                """,
+                tuple(params),
+            )
+            row = await cur.fetchone()
+        return int(row[0] or 0) if row is not None else 0
+
+    async def list_ccxt_orders_raw_multi(
+        self,
+        conn: Any,
+        account_ids: list[int],
+        date_from: str,
+        date_to: str,
+        *,
+        limit: int,
+        offset: int,
+    ) -> list[dict[str, Any]]:
+        if not account_ids:
+            return []
+        placeholders = ",".join(["%s"] * len(account_ids))
+        params: list[Any] = [*account_ids, str(date_from), str(date_to), int(limit), int(offset)]
+        async with conn.cursor() as cur:
+            await cur.execute(
+                f"""
+                SELECT id, account_id, exchange_id, exchange_order_id, client_order_id, symbol, raw_json, observed_at
+                FROM ccxt_orders_raw
+                WHERE account_id IN ({placeholders})
+                  AND observed_at >= %s
+                  AND observed_at < DATE_ADD(%s, INTERVAL 1 DAY)
+                ORDER BY id ASC
+                LIMIT %s OFFSET %s
+                """,
+                tuple(params),
+            )
+            rows = await cur.fetchall()
+        out: list[dict[str, Any]] = []
+        for r in rows:
+            out.append(
+                {
+                    "id": int(r[0]),
+                    "account_id": int(r[1]),
+                    "exchange_id": str(r[2]),
+                    "exchange_order_id": None if r[3] is None else str(r[3]),
+                    "client_order_id": None if r[4] is None else str(r[4]),
+                    "symbol": None if r[5] is None else str(r[5]),
+                    "raw_json": _json_column(r[6]),
+                    "observed_at": str(r[7]),
+                }
+            )
+        return out
+
+    async def count_ccxt_trades_raw_multi(
+        self,
+        conn: Any,
+        account_ids: list[int],
+        date_from: str,
+        date_to: str,
+    ) -> int:
+        if not account_ids:
+            return 0
+        placeholders = ",".join(["%s"] * len(account_ids))
+        params: list[Any] = [*account_ids, str(date_from), str(date_to)]
+        async with conn.cursor() as cur:
+            await cur.execute(
+                f"""
+                SELECT COUNT(*)
+                FROM ccxt_trades_raw
+                WHERE account_id IN ({placeholders})
+                  AND observed_at >= %s
+                  AND observed_at < DATE_ADD(%s, INTERVAL 1 DAY)
+                """,
+                tuple(params),
+            )
+            row = await cur.fetchone()
+        return int(row[0] or 0) if row is not None else 0
+
+    async def list_ccxt_trades_raw_multi(
+        self,
+        conn: Any,
+        account_ids: list[int],
+        date_from: str,
+        date_to: str,
+        *,
+        limit: int,
+        offset: int,
+    ) -> list[dict[str, Any]]:
+        if not account_ids:
+            return []
+        placeholders = ",".join(["%s"] * len(account_ids))
+        params: list[Any] = [*account_ids, str(date_from), str(date_to), int(limit), int(offset)]
+        async with conn.cursor() as cur:
+            await cur.execute(
+                f"""
+                SELECT id, account_id, exchange_id, exchange_trade_id, exchange_order_id, symbol, raw_json, observed_at
+                FROM ccxt_trades_raw
+                WHERE account_id IN ({placeholders})
+                  AND observed_at >= %s
+                  AND observed_at < DATE_ADD(%s, INTERVAL 1 DAY)
+                ORDER BY id ASC
+                LIMIT %s OFFSET %s
+                """,
+                tuple(params),
+            )
+            rows = await cur.fetchall()
+        out: list[dict[str, Any]] = []
+        for r in rows:
+            out.append(
+                {
+                    "id": int(r[0]),
+                    "account_id": int(r[1]),
+                    "exchange_id": str(r[2]),
+                    "exchange_trade_id": None if r[3] is None else str(r[3]),
+                    "exchange_order_id": None if r[4] is None else str(r[4]),
+                    "symbol": None if r[5] is None else str(r[5]),
+                    "raw_json": _json_column(r[6]),
+                    "observed_at": str(r[7]),
+                }
+            )
+        return out
+
     async def fetch_open_position_for_symbol(
         self, conn: Any, account_id: int, symbol: str, side: str
     ) -> dict[str, Any] | None:
@@ -1237,6 +1544,38 @@ class MySQLCommandRepository:
             "comment": row[7],
         }
 
+    async def fetch_open_position_for_symbol_non_external(
+        self, conn: Any, account_id: int, symbol: str, side: str
+    ) -> dict[str, Any] | None:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT id, qty, avg_price, side, strategy_id, stop_loss, stop_gain, comment
+                FROM oms_positions
+                WHERE account_id = %s
+                  AND symbol = %s
+                  AND side = %s
+                  AND state = 'open'
+                  AND reason <> 'external'
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (account_id, symbol, side),
+            )
+            row = await cur.fetchone()
+        if row is None:
+            return None
+        return {
+            "id": int(row[0]),
+            "qty": row[1],
+            "avg_price": row[2],
+            "side": str(row[3]).lower(),
+            "strategy_id": int(row[4]),
+            "stop_loss": row[5],
+            "stop_gain": row[6],
+            "comment": row[7],
+        }
+
     async def fetch_open_net_position_by_symbol(
         self, conn: Any, account_id: int, symbol: str
     ) -> dict[str, Any] | None:
@@ -1246,6 +1585,37 @@ class MySQLCommandRepository:
                 SELECT id, qty, avg_price, side, strategy_id, stop_loss, stop_gain, comment
                 FROM oms_positions
                 WHERE account_id = %s AND symbol = %s AND state = 'open'
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (account_id, symbol),
+            )
+            row = await cur.fetchone()
+        if row is None:
+            return None
+        return {
+            "id": int(row[0]),
+            "qty": row[1],
+            "avg_price": row[2],
+            "side": str(row[3]).lower(),
+            "strategy_id": int(row[4]),
+            "stop_loss": row[5],
+            "stop_gain": row[6],
+            "comment": row[7],
+        }
+
+    async def fetch_open_net_position_by_symbol_non_external(
+        self, conn: Any, account_id: int, symbol: str
+    ) -> dict[str, Any] | None:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT id, qty, avg_price, side, strategy_id, stop_loss, stop_gain, comment
+                FROM oms_positions
+                WHERE account_id = %s
+                  AND symbol = %s
+                  AND state = 'open'
+                  AND reason <> 'external'
                 ORDER BY id DESC
                 LIMIT 1
                 """,
@@ -1343,6 +1713,17 @@ class MySQLCommandRepository:
                 """
                 UPDATE oms_positions
                 SET state = 'closed', qty = 0, closed_at = NOW(), updated_at = NOW()
+                WHERE id = %s
+                """,
+                (position_id,),
+            )
+
+    async def close_position_merged(self, conn: Any, position_id: int) -> None:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                UPDATE oms_positions
+                SET state = 'merged', qty = 0, closed_at = NOW(), updated_at = NOW()
                 WHERE id = %s
                 """,
                 (position_id,),
@@ -1503,7 +1884,7 @@ class MySQLCommandRepository:
         async with conn.cursor() as cur:
             await cur.execute(
                 """
-                SELECT id, strategy_id, position_id, stop_loss, stop_gain, comment
+                SELECT id, strategy_id, position_id, stop_loss, stop_gain, comment, reason
                 FROM oms_orders
                 WHERE account_id = %s
                   AND (
@@ -1542,6 +1923,64 @@ class MySQLCommandRepository:
             "stop_loss": row[3],
             "stop_gain": row[4],
             "comment": row[5],
+            "reason": str(row[6]),
+        }
+
+    async def get_or_create_external_unmatched_order(
+        self,
+        conn: Any,
+        account_id: int,
+        *,
+        symbol: str,
+        side: str,
+        exchange_order_id: str | None,
+        client_order_id: str | None,
+        qty: Any,
+        price: Any,
+    ) -> dict[str, Any]:
+        link = await self.fetch_open_order_link(
+            conn=conn,
+            account_id=account_id,
+            exchange_order_id=exchange_order_id,
+            client_order_id=client_order_id,
+        )
+        if link is not None:
+            return link
+
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                INSERT INTO oms_orders (
+                    command_id, account_id, symbol, side, order_type, status,
+                    strategy_id, position_id, reason, comment, client_order_id, exchange_order_id,
+                    qty, price, stop_loss, stop_gain, filled_qty, avg_fill_price, reconciled
+                ) VALUES (
+                    NULL, %s, %s, %s, 'market', 'FILLED',
+                    0, 0, 'external', NULL, %s, %s,
+                    %s, %s, NULL, NULL, %s, %s, FALSE
+                )
+                """,
+                (
+                    int(account_id),
+                    str(symbol),
+                    str(side),
+                    client_order_id,
+                    exchange_order_id,
+                    qty,
+                    price,
+                    qty,
+                    price,
+                ),
+            )
+            new_id = int(cur.lastrowid)
+        return {
+            "id": new_id,
+            "strategy_id": 0,
+            "position_id": 0,
+            "stop_loss": None,
+            "stop_gain": None,
+            "comment": None,
+            "reason": "external",
         }
 
     async def fetch_outbox_events(
@@ -2086,9 +2525,11 @@ class MySQLCommandRepository:
         strategy_id: int | None = None,
         date_from: str | None = None,
         date_to: str | None = None,
+        open_limit: int = 500,
     ) -> list[dict[str, Any]]:
         status_filter = "AND status IN ('PENDING_SUBMIT','SUBMITTED','PARTIALLY_FILLED')" if open_only else ""
         strategy_filter = "AND strategy_id = %s" if strategy_id is not None else ""
+        limit_clause = "LIMIT %s" if open_only else ""
         date_filter = ""
         params_list: list[Any] = [account_id]
         if strategy_id is not None:
@@ -2097,17 +2538,19 @@ class MySQLCommandRepository:
             date_filter = "AND updated_at >= %s AND updated_at < DATE_ADD(%s, INTERVAL 1 DAY)"
             params_list.append(str(date_from))
             params_list.append(str(date_to))
+        if open_only:
+            params_list.append(max(1, min(5000, int(open_limit or 500))))
         params: tuple[Any, ...] = tuple(params_list)
         async with conn.cursor() as cur:
             await cur.execute(
                 f"""
                 SELECT id, symbol, side, order_type, status, strategy_id, position_id, reason,
                        comment, client_order_id, exchange_order_id, qty, price, stop_loss, stop_gain, filled_qty, avg_fill_price,
-                       created_at, updated_at, closed_at
+                       created_at, updated_at, closed_at, command_id
                 FROM oms_orders
                 WHERE account_id = %s {status_filter} {strategy_filter} {date_filter}
-                ORDER BY id DESC
-                LIMIT 500
+                ORDER BY id ASC
+                {limit_clause}
                 """,
                 params,
             )
@@ -2137,6 +2580,7 @@ class MySQLCommandRepository:
                     "created_at": str(r[17]),
                     "updated_at": str(r[18]),
                     "closed_at": None if r[19] is None else str(r[19]),
+                    "command_id": None if r[20] is None else int(r[20]),
                 }
             )
         return out
@@ -2166,8 +2610,7 @@ class MySQLCommandRepository:
                        pnl, strategy_id, reason, comment, reconciled, exchange_trade_id, created_at, executed_at
                 FROM oms_deals
                 WHERE account_id = %s {strategy_filter} {date_filter}
-                ORDER BY id DESC
-                LIMIT 1000
+                ORDER BY id ASC
                 """,
                 params,
             )
@@ -2206,9 +2649,11 @@ class MySQLCommandRepository:
         strategy_id: int | None = None,
         date_from: str | None = None,
         date_to: str | None = None,
+        open_limit: int = 500,
     ) -> list[dict[str, Any]]:
         state_filter = "AND state IN ('open', 'close_requested')" if open_only else ""
         strategy_filter = "AND strategy_id = %s" if strategy_id is not None else ""
+        limit_clause = "LIMIT %s" if open_only else ""
         date_filter = ""
         params_list: list[Any] = [account_id]
         if strategy_id is not None:
@@ -2217,6 +2662,8 @@ class MySQLCommandRepository:
             date_filter = "AND updated_at >= %s AND updated_at < DATE_ADD(%s, INTERVAL 1 DAY)"
             params_list.append(str(date_from))
             params_list.append(str(date_to))
+        if open_only:
+            params_list.append(max(1, min(5000, int(open_limit or 500))))
         params: tuple[Any, ...] = tuple(params_list)
         async with conn.cursor() as cur:
             await cur.execute(
@@ -2224,8 +2671,8 @@ class MySQLCommandRepository:
                 SELECT id, symbol, strategy_id, side, qty, avg_price, stop_loss, stop_gain, state, reason, comment, opened_at, updated_at, closed_at
                 FROM oms_positions
                 WHERE account_id = %s {state_filter} {strategy_filter} {date_filter}
-                ORDER BY id DESC
-                LIMIT 500
+                ORDER BY id ASC
+                {limit_clause}
                 """,
                 params,
             )
@@ -2306,6 +2753,78 @@ class MySQLCommandRepository:
             )
             return int(cur.rowcount or 0)
 
+    async def list_reassign_deal_candidates(
+        self,
+        conn: Any,
+        *,
+        account_ids: list[int],
+        deal_ids: list[int] | None = None,
+        date_from: str | None = None,
+        date_to: str | None = None,
+        reconciled: bool | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> tuple[list[dict[str, Any]], int]:
+        if not account_ids:
+            return [], 0
+        account_placeholders = ",".join(["%s"] * len(account_ids))
+        where = [f"o.account_id IN ({account_placeholders})"]
+        where.append("reconciled IN (TRUE, FALSE)")
+        params: list[Any] = [*account_ids]
+        if deal_ids:
+            deal_placeholders = ",".join(["%s"] * len(deal_ids))
+            where.append(f"id IN ({deal_placeholders})")
+            params.extend([int(x) for x in deal_ids])
+        if date_from:
+            where.append("DATE(executed_at) >= %s")
+            params.append(date_from)
+        if date_to:
+            where.append("DATE(executed_at) <= %s")
+            params.append(date_to)
+        if reconciled is not None:
+            where.append("reconciled = %s")
+            params.append(bool(reconciled))
+        where_sql = " AND ".join(where)
+        async with conn.cursor() as cur:
+            await cur.execute(
+                f"""
+                SELECT COUNT(1)
+                FROM oms_deals
+                WHERE {where_sql}
+                """,
+                tuple(params),
+            )
+            total_row = await cur.fetchone()
+            total = int(total_row[0] or 0) if total_row else 0
+            await cur.execute(
+                f"""
+                SELECT id, account_id, symbol, side, reconciled, strategy_id, position_id, executed_at, created_at
+                FROM oms_deals
+                WHERE {where_sql}
+                ORDER BY id ASC
+                LIMIT %s OFFSET %s
+                """,
+                (*params, int(limit), int(offset)),
+            )
+            rows = await cur.fetchall()
+        items: list[dict[str, Any]] = []
+        for r in rows:
+            items.append(
+                {
+                    "kind": "deal",
+                    "id": int(r[0]),
+                    "account_id": int(r[1]),
+                    "symbol": None if r[2] is None else str(r[2]),
+                    "side": None if r[3] is None else str(r[3]),
+                    "reconciled": bool(r[4]),
+                    "strategy_id": None if r[5] is None else int(r[5]),
+                    "position_id": None if r[6] is None else int(r[6]),
+                    "executed_at": None if r[7] is None else str(r[7]),
+                    "created_at": None if r[8] is None else str(r[8]),
+                }
+            )
+        return items, total
+
     async def reassign_orders(
         self,
         conn: Any,
@@ -2323,12 +2842,723 @@ class MySQLCommandRepository:
                 f"""
                 UPDATE oms_orders
                 SET strategy_id = %s,
-                    position_id = %s
+                    position_id = %s,
+                    reconciled = TRUE
                 WHERE account_id = %s
                   AND id IN ({placeholders})
                 """,
                 params,
             )
+            return int(cur.rowcount or 0)
+
+    async def reassign_deals_strategy_by_orders(
+        self,
+        conn: Any,
+        *,
+        account_id: int,
+        order_ids: list[int],
+        target_strategy_id: int,
+    ) -> int:
+        if not order_ids:
+            return 0
+        placeholders = ",".join(["%s"] * len(order_ids))
+        params: list[Any] = [int(target_strategy_id), int(account_id), *[int(x) for x in order_ids]]
+        async with conn.cursor() as cur:
+            await cur.execute(
+                f"""
+                UPDATE oms_deals
+                SET strategy_id = %s,
+                    reconciled = TRUE
+                WHERE account_id = %s
+                  AND order_id IN ({placeholders})
+                """,
+                tuple(params),
+            )
+            return int(cur.rowcount or 0)
+
+    async def reassign_positions_strategy_by_orders(
+        self,
+        conn: Any,
+        *,
+        account_id: int,
+        order_ids: list[int],
+        target_strategy_id: int,
+    ) -> int:
+        if not order_ids:
+            return 0
+        placeholders = ",".join(["%s"] * len(order_ids))
+        async with conn.cursor() as cur:
+            await cur.execute(
+                f"""
+                SELECT DISTINCT position_id
+                FROM oms_deals
+                WHERE account_id = %s
+                  AND order_id IN ({placeholders})
+                  AND position_id > 0
+                """,
+                (int(account_id), *[int(x) for x in order_ids]),
+            )
+            rows = await cur.fetchall()
+        position_ids = sorted(set([int(r[0]) for r in rows if r and int(r[0]) > 0]))
+        if not position_ids:
+            return 0
+        pos_placeholders = ",".join(["%s"] * len(position_ids))
+        async with conn.cursor() as cur:
+            await cur.execute(
+                f"""
+                UPDATE oms_positions
+                SET strategy_id = %s,
+                    updated_at = NOW()
+                WHERE account_id = %s
+                  AND id IN ({pos_placeholders})
+                """,
+                (int(target_strategy_id), int(account_id), *position_ids),
+            )
+            return int(cur.rowcount or 0)
+
+    async def list_reassign_order_candidates(
+        self,
+        conn: Any,
+        *,
+        account_ids: list[int],
+        order_ids: list[int] | None = None,
+        date_from: str | None = None,
+        date_to: str | None = None,
+        statuses: list[str] | None = None,
+        reconciled: bool | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> tuple[list[dict[str, Any]], int]:
+        if not account_ids:
+            return [], 0
+        account_placeholders = ",".join(["%s"] * len(account_ids))
+        where = [f"account_id IN ({account_placeholders})"]
+        params: list[Any] = [*account_ids]
+        if order_ids:
+            order_placeholders = ",".join(["%s"] * len(order_ids))
+            where.append(f"o.id IN ({order_placeholders})")
+            params.extend([int(x) for x in order_ids])
+        if date_from:
+            where.append("DATE(o.created_at) >= %s")
+            params.append(date_from)
+        if date_to:
+            where.append("DATE(o.created_at) <= %s")
+            params.append(date_to)
+        if statuses:
+            st = [str(x).strip().upper() for x in statuses if str(x).strip()]
+            if st:
+                st_placeholders = ",".join(["%s"] * len(st))
+                where.append(f"UPPER(o.status) IN ({st_placeholders})")
+                params.extend(st)
+        if reconciled is not None:
+            where.append("o.reconciled = %s")
+            params.append(bool(reconciled))
+        where_sql = " AND ".join(where)
+        async with conn.cursor() as cur:
+            await cur.execute(
+                f"""
+                SELECT COUNT(1)
+                FROM oms_orders o
+                WHERE {where_sql}
+                """,
+                tuple(params),
+            )
+            total_row = await cur.fetchone()
+            total = int(total_row[0] or 0) if total_row else 0
+            await cur.execute(
+                f"""
+                SELECT
+                    o.id,
+                    o.account_id,
+                    a.exchange_id,
+                    o.symbol,
+                    o.side,
+                    o.status,
+                    o.strategy_id,
+                    o.position_id,
+                    o.qty,
+                    o.price,
+                    o.filled_qty,
+                    o.avg_fill_price,
+                    o.exchange_order_id,
+                    o.created_at,
+                    o.updated_at,
+                    o.reconciled
+                FROM oms_orders o
+                LEFT JOIN accounts a ON a.id = o.account_id
+                WHERE {where_sql}
+                ORDER BY o.id ASC
+                LIMIT %s OFFSET %s
+                """,
+                (*params, int(limit), int(offset)),
+            )
+            rows = await cur.fetchall()
+        items: list[dict[str, Any]] = []
+        for r in rows:
+            items.append(
+                {
+                    "kind": "order",
+                    "id": int(r[0]),
+                    "account_id": int(r[1]),
+                    "exchange_id": None if r[2] is None else str(r[2]),
+                    "symbol": None if r[3] is None else str(r[3]),
+                    "side": None if r[4] is None else str(r[4]),
+                    "status": None if r[5] is None else str(r[5]),
+                    "strategy_id": None if r[6] is None else int(r[6]),
+                    "position_id": None if r[7] is None else int(r[7]),
+                    "qty": None if r[8] is None else str(r[8]),
+                    "price": None if r[9] is None else str(r[9]),
+                    "filled_qty": None if r[10] is None else str(r[10]),
+                    "avg_fill_price": None if r[11] is None else str(r[11]),
+                    "exchange_order_id": None if r[12] is None else str(r[12]),
+                    "created_at": None if r[13] is None else str(r[13]),
+                    "executed_at": None,
+                    "reconciled": bool(r[15]),
+                }
+            )
+        return items, total
+
+    async def fetch_reassign_before_state(
+        self,
+        conn: Any,
+        *,
+        account_id: int,
+        deal_ids: list[int],
+        order_ids: list[int],
+    ) -> dict[str, list[dict[str, Any]]]:
+        out: dict[str, list[dict[str, Any]]] = {"deals": [], "orders": []}
+        if deal_ids:
+            placeholders = ",".join(["%s"] * len(deal_ids))
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    f"""
+                    SELECT id, strategy_id, position_id, reconciled
+                    FROM oms_deals
+                    WHERE account_id = %s
+                      AND id IN ({placeholders})
+                    ORDER BY id ASC
+                    """,
+                    (account_id, *deal_ids),
+                )
+                rows = await cur.fetchall()
+            out["deals"] = [
+                {
+                    "id": int(r[0]),
+                    "strategy_id": None if r[1] is None else int(r[1]),
+                    "position_id": None if r[2] is None else int(r[2]),
+                    "reconciled": bool(r[3]),
+                }
+                for r in rows
+            ]
+        if order_ids:
+            placeholders = ",".join(["%s"] * len(order_ids))
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    f"""
+                    SELECT id, strategy_id, position_id, status
+                    FROM oms_orders
+                    WHERE account_id = %s
+                      AND id IN ({placeholders})
+                    ORDER BY id ASC
+                    """,
+                    (account_id, *order_ids),
+                )
+                rows = await cur.fetchall()
+            out["orders"] = [
+                {
+                    "id": int(r[0]),
+                    "strategy_id": None if r[1] is None else int(r[1]),
+                    "position_id": None if r[2] is None else int(r[2]),
+                    "status": None if r[3] is None else str(r[3]),
+                }
+                for r in rows
+            ]
+        return out
+
+    async def admin_fetch_oms_order_by_id(
+        self,
+        conn: Any,
+        order_id: int,
+        account_id: int | None = None,
+    ) -> dict[str, Any] | None:
+        account_sql = "AND account_id = %s" if account_id is not None else ""
+        params: list[Any] = [int(order_id)]
+        if account_id is not None:
+            params.append(int(account_id))
+        async with conn.cursor() as cur:
+            await cur.execute(
+                f"""
+                SELECT id, command_id, account_id, symbol, side, order_type, status, strategy_id, position_id,
+                       reason, comment, client_order_id, exchange_order_id, qty, price, stop_loss, stop_gain,
+                       filled_qty, avg_fill_price, reconciled, created_at, updated_at, closed_at
+                FROM oms_orders
+                WHERE id = %s {account_sql}
+                LIMIT 1
+                """,
+                tuple(params),
+            )
+            row = await cur.fetchone()
+        if row is None:
+            return None
+        return {
+            "id": int(row[0]),
+            "command_id": None if row[1] is None else int(row[1]),
+            "account_id": int(row[2]),
+            "symbol": str(row[3]),
+            "side": str(row[4]),
+            "order_type": str(row[5]),
+            "status": str(row[6]),
+            "strategy_id": int(row[7]),
+            "position_id": int(row[8]),
+            "reason": str(row[9]),
+            "comment": row[10],
+            "client_order_id": row[11],
+            "exchange_order_id": row[12],
+            "qty": str(row[13]),
+            "price": None if row[14] is None else str(row[14]),
+            "stop_loss": None if row[15] is None else str(row[15]),
+            "stop_gain": None if row[16] is None else str(row[16]),
+            "filled_qty": str(row[17]),
+            "avg_fill_price": None if row[18] is None else str(row[18]),
+            "reconciled": bool(row[19]),
+            "created_at": str(row[20]),
+            "updated_at": str(row[21]),
+            "closed_at": None if row[22] is None else str(row[22]),
+        }
+
+    async def admin_fetch_oms_position_by_id(
+        self,
+        conn: Any,
+        position_id: int,
+        account_id: int | None = None,
+    ) -> dict[str, Any] | None:
+        account_sql = "AND account_id = %s" if account_id is not None else ""
+        params: list[Any] = [int(position_id)]
+        if account_id is not None:
+            params.append(int(account_id))
+        async with conn.cursor() as cur:
+            await cur.execute(
+                f"""
+                SELECT id, account_id, symbol, strategy_id, side, qty, avg_price, stop_loss, stop_gain, state,
+                       reason, comment, opened_at, updated_at, closed_at
+                FROM oms_positions
+                WHERE id = %s {account_sql}
+                LIMIT 1
+                """,
+                tuple(params),
+            )
+            row = await cur.fetchone()
+        if row is None:
+            return None
+        return {
+            "id": int(row[0]),
+            "account_id": int(row[1]),
+            "symbol": str(row[2]),
+            "strategy_id": int(row[3]),
+            "side": str(row[4]),
+            "qty": str(row[5]),
+            "avg_price": str(row[6]),
+            "stop_loss": None if row[7] is None else str(row[7]),
+            "stop_gain": None if row[8] is None else str(row[8]),
+            "state": str(row[9]),
+            "reason": str(row[10]),
+            "comment": row[11],
+            "opened_at": str(row[12]),
+            "updated_at": str(row[13]),
+            "closed_at": None if row[14] is None else str(row[14]),
+        }
+
+    async def admin_fetch_oms_deal_by_id(
+        self,
+        conn: Any,
+        deal_id: int,
+        account_id: int | None = None,
+    ) -> dict[str, Any] | None:
+        account_sql = "AND account_id = %s" if account_id is not None else ""
+        params: list[Any] = [int(deal_id)]
+        if account_id is not None:
+            params.append(int(account_id))
+        async with conn.cursor() as cur:
+            await cur.execute(
+                f"""
+                SELECT id, account_id, order_id, position_id, symbol, side, qty, price, fee, fee_currency, pnl,
+                       strategy_id, reason, comment, reconciled, exchange_trade_id, created_at, executed_at
+                FROM oms_deals
+                WHERE id = %s {account_sql}
+                LIMIT 1
+                """,
+                tuple(params),
+            )
+            row = await cur.fetchone()
+        if row is None:
+            return None
+        return {
+            "id": int(row[0]),
+            "account_id": int(row[1]),
+            "order_id": None if row[2] is None else int(row[2]),
+            "position_id": int(row[3]),
+            "symbol": str(row[4]),
+            "side": str(row[5]),
+            "qty": str(row[6]),
+            "price": str(row[7]),
+            "fee": None if row[8] is None else str(row[8]),
+            "fee_currency": row[9],
+            "pnl": None if row[10] is None else str(row[10]),
+            "strategy_id": int(row[11]),
+            "reason": str(row[12]),
+            "comment": row[13],
+            "reconciled": bool(row[14]),
+            "exchange_trade_id": row[15],
+            "created_at": str(row[16]),
+            "executed_at": str(row[17]),
+        }
+
+    async def admin_list_oms_orders_multi(
+        self,
+        conn: Any,
+        *,
+        account_ids: list[int],
+        open_only: bool,
+        date_from: str | None,
+        date_to: str | None,
+        limit: int,
+        offset: int,
+    ) -> tuple[list[dict[str, Any]], int]:
+        account_sql = ""
+        params: list[Any] = []
+        if account_ids:
+            placeholders = ",".join(["%s"] * len(account_ids))
+            account_sql = f"AND account_id IN ({placeholders})"
+            params.extend([int(x) for x in account_ids])
+        status_sql = "AND status IN ('PENDING_SUBMIT','SUBMITTED','PARTIALLY_FILLED')" if open_only else ""
+        date_sql = ""
+        if (not open_only) and date_from and date_to:
+            date_sql = "AND updated_at >= %s AND updated_at < DATE_ADD(%s, INTERVAL 1 DAY)"
+            params.extend([str(date_from), str(date_to)])
+        count_params = list(params)
+        async with conn.cursor() as cur:
+            await cur.execute(
+                f"SELECT COUNT(*) FROM oms_orders WHERE 1=1 {account_sql} {status_sql} {date_sql}",
+                tuple(count_params),
+            )
+            row = await cur.fetchone()
+            total = int(row[0] or 0) if row is not None else 0
+            params.extend([int(limit), int(offset)])
+            await cur.execute(
+                f"""
+                SELECT id, command_id, account_id, symbol, side, order_type, status, strategy_id, position_id,
+                       reason, comment, client_order_id, exchange_order_id, qty, price, stop_loss, stop_gain,
+                       filled_qty, avg_fill_price, reconciled, created_at, updated_at, closed_at
+                FROM oms_orders
+                WHERE 1=1 {account_sql} {status_sql} {date_sql}
+                ORDER BY id ASC
+                LIMIT %s OFFSET %s
+                """,
+                tuple(params),
+            )
+            rows = await cur.fetchall()
+        out: list[dict[str, Any]] = []
+        for r in rows:
+            out.append(
+                {
+                    "id": int(r[0]),
+                    "command_id": None if r[1] is None else int(r[1]),
+                    "account_id": int(r[2]),
+                    "symbol": r[3],
+                    "side": r[4],
+                    "order_type": r[5],
+                    "status": r[6],
+                    "strategy_id": int(r[7]),
+                    "position_id": int(r[8]),
+                    "reason": r[9],
+                    "comment": r[10],
+                    "client_order_id": r[11],
+                    "exchange_order_id": r[12],
+                    "qty": str(r[13]),
+                    "price": None if r[14] is None else str(r[14]),
+                    "stop_loss": None if r[15] is None else str(r[15]),
+                    "stop_gain": None if r[16] is None else str(r[16]),
+                    "filled_qty": str(r[17]),
+                    "avg_fill_price": None if r[18] is None else str(r[18]),
+                    "reconciled": bool(r[19]),
+                    "created_at": str(r[20]),
+                    "updated_at": str(r[21]),
+                    "closed_at": None if r[22] is None else str(r[22]),
+                }
+            )
+        return out, total
+
+    async def admin_list_oms_positions_multi(
+        self,
+        conn: Any,
+        *,
+        account_ids: list[int],
+        open_only: bool,
+        date_from: str | None,
+        date_to: str | None,
+        limit: int,
+        offset: int,
+    ) -> tuple[list[dict[str, Any]], int]:
+        account_sql = ""
+        params: list[Any] = []
+        if account_ids:
+            placeholders = ",".join(["%s"] * len(account_ids))
+            account_sql = f"AND account_id IN ({placeholders})"
+            params.extend([int(x) for x in account_ids])
+        state_sql = "AND state IN ('open','close_requested')" if open_only else ""
+        date_sql = ""
+        if (not open_only) and date_from and date_to:
+            date_sql = "AND updated_at >= %s AND updated_at < DATE_ADD(%s, INTERVAL 1 DAY)"
+            params.extend([str(date_from), str(date_to)])
+        count_params = list(params)
+        async with conn.cursor() as cur:
+            await cur.execute(
+                f"SELECT COUNT(*) FROM oms_positions WHERE 1=1 {account_sql} {state_sql} {date_sql}",
+                tuple(count_params),
+            )
+            row = await cur.fetchone()
+            total = int(row[0] or 0) if row is not None else 0
+            params.extend([int(limit), int(offset)])
+            await cur.execute(
+                f"""
+                SELECT id, account_id, symbol, strategy_id, side, qty, avg_price, stop_loss, stop_gain, state,
+                       reason, comment, opened_at, updated_at, closed_at
+                FROM oms_positions
+                WHERE 1=1 {account_sql} {state_sql} {date_sql}
+                ORDER BY id ASC
+                LIMIT %s OFFSET %s
+                """,
+                tuple(params),
+            )
+            rows = await cur.fetchall()
+        out: list[dict[str, Any]] = []
+        for r in rows:
+            out.append(
+                {
+                    "id": int(r[0]),
+                    "account_id": int(r[1]),
+                    "symbol": r[2],
+                    "strategy_id": int(r[3]),
+                    "side": r[4],
+                    "qty": str(r[5]),
+                    "avg_price": str(r[6]),
+                    "stop_loss": None if r[7] is None else str(r[7]),
+                    "stop_gain": None if r[8] is None else str(r[8]),
+                    "state": r[9],
+                    "reason": r[10],
+                    "comment": r[11],
+                    "opened_at": str(r[12]),
+                    "updated_at": str(r[13]),
+                    "closed_at": None if r[14] is None else str(r[14]),
+                }
+            )
+        return out, total
+
+    async def admin_list_oms_deals_multi(
+        self,
+        conn: Any,
+        *,
+        account_ids: list[int],
+        date_from: str | None,
+        date_to: str | None,
+        limit: int,
+        offset: int,
+    ) -> tuple[list[dict[str, Any]], int]:
+        account_sql = ""
+        params: list[Any] = []
+        if account_ids:
+            placeholders = ",".join(["%s"] * len(account_ids))
+            account_sql = f"AND account_id IN ({placeholders})"
+            params.extend([int(x) for x in account_ids])
+        date_sql = ""
+        if date_from and date_to:
+            date_sql = "AND executed_at >= %s AND executed_at < DATE_ADD(%s, INTERVAL 1 DAY)"
+            params.extend([str(date_from), str(date_to)])
+        count_params = list(params)
+        async with conn.cursor() as cur:
+            await cur.execute(
+                f"SELECT COUNT(*) FROM oms_deals WHERE 1=1 {account_sql} {date_sql}",
+                tuple(count_params),
+            )
+            row = await cur.fetchone()
+            total = int(row[0] or 0) if row is not None else 0
+            params.extend([int(limit), int(offset)])
+            await cur.execute(
+                f"""
+                SELECT id, account_id, order_id, position_id, symbol, side, qty, price, fee, fee_currency, pnl,
+                       strategy_id, reason, comment, reconciled, exchange_trade_id, created_at, executed_at
+                FROM oms_deals
+                WHERE 1=1 {account_sql} {date_sql}
+                ORDER BY id ASC
+                LIMIT %s OFFSET %s
+                """,
+                tuple(params),
+            )
+            rows = await cur.fetchall()
+        out: list[dict[str, Any]] = []
+        for r in rows:
+            out.append(
+                {
+                    "id": int(r[0]),
+                    "account_id": int(r[1]),
+                    "order_id": None if r[2] is None else int(r[2]),
+                    "position_id": int(r[3]),
+                    "symbol": r[4],
+                    "side": r[5],
+                    "qty": str(r[6]),
+                    "price": str(r[7]),
+                    "fee": None if r[8] is None else str(r[8]),
+                    "fee_currency": r[9],
+                    "pnl": None if r[10] is None else str(r[10]),
+                    "strategy_id": int(r[11]),
+                    "reason": r[12],
+                    "comment": r[13],
+                    "reconciled": bool(r[14]),
+                    "exchange_trade_id": r[15],
+                    "created_at": str(r[16]),
+                    "executed_at": str(r[17]),
+                }
+            )
+        return out, total
+
+    async def admin_insert_oms_order(self, conn: Any, row: dict[str, Any]) -> int:
+        allowed = [
+            "id", "command_id", "account_id", "symbol", "side", "order_type", "status", "strategy_id", "position_id",
+            "reason", "comment", "client_order_id", "exchange_order_id", "qty", "price", "stop_loss", "stop_gain",
+            "filled_qty", "avg_fill_price", "reconciled", "created_at", "updated_at", "closed_at",
+        ]
+        cols = [k for k in allowed if k in row]
+        if not cols:
+            raise ValueError("empty_row")
+        values = [row.get(k) for k in cols]
+        placeholders = ",".join(["%s"] * len(cols))
+        async with conn.cursor() as cur:
+            await cur.execute(
+                f"INSERT INTO oms_orders ({', '.join(cols)}) VALUES ({placeholders})",
+                tuple(values),
+            )
+            return int(cur.lastrowid)
+
+    async def admin_update_oms_order(self, conn: Any, order_id: int, row: dict[str, Any]) -> int:
+        allowed = [
+            "command_id", "account_id", "symbol", "side", "order_type", "status", "strategy_id", "position_id",
+            "reason", "comment", "client_order_id", "exchange_order_id", "qty", "price", "stop_loss", "stop_gain",
+            "filled_qty", "avg_fill_price", "reconciled", "created_at", "updated_at", "closed_at",
+        ]
+        sets: list[str] = []
+        params: list[Any] = []
+        for k in allowed:
+            if k in row:
+                sets.append(f"{k} = %s")
+                params.append(row.get(k))
+        if not sets:
+            return 0
+        params.append(int(order_id))
+        async with conn.cursor() as cur:
+            await cur.execute(
+                f"UPDATE oms_orders SET {', '.join(sets)} WHERE id = %s",
+                tuple(params),
+            )
+            return int(cur.rowcount or 0)
+
+    async def admin_delete_oms_order(self, conn: Any, order_id: int, account_id: int | None = None) -> int:
+        account_sql = "AND account_id = %s" if account_id is not None else ""
+        params: list[Any] = [int(order_id)]
+        if account_id is not None:
+            params.append(int(account_id))
+        async with conn.cursor() as cur:
+            await cur.execute(f"DELETE FROM oms_orders WHERE id = %s {account_sql}", tuple(params))
+            return int(cur.rowcount or 0)
+
+    async def admin_insert_oms_position(self, conn: Any, row: dict[str, Any]) -> int:
+        allowed = [
+            "id", "account_id", "symbol", "strategy_id", "side", "qty", "avg_price", "stop_loss", "stop_gain",
+            "state", "reason", "comment", "opened_at", "updated_at", "closed_at",
+        ]
+        cols = [k for k in allowed if k in row]
+        if not cols:
+            raise ValueError("empty_row")
+        values = [row.get(k) for k in cols]
+        placeholders = ",".join(["%s"] * len(cols))
+        async with conn.cursor() as cur:
+            await cur.execute(
+                f"INSERT INTO oms_positions ({', '.join(cols)}) VALUES ({placeholders})",
+                tuple(values),
+            )
+            return int(cur.lastrowid)
+
+    async def admin_update_oms_position(self, conn: Any, position_id: int, row: dict[str, Any]) -> int:
+        allowed = [
+            "account_id", "symbol", "strategy_id", "side", "qty", "avg_price", "stop_loss", "stop_gain",
+            "state", "reason", "comment", "opened_at", "updated_at", "closed_at",
+        ]
+        sets: list[str] = []
+        params: list[Any] = []
+        for k in allowed:
+            if k in row:
+                sets.append(f"{k} = %s")
+                params.append(row.get(k))
+        if not sets:
+            return 0
+        params.append(int(position_id))
+        async with conn.cursor() as cur:
+            await cur.execute(
+                f"UPDATE oms_positions SET {', '.join(sets)} WHERE id = %s",
+                tuple(params),
+            )
+            return int(cur.rowcount or 0)
+
+    async def admin_delete_oms_position(self, conn: Any, position_id: int, account_id: int | None = None) -> int:
+        account_sql = "AND account_id = %s" if account_id is not None else ""
+        params: list[Any] = [int(position_id)]
+        if account_id is not None:
+            params.append(int(account_id))
+        async with conn.cursor() as cur:
+            await cur.execute(f"DELETE FROM oms_positions WHERE id = %s {account_sql}", tuple(params))
+            return int(cur.rowcount or 0)
+
+    async def admin_insert_oms_deal(self, conn: Any, row: dict[str, Any]) -> int:
+        allowed = [
+            "id", "account_id", "order_id", "position_id", "symbol", "side", "qty", "price", "fee", "fee_currency",
+            "pnl", "strategy_id", "reason", "comment", "reconciled", "exchange_trade_id", "created_at", "executed_at",
+        ]
+        cols = [k for k in allowed if k in row]
+        if not cols:
+            raise ValueError("empty_row")
+        values = [row.get(k) for k in cols]
+        placeholders = ",".join(["%s"] * len(cols))
+        async with conn.cursor() as cur:
+            await cur.execute(
+                f"INSERT INTO oms_deals ({', '.join(cols)}) VALUES ({placeholders})",
+                tuple(values),
+            )
+            return int(cur.lastrowid)
+
+    async def admin_update_oms_deal(self, conn: Any, deal_id: int, row: dict[str, Any]) -> int:
+        allowed = [
+            "account_id", "order_id", "position_id", "symbol", "side", "qty", "price", "fee", "fee_currency",
+            "pnl", "strategy_id", "reason", "comment", "reconciled", "exchange_trade_id", "created_at", "executed_at",
+        ]
+        sets: list[str] = []
+        params: list[Any] = []
+        for k in allowed:
+            if k in row:
+                sets.append(f"{k} = %s")
+                params.append(row.get(k))
+        if not sets:
+            return 0
+        params.append(int(deal_id))
+        async with conn.cursor() as cur:
+            await cur.execute(f"UPDATE oms_deals SET {', '.join(sets)} WHERE id = %s", tuple(params))
+            return int(cur.rowcount or 0)
+
+    async def admin_delete_oms_deal(self, conn: Any, deal_id: int, account_id: int | None = None) -> int:
+        account_sql = "AND account_id = %s" if account_id is not None else ""
+        params: list[Any] = [int(deal_id)]
+        if account_id is not None:
+            params.append(int(account_id))
+        async with conn.cursor() as cur:
+            await cur.execute(f"DELETE FROM oms_deals WHERE id = %s {account_sql}", tuple(params))
             return int(cur.rowcount or 0)
 
     async def insert_event(
