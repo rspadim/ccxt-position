@@ -26,6 +26,7 @@
             <wa-button id="tabAdminBtn" class="tab submenu-item" variant="neutral"><i class="fa-solid fa-building-columns" aria-hidden="true"></i><span>Contas</span></wa-button>
             <wa-button id="tabAdminUsersBtn" class="tab submenu-item" variant="neutral"><i class="fa-solid fa-users" aria-hidden="true"></i><span>Usuários</span></wa-button>
             <wa-button id="tabAdminApiKeysBtn" class="tab submenu-item" variant="neutral"><i class="fa-solid fa-key" aria-hidden="true"></i><span>API Keys</span></wa-button>
+            <wa-button id="tabAdminStatusBtn" class="tab submenu-item" variant="neutral"><i class="fa-solid fa-heart-pulse" aria-hidden="true"></i><span>Estado do Sistema</span></wa-button>
             <wa-button id="tabAdminOmsBtn" class="tab submenu-item" variant="neutral"><i class="fa-solid fa-skull-crossbones" aria-hidden="true"></i><span>OMS CRUD</span></wa-button>
           </div>
         </div>
@@ -604,6 +605,15 @@
             </select>
           </label>
           <label><span data-i18n="post_trading.order_statuses">Order Statuses CSV</span><input id="postTradingOrderStatuses" placeholder="OPEN,PARTIALLY_FILLED" /></label>
+          <label><span data-i18n="post_trading.reconcile_scope">Reconcile Scope</span>
+            <select id="postTradingReconcileScope">
+              <option value="short" data-i18n="post_trading.scope_short">Short</option>
+              <option value="hourly" data-i18n="post_trading.scope_hourly">Hourly</option>
+              <option value="long" data-i18n="post_trading.scope_long">Long</option>
+              <option value="period" selected data-i18n="post_trading.scope_period">Period</option>
+            </select>
+          </label>
+          <wa-button id="postTradingReconcileBtn" variant="neutral" data-i18n="post_trading.reconcile">Reconcile</wa-button>
           <wa-button id="postTradingPreviewBtn" variant="neutral" data-i18n="post_trading.preview">Preview</wa-button>
           <wa-button id="postTradingApplyBtn" variant="brand" data-i18n="post_trading.apply">Apply Reassign</wa-button>
         </div>
@@ -641,6 +651,14 @@
 
       <section class="card forms is-hidden" id="adminPanel">
         <h2 data-i18n="menu.admin">Admin</h2>
+
+        <div id="adminStatusSection" class="card is-hidden">
+          <h3 data-i18n="admin.system_status">Estado do Sistema</h3>
+          <div class="actions">
+            <wa-button id="adminRefreshSystemStatusBtn" type="button" variant="neutral" data-i18n="admin.refresh_status">Atualizar estado</wa-button>
+          </div>
+          <div id="adminSystemStatusBox" class="notice notice-info">-</div>
+        </div>
 
         <div id="adminAccountsSection">
           <form id="adminCreateAccountForm">

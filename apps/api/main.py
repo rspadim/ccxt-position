@@ -907,8 +907,20 @@ async def post_position_reconcile_now(
     if not targets:
         return ReconcileNowResponse(ok=True, account_ids=[], triggered_count=0)
 
-    if not targets:
-        return ReconcileNowResponse(ok=True, account_ids=[], triggered_count=0)
+    scope = str(request.scope or "short").strip().lower()
+    lookback_override: int | None = None
+    if scope == "period":
+        start_date = _parse_date_yyyy_mm_dd(str(request.start_date or ""), "start_date")
+        end_date = _parse_date_yyyy_mm_dd(str(request.end_date or ""), "end_date")
+        if start_date > end_date:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "validation_error", "message": "start_date must be <= end_date"},
+            )
+        start_dt = datetime.strptime(start_date, "%Y-%m-%d")
+        delta_seconds = int((datetime.utcnow() - start_dt).total_seconds())
+        lookback_override = max(60, delta_seconds)
+
     triggered = 0
     for account_id in targets:
         dispatched = await dispatch_request(
@@ -919,8 +931,12 @@ async def post_position_reconcile_now(
                 "op": "reconcile_now",
                 "x_api_key": x_api_key,
                 "account_id": int(account_id),
-                "scope": request.scope,
-                "lookback_seconds": _scope_lookback_seconds(request.scope, account=None),
+                "scope": scope,
+                "lookback_seconds": (
+                    int(lookback_override)
+                    if lookback_override is not None
+                    else _scope_lookback_seconds(scope, account=None)
+                ),
             },
         )
         if dispatched.get("ok"):

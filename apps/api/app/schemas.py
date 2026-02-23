@@ -481,7 +481,7 @@ class ReassignResponse(BaseModel):
 class ReconcileNowInput(BaseModel):
     account_id: int | None = Field(default=None, gt=0)
     account_ids: list[int] | str | None = None
-    scope: Literal["short", "hourly", "long"] = "short"
+    scope: Literal["short", "hourly", "long", "period"] = "short"
     start_date: str | None = None
     end_date: str | None = None
 

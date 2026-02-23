@@ -128,6 +128,30 @@ class Dispatcher:
         return json.dumps(value, separators=(",", ":"), default=str)
 
     @staticmethod
+    def _exchange_engine_id(value: Any) -> str:
+        raw = str(value or "").strip()
+        if not raw:
+            return raw
+        low = raw.lower()
+        if low.startswith("ccxt.") or low.startswith("ccxtpro."):
+            return raw
+        return f"ccxt.{raw}"
+
+    @classmethod
+    def _decorate_exchange_ids(cls, payload: Any) -> Any:
+        if isinstance(payload, list):
+            return [cls._decorate_exchange_ids(x) for x in payload]
+        if isinstance(payload, dict):
+            out: dict[str, Any] = {}
+            for key, value in payload.items():
+                if key == "exchange_id":
+                    out[key] = cls._exchange_engine_id(value)
+                else:
+                    out[key] = cls._decorate_exchange_ids(value)
+            return out
+        return payload
+
+    @staticmethod
     def _hash_password(password: str, salt_hex: str) -> str:
         digest = hashlib.sha256((salt_hex + password).encode("utf-8")).hexdigest()
         return f"sha256${salt_hex}${digest}"
@@ -689,7 +713,13 @@ class Dispatcher:
             account = await self._require_account_permission(
                 auth, account_id, require_trade=require_trade, for_ws=for_ws
             )
-            return {"ok": True, "result": {"account_id": account_id, "exchange_id": account["exchange_id"]}}
+            return {
+                "ok": True,
+                "result": {
+                    "account_id": account_id,
+                    "exchange_id": self._exchange_engine_id(account.get("exchange_id")),
+                },
+            }
 
         if op == "ccxt_call":
             auth = await self._auth_from_payload(msg)
@@ -919,7 +949,7 @@ class Dispatcher:
             return {
                 "ok": True,
                 "result": {
-                    "items": rows,
+                    "items": self._decorate_exchange_ids(rows),
                     "total": int(total),
                     "page": int(page),
                     "page_size": int(page_size),
@@ -1014,7 +1044,7 @@ class Dispatcher:
                             "orders_total": int(orders_total),
                             "page": page,
                             "page_size": page_size,
-                            "items": merged_items,
+                            "items": self._decorate_exchange_ids(merged_items),
                         },
                     }
 
@@ -1362,7 +1392,7 @@ class Dispatcher:
             async with self.db.connection() as conn:
                 rows = await self.repo.list_accounts_for_api_key(conn, auth.api_key_id)
                 await conn.commit()
-            return {"ok": True, "result": rows}
+            return {"ok": True, "result": self._decorate_exchange_ids(rows)}
 
         if op == "risk_set_allow_new_positions":
             auth = await self._auth_from_payload(msg)
@@ -1501,7 +1531,7 @@ class Dispatcher:
             async with self.db.connection() as conn:
                 items = await self.repo.list_accounts_admin(conn)
                 await conn.commit()
-            return {"ok": True, "result": items}
+            return {"ok": True, "result": self._decorate_exchange_ids(items)}
 
         if op == "admin_update_account":
             auth = await self._auth_from_payload(msg)

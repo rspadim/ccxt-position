@@ -708,6 +708,7 @@ function applyLanguageTexts() {
   applyMenu("tabAdminBtn", "admin.accounts", "Accounts");
   applyMenu("tabAdminUsersBtn", "admin.users", "Users");
   applyMenu("tabAdminApiKeysBtn", "menu.api_keys", "API Keys");
+  applyMenu("tabAdminStatusBtn", "admin.system_status", "System Status");
   applyMenu("tabAdminOmsBtn", "menu.admin_oms_crud", "OMS CRUD");
   apply("loginModeLabel", "login.mode", "Mode");
   apply("loginModeApiKeyOption", "login.mode_api_key", "API Key");
@@ -801,6 +802,7 @@ function bindSidebarMenu() {
   $("tabAdminBtn").addEventListener("click", () => switchTab("admin"));
   $("tabAdminUsersBtn").addEventListener("click", () => switchTab("adminUsers"));
   $("tabAdminApiKeysBtn").addEventListener("click", () => switchTab("adminApiKeys"));
+  $("tabAdminStatusBtn").addEventListener("click", () => switchTab("adminStatus"));
   $("tabAdminOmsBtn").addEventListener("click", () => switchTab("adminOms"));
   setAdminExpanded(false);
   setPostTradingExpanded(false);
@@ -2383,7 +2385,7 @@ function setupTables() {
     omsRowNumberColumn("ccxtTrades"),
     { title: t("oms.col_id", "ID"), field: "id", width: 84 },
     { title: t("oms.col_account_id", "Account ID"), field: "account_id", width: 96 },
-    { title: t("system.col_exchange_id", "Exchange ID"), field: "exchange_id", width: 110 },
+    { title: t("system.col_exchange_id", "Exchange ID"), field: "exchange_id", width: 140 },
     { title: t("oms.col_exchange_trade_id", "Exchange Trade ID"), field: "exchange_trade_id", width: 150 },
     { title: t("oms.col_exchange_order_id", "Exchange Order ID"), field: "exchange_order_id", width: 150 },
     { title: t("oms.col_symbol", "Symbol"), field: "symbol", width: 120 },
@@ -2394,7 +2396,7 @@ function setupTables() {
     omsRowNumberColumn("ccxtOrders"),
     { title: t("oms.col_id", "ID"), field: "id", width: 84 },
     { title: t("oms.col_account_id", "Account ID"), field: "account_id", width: 96 },
-    { title: t("system.col_exchange_id", "Exchange ID"), field: "exchange_id", width: 110 },
+    { title: t("system.col_exchange_id", "Exchange ID"), field: "exchange_id", width: 140 },
     { title: t("oms.col_exchange_order_id", "Exchange Order ID"), field: "exchange_order_id", width: 150 },
     { title: t("oms.col_client_order_id", "Client Order ID"), field: "client_order_id", width: 150 },
     { title: t("oms.col_symbol", "Symbol"), field: "symbol", width: 120 },
@@ -2422,7 +2424,7 @@ function setupTables() {
   state.tables.postTrading = makeTable("postTradingTable", [
     { title: t("oms.col_id", "ID"), field: "id", width: 84 },
     { title: t("oms.col_account_id", "Account ID"), field: "account_id", width: 100 },
-    { title: t("system.col_exchange_id", "Exchange"), field: "exchange_id", width: 120 },
+    { title: t("system.col_exchange_id", "Exchange"), field: "exchange_id", width: 140 },
     { title: t("oms.col_exchange_order_id", "Exchange Order ID"), field: "exchange_order_id", width: 150 },
     { title: t("oms.col_symbol", "Symbol"), field: "symbol", width: 130 },
     { title: t("oms.col_side", "Side"), field: "side", width: 80, formatter: (cell) => sideBadge(cell.getValue()) },
@@ -2677,6 +2679,44 @@ async function loadAdminUsers(cfgOverride = null) {
   const cfg = cfgOverride || requireConfig();
   const res = await apiRequest("/admin/users", {}, cfg);
   state.tables.adminUsers.setData(res.items || []);
+}
+
+function setAdminSystemStatus(text, kind = "info") {
+  const box = document.getElementById("adminSystemStatusBox");
+  if (!box) return;
+  box.textContent = String(text || "-");
+  box.classList.remove("notice-info", "notice-success", "notice-error");
+  if (kind === "success") box.classList.add("notice-success");
+  else if (kind === "error") box.classList.add("notice-error");
+  else box.classList.add("notice-info");
+}
+
+async function loadAdminSystemStatus(cfgOverride = null) {
+  const cfg = cfgOverride || requireConfig();
+  let health = null;
+  let dispatcher = null;
+  let healthErr = "";
+  let dispatcherErr = "";
+  try {
+    const res = await fetch(`${cfg.baseUrl}/healthz`, { method: "GET" });
+    if (!res.ok) throw new Error(`health ${res.status}`);
+    health = await res.json();
+  } catch (err) {
+    healthErr = String(err);
+  }
+  try {
+    const out = await apiRequest("/dispatcher/status", {}, cfg);
+    dispatcher = out?.result || {};
+  } catch (err) {
+    dispatcherErr = String(err);
+  }
+  if (health && dispatcher) {
+    const txt = `${t("admin.api_status", "API")}: ${String(health.status || "ok")} | ${t("admin.dispatcher_status", "Dispatcher")}: ok`;
+    setAdminSystemStatus(txt, "success");
+    return;
+  }
+  const txt = `${t("admin.api_status", "API")}: ${health ? "ok" : "error"}${healthErr ? ` (${healthErr})` : ""} | ${t("admin.dispatcher_status", "Dispatcher")}: ${dispatcher ? "ok" : "error"}${dispatcherErr ? ` (${dispatcherErr})` : ""}`;
+  setAdminSystemStatus(txt, "error");
 }
 
 async function loadUserProfile(cfgOverride = null) {
@@ -3092,6 +3132,19 @@ function bindForms() {
     } catch (err) {
       eventLog("post_trading_preview_error", { error: String(err) });
       setPostTradingMessage("error", `${t("post_trading.preview_error", "Preview failed")}: ${String(err)}`);
+    }
+  });
+  $("postTradingReconcileBtn").addEventListener("click", async () => {
+    try {
+      await runPostTradingReconcile();
+    } catch (err) {
+      const msg = String(err || "");
+      if (msg.includes("period_requires_date_range")) {
+        setPostTradingMessage("error", t("post_trading.period_requires_date_range", "Para scope Período, preencha Data Início e Data Fim."));
+      } else {
+        setPostTradingMessage("error", `${t("post_trading.reconcile_error", "Erro ao reconciliar")}: ${msg}`);
+      }
+      eventLog("post_trading_reconcile_error", { error: String(err) });
     }
   });
   $("postTradingApplyBtn").addEventListener("click", async () => {
@@ -3746,6 +3799,15 @@ function bindForms() {
       eventLog("admin_load_accounts_error", { error: String(err) });
     }
   });
+  $("adminRefreshSystemStatusBtn").addEventListener("click", async () => {
+    try {
+      await loadAdminSystemStatus();
+      eventLog("admin_system_status_refresh_ok", { ok: true });
+    } catch (err) {
+      eventLog("admin_system_status_refresh_error", { error: String(err) });
+      setAdminSystemStatus(`${t("admin.status_error", "Erro ao consultar estado")}: ${String(err)}`, "error");
+    }
+  });
   $("loadAdminUsersKeysBtn").addEventListener("click", async () => {
     try {
       await loadAdminUsersKeys();
@@ -3981,6 +4043,7 @@ function switchTab(tab) {
     "admin",
     "adminUsers",
     "adminApiKeys",
+    "adminStatus",
     "adminOms",
   ]);
   const nextTab = allowedTabs.has(tab) ? tab : "login";
@@ -3996,6 +4059,7 @@ function switchTab(tab) {
   const isAdmin = nextTab === "admin";
   const isAdminUsers = nextTab === "adminUsers";
   const isAdminApiKeys = nextTab === "adminApiKeys";
+  const isAdminStatus = nextTab === "adminStatus";
   const isAdminOms = nextTab === "adminOms";
   const setMenuActive = (id, active) => {
     const node = $(id);
@@ -4006,17 +4070,20 @@ function switchTab(tab) {
   setMenuActive("tabUserBtn", isUser);
   setMenuActive("tabCommandsBtn", isCommands);
   setMenuActive("tabPositionsBtn", isPositions);
-  setMenuActive("tabPostTradingBtn", isPostTrading);
+  setMenuActive("tabPostTradingOrdersBtn", isPostTrading);
   setMenuActive("tabSystemBtn", isSystem);
   setMenuActive("tabStrategiesBtn", isStrategies);
   setMenuActive("tabRiskBtn", isRisk);
   setMenuActive("tabAdminBtn", isAdmin);
   setMenuActive("tabAdminUsersBtn", isAdminUsers);
   setMenuActive("tabAdminApiKeysBtn", isAdminApiKeys);
+  setMenuActive("tabAdminStatusBtn", isAdminStatus);
   setMenuActive("tabAdminOmsBtn", isAdminOms);
-  const inAdminGroup = isAdmin || isAdminUsers || isAdminApiKeys || isAdminOms;
+  $("tabPostTradingGroupBtn").classList.toggle("active", isPostTrading);
+  const inAdminGroup = isAdmin || isAdminUsers || isAdminApiKeys || isAdminStatus || isAdminOms;
   $("tabAdminGroupBtn").classList.toggle("active", inAdminGroup);
   $("adminSubmenu").classList.toggle("is-hidden", !inAdminGroup);
+  $("postTradingSubmenu").classList.toggle("is-hidden", !isPostTrading);
   $("loginPanel").classList.toggle("is-hidden", !isLogin);
   $("userPanel").classList.toggle("is-hidden", !isUser);
   $("commandsPanel").classList.toggle("is-hidden", !isCommands);
@@ -4025,8 +4092,9 @@ function switchTab(tab) {
   $("systemPanel").classList.toggle("is-hidden", !isSystem);
   $("strategiesPanel").classList.toggle("is-hidden", !isStrategies);
   $("riskPanel").classList.toggle("is-hidden", !isRisk);
-  $("adminPanel").classList.toggle("is-hidden", !(isAdmin || isAdminUsers || isAdminApiKeys));
+  $("adminPanel").classList.toggle("is-hidden", !(isAdmin || isAdminUsers || isAdminApiKeys || isAdminStatus));
   $("adminOmsPanel").classList.toggle("is-hidden", !isAdminOms);
+  $("adminStatusSection").classList.toggle("is-hidden", !isAdminStatus);
   $("adminAccountsSection").classList.toggle("is-hidden", !isAdmin);
   $("adminUsersSection").classList.toggle("is-hidden", !isAdminUsers);
   $("adminApiKeysSection").classList.toggle("is-hidden", !isAdminApiKeys);
@@ -4037,8 +4105,13 @@ function switchTab(tab) {
     mainContent.scrollTo({ top: 0, left: 0, behavior: "auto" });
   }
   if (isAdmin) {
-    Promise.all([loadAdminAccounts(), loadCcxtExchanges()]).catch((err) => {
+    Promise.all([loadAdminAccounts(), loadCcxtExchanges(), loadAdminSystemStatus()]).catch((err) => {
       eventLog("admin_load_accounts_error", { error: String(err) });
+    });
+  }
+  if (isAdminStatus) {
+    loadAdminSystemStatus().catch((err) => {
+      eventLog("admin_system_status_load_error", { error: String(err) });
     });
   }
   if (isAdminUsers) {
@@ -4223,6 +4296,29 @@ async function loadPostTradingPreview(resetPage = false) {
       .replace("{deals}", String(out.deals_total || 0))
       .replace("{orders}", String(out.orders_total || 0)),
   );
+}
+
+async function runPostTradingReconcile() {
+  const cfg = requireConfig();
+  const scope = String(document.getElementById("postTradingReconcileScope")?.value || "short").trim().toLowerCase();
+  const startDate = String(document.getElementById("postTradingStartDate")?.value || "").trim();
+  const endDate = String(document.getElementById("postTradingEndDate")?.value || "").trim();
+  const body = {
+    account_ids: postTradingAccountIdsCsv(),
+    scope,
+  };
+  if (scope === "period") {
+    if (!startDate || !endDate) throw new Error("period_requires_date_range");
+    body.start_date = startDate;
+    body.end_date = endDate;
+  }
+  const out = await apiRequest("/oms/reconcile", { method: "POST", body }, cfg);
+  setPostTradingMessage(
+    "success",
+    t("post_trading.reconcile_ok", "Reconciliação disparada: {count} conta(s).")
+      .replace("{count}", String(out?.triggered_count || 0)),
+  );
+  eventLog("post_trading_reconcile", out);
 }
 
 async function applyPostTradingReassign() {
