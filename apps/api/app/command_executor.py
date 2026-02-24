@@ -35,6 +35,56 @@ def _parse_int_list(value: Any) -> list[int]:
     return [int(x.strip()) for x in text.split(",") if x.strip().isdigit() and int(x.strip()) > 0]
 
 
+async def _merge_open_positions_keep_target(
+    repo: MySQLCommandRepository,
+    conn: Any,
+    *,
+    account_id: int,
+    source_position_id: int,
+    target_position_id: int,
+) -> dict[str, Any] | None:
+    if source_position_id <= 0 or target_position_id <= 0 or source_position_id == target_position_id:
+        return None
+    source = await repo.fetch_open_position(conn, account_id, source_position_id)
+    target = await repo.fetch_open_position(conn, account_id, target_position_id)
+    if source is None or target is None:
+        return None
+    src_pid, src_symbol, _src_strategy_id, src_side, src_qty, src_avg = source
+    dst_pid, dst_symbol, _dst_strategy_id, dst_side, dst_qty, dst_avg = target
+    if src_symbol != dst_symbol or src_side != dst_side:
+        return None
+    q_src = _dec(src_qty)
+    q_dst = _dec(dst_qty)
+    if q_src <= 0 or q_dst <= 0:
+        return None
+    new_qty = q_src + q_dst
+    new_avg = ((q_src * _dec(src_avg)) + (q_dst * _dec(dst_avg))) / new_qty
+    await repo.update_position_open_qty_price(conn, dst_pid, new_qty, new_avg)
+    await repo.reassign_open_orders_position(
+        conn,
+        account_id=account_id,
+        from_position_id=src_pid,
+        to_position_id=dst_pid,
+    )
+    await repo.reassign_deals_position(
+        conn,
+        account_id=account_id,
+        from_position_id=src_pid,
+        to_position_id=dst_pid,
+    )
+    await repo.close_position_merged(conn, src_pid)
+    return {
+        "source_position_id": int(src_pid),
+        "target_position_id": int(dst_pid),
+        "source_qty": str(q_src),
+        "target_qty_before": str(q_dst),
+        "target_qty_after": str(new_qty),
+        "target_avg_price_after": str(new_avg),
+        "symbol": str(src_symbol),
+        "side": str(src_side),
+    }
+
+
 async def execute_command_by_id(
     db: DatabaseMySQL,
     repo: MySQLCommandRepository,
@@ -222,7 +272,8 @@ async def execute_command_by_id(
                     raise PermanentCommandError("order has no exchange_order_id to change")
                 new_price = payload.get("new_price", order["price"])
                 new_qty = payload.get("new_qty", order["qty"])
-                edited = await ccxt_adapter.edit_or_replace_order(
+                client_order_id = str(order.get("client_order_id") or order["id"])
+                edited = await ccxt_adapter.edit_order_if_supported(
                     exchange_id=exchange_id,
                     use_testnet=is_testnet,
                     api_key=api_key,
@@ -235,26 +286,163 @@ async def execute_command_by_id(
                     order_type=str(order["order_type"]),
                     amount=new_qty,
                     price=new_price,
-                    params={},
+                    params={"clientOrderId": client_order_id},
                 )
-                new_exchange_order_id = str(edited.get("id")) if edited.get("id") else str(order["exchange_order_id"])
-                await repo.mark_order_submitted_exchange(conn, order_id, new_exchange_order_id)
-                await repo.insert_ccxt_order_raw(
-                    conn=conn,
-                    account_id=account_id,
-                    exchange_id=exchange_id,
-                    exchange_order_id=new_exchange_order_id,
-                    client_order_id=str(edited.get("clientOrderId")) if edited.get("clientOrderId") else str(order.get("client_order_id") or ""),
-                    symbol=str(edited.get("symbol")) if edited.get("symbol") else str(order["symbol"]),
-                    raw_json=edited,
-                )
-                await repo.insert_event(
-                    conn=conn,
-                    account_id=account_id,
-                    namespace="position",
-                    event_type="order_changed",
-                    payload={"command_id": command_id, "order_id": order_id},
-                )
+                if edited is not None:
+                    new_exchange_order_id = str(edited.get("id")) if edited.get("id") else str(order["exchange_order_id"])
+                    await repo.mark_order_submitted_exchange_with_values(
+                        conn,
+                        order_id=order_id,
+                        exchange_order_id=new_exchange_order_id,
+                        qty=new_qty,
+                        price=new_price,
+                    )
+                    await repo.insert_ccxt_order_raw(
+                        conn=conn,
+                        account_id=account_id,
+                        exchange_id=exchange_id,
+                        exchange_order_id=new_exchange_order_id,
+                        client_order_id=str(edited.get("clientOrderId")) if edited.get("clientOrderId") else client_order_id,
+                        symbol=str(edited.get("symbol")) if edited.get("symbol") else str(order["symbol"]),
+                        raw_json=edited,
+                    )
+                    await repo.insert_event(
+                        conn=conn,
+                        account_id=account_id,
+                        namespace="position",
+                        event_type="order_changed",
+                        payload={"command_id": command_id, "order_id": order_id},
+                    )
+                else:
+                    canceled = await ccxt_adapter.cancel_order(
+                        exchange_id=exchange_id,
+                        use_testnet=is_testnet,
+                        api_key=api_key,
+                        secret=secret,
+                        passphrase=passphrase,
+                        extra_config=extra_config,
+                        exchange_order_id=str(order["exchange_order_id"]),
+                        symbol=str(order["symbol"]),
+                        params={},
+                    )
+                    await repo.mark_order_canceled_edit_pending(conn, order_id)
+                    await repo.insert_ccxt_order_raw(
+                        conn=conn,
+                        account_id=account_id,
+                        exchange_id=exchange_id,
+                        exchange_order_id=str(canceled.get("id")) if canceled.get("id") else str(order["exchange_order_id"]),
+                        client_order_id=str(canceled.get("clientOrderId")) if canceled.get("clientOrderId") else client_order_id,
+                        symbol=str(canceled.get("symbol")) if canceled.get("symbol") else str(order["symbol"]),
+                        raw_json=canceled,
+                    )
+                    await repo.insert_event(
+                        conn=conn,
+                        account_id=account_id,
+                        namespace="position",
+                        event_type="order_change_replace_pending",
+                        payload={"command_id": command_id, "order_id": order_id},
+                    )
+                    try:
+                        created = await ccxt_adapter.create_order(
+                            exchange_id=exchange_id,
+                            use_testnet=is_testnet,
+                            api_key=api_key,
+                            secret=secret,
+                            passphrase=passphrase,
+                            extra_config=extra_config,
+                            symbol=str(order["symbol"]),
+                            side=str(order["side"]),
+                            order_type=str(order["order_type"]),
+                            amount=new_qty,
+                            price=new_price,
+                            params={"clientOrderId": client_order_id},
+                        )
+                    except Exception as exc:
+                        await repo.mark_order_edit_replace_failed(conn, order_id)
+                        await repo.insert_event(
+                            conn=conn,
+                            account_id=account_id,
+                            namespace="position",
+                            event_type="order_change_replace_failed",
+                            payload={"command_id": command_id, "order_id": order_id, "error": str(exc)},
+                        )
+                        raise PermanentCommandError("change_order_replace_create_failed") from exc
+
+                    new_exchange_order_id = str(created.get("id")) if created.get("id") else None
+                    new_client_order_id = str(created.get("clientOrderId")) if created.get("clientOrderId") else client_order_id
+                    await repo.insert_ccxt_order_raw(
+                        conn=conn,
+                        account_id=account_id,
+                        exchange_id=exchange_id,
+                        exchange_order_id=new_exchange_order_id,
+                        client_order_id=new_client_order_id,
+                        symbol=str(created.get("symbol")) if created.get("symbol") else str(order["symbol"]),
+                        raw_json=created,
+                    )
+                    orphan = await repo.find_external_orphan_order_for_replace(
+                        conn=conn,
+                        account_id=account_id,
+                        exchange_order_id=new_exchange_order_id,
+                        client_order_id=new_client_order_id,
+                        symbol=str(order["symbol"]),
+                        side=str(order["side"]),
+                    )
+                    if orphan is None:
+                        await repo.mark_order_submitted_exchange_with_values(
+                            conn,
+                            order_id=order_id,
+                            exchange_order_id=new_exchange_order_id,
+                            qty=new_qty,
+                            price=new_price,
+                        )
+                        await repo.insert_event(
+                            conn=conn,
+                            account_id=account_id,
+                            namespace="position",
+                            event_type="order_changed",
+                            payload={"command_id": command_id, "order_id": order_id},
+                        )
+                    else:
+                        orphan_id = int(orphan["id"])
+                        await repo.mark_order_consolidated_to_orphan(conn, order_id, orphan_id)
+                        await repo.adopt_external_orphan_order(
+                            conn,
+                            orphan_order_id=orphan_id,
+                            origin_order_id=order_id,
+                            strategy_id=int(order["strategy_id"]),
+                            reason=str(order["reason"]),
+                            comment=order.get("comment"),
+                        )
+                        if int(order["strategy_id"]) > 0:
+                            await repo.reassign_deals_strategy_by_orders(
+                                conn,
+                                account_id=account_id,
+                                order_ids=[orphan_id],
+                                target_strategy_id=int(order["strategy_id"]),
+                            )
+                        old_position_id = int(order.get("position_id", 0) or 0)
+                        orphan_position_id = int(orphan.get("position_id", 0) or 0)
+                        merged_meta = await _merge_open_positions_keep_target(
+                            repo,
+                            conn,
+                            account_id=account_id,
+                            source_position_id=orphan_position_id,
+                            target_position_id=old_position_id,
+                        )
+                        if merged_meta is not None:
+                            await repo.update_order_position_link(conn, orphan_id, old_position_id)
+                        await repo.insert_event(
+                            conn=conn,
+                            account_id=account_id,
+                            namespace="position",
+                            event_type="order_change_replace_consolidated",
+                            payload={
+                                "command_id": command_id,
+                                "order_id": order_id,
+                                "orphan_order_id": orphan_id,
+                                "merge": merged_meta,
+                            },
+                        )
             elif command_type == "close_by":
                 pos_a = int(payload.get("position_id_a", payload.get("position_id", 0)) or 0)
                 pos_b = int(payload.get("position_id_b", 0) or 0)
@@ -373,10 +561,15 @@ async def execute_command_by_id(
                 if q_src <= 0 or q_dst <= 0:
                     raise PermanentCommandError("merge_positions requires positive qty in both positions")
 
-                new_qty = q_src + q_dst
-                new_avg = ((q_src * _dec(src_avg)) + (q_dst * _dec(dst_avg))) / new_qty
-                await repo.update_position_open_qty_price(conn, dst_pid, new_qty, new_avg)
-                await repo.close_position_merged(conn, src_pid)
+                merged = await _merge_open_positions_keep_target(
+                    repo,
+                    conn,
+                    account_id=account_id,
+                    source_position_id=src_pid,
+                    target_position_id=dst_pid,
+                )
+                if merged is None:
+                    raise PermanentCommandError("merge_positions cannot merge current positions")
 
                 stop_mode = str(payload.get("stop_mode", "keep") or "keep").strip().lower()
                 if stop_mode not in {"keep", "clear", "set"}:
@@ -417,10 +610,10 @@ async def execute_command_by_id(
                         "target_position_id": dst_pid,
                         "symbol": src_symbol,
                         "side": src_side,
-                        "source_qty": str(q_src),
-                        "target_qty_before": str(q_dst),
-                        "target_qty_after": str(new_qty),
-                        "target_avg_price_after": str(new_avg),
+                        "source_qty": str(merged["source_qty"]),
+                        "target_qty_before": str(merged["target_qty_before"]),
+                        "target_qty_after": str(merged["target_qty_after"]),
+                        "target_avg_price_after": str(merged["target_avg_price_after"]),
                         "target_strategy_id": int(dst_strategy_id),
                         "source_strategy_id": int(src_strategy_id),
                         "stop_mode": stop_mode,

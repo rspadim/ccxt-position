@@ -1,10 +1,10 @@
-# Simple Front
+# Front End
 
 Small Vite UI for local operations against `ccxt-position` API.
 
 Documentation:
 
-- `docs/ops/simple-front.md`
+- `docs/ops/front-end.md`
 
 ## Features
 
@@ -30,7 +30,7 @@ Documentation:
 ## Run
 
 ```powershell
-cd apps/simple-front
+cd apps/front-end
 npm install
 npm run dev
 ```

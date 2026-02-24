@@ -5,7 +5,8 @@ import "@awesome.me/webawesome/dist/components/tab/tab.js";
 import "@awesome.me/webawesome/dist/components/tab-panel/tab-panel.js";
 import "@awesome.me/webawesome/dist/components/dialog/dialog.js";
 
-const HISTORY_LIMIT = 12;
+const HISTORY_LIMIT = 50;
+const ADMIN_PAGER_KEYS = ["adminUsers", "adminUsersKeys", "adminUsersPermissions"];
 const STORAGE = {
   baseUrls: "simple_front.base_urls",
   apiKeys: "simple_front.api_keys",
@@ -40,6 +41,12 @@ const state = {
     openPositions: [],
     openOrders: [],
     symbolsList: [],
+    adminAccounts: [],
+  },
+  adminLocalData: {
+    adminUsers: [],
+    adminUsersKeys: [],
+    adminUsersPermissions: [],
   },
   omsPager: {
     openPositions: { page: 1, pageSize: 100, total: 0, totalPages: 1 },
@@ -51,7 +58,13 @@ const state = {
     ccxtOrders: { page: 1, pageSize: 100, total: 0, totalPages: 1 },
     ccxtTrades: { page: 1, pageSize: 100, total: 0, totalPages: 1 },
     postTrading: { page: 1, pageSize: 100, total: 0, totalPages: 1 },
+    adminAccounts: { page: 1, pageSize: 100, total: 0, totalPages: 1 },
     adminOms: { page: 1, pageSize: 100, total: 0, totalPages: 1 },
+  },
+  adminPager: {
+    adminUsers: { page: 1, pageSize: 20, total: 0, totalPages: 1 },
+    adminUsersKeys: { page: 1, pageSize: 20, total: 0, totalPages: 1 },
+    adminUsersPermissions: { page: 1, pageSize: 20, total: 0, totalPages: 1 },
   },
 };
 
@@ -338,6 +351,51 @@ function renderSendStrategyOptions(items) {
     node.appendChild(opt);
   }
   node.value = [...node.options].some((o) => o.value === current) ? current : "0";
+}
+
+function renderAdminUserOptions(items) {
+  const node = document.getElementById("adminUserOptions");
+  if (!node) return;
+  node.innerHTML = "";
+  let firstId = null;
+  for (const item of items || []) {
+    const id = Number((item && item.user_id) || 0);
+    if (!Number.isFinite(id) || id <= 0) continue;
+    const option = document.createElement("option");
+    option.value = String(id);
+    const name = String((item && item.user_name) || "").trim();
+    option.textContent = name ? `${id} - ${name}` : String(id);
+    node.appendChild(option);
+    if (firstId === null) firstId = id;
+  }
+  const input = document.getElementById("adminApiKeyUserId");
+  if (input && (!input.value || Number(input.value) <= 0) && firstId !== null) {
+    input.value = String(firstId);
+  }
+}
+
+function openAdminApiKeyModal({ userId, apiKeyId, key, label }) {
+  const dialog = document.getElementById("adminApiKeyCreatedDialog");
+  if (!dialog) return;
+  const msg = document.getElementById("adminApiKeyCreatedMessage");
+  if (msg) {
+    const text = t("admin.api_key_modal_message", "API Key criada para usuário {user_id} (ID {api_key_id})")
+      .replace("{user_id}", String(userId))
+      .replace("{api_key_id}", String(apiKeyId));
+    msg.textContent = text;
+  }
+  const labelNode = document.getElementById("adminApiKeyCreatedLabel");
+  if (labelNode) {
+    labelNode.textContent = label || "-";
+  }
+  const valueInput = document.getElementById("adminApiKeyCreatedValue");
+  if (valueInput) valueInput.value = String(key || "");
+  dialog.open = true;
+}
+
+function closeAdminApiKeyModal() {
+  const dialog = document.getElementById("adminApiKeyCreatedDialog");
+  if (dialog) dialog.open = false;
 }
 
 function selectedTradeStrategyAccountIds() {
@@ -634,6 +692,29 @@ async function loadOmsSymbolsList(resetPage = true) {
   uiLog("info", "OMS symbol list loaded", { account_id: accountId, count: rows.length });
 }
 
+function isTableBuilt(table) {
+  return Boolean(table && table.__ccxtBuilt === true);
+}
+
+function setTableColumnsWhenReady(table, columns) {
+  if (!table) return;
+  const normalized = normalizeTabulatorColumns(columns);
+  if (isTableBuilt(table) && typeof table.setColumns === "function") {
+    table.setColumns(normalized);
+    return;
+  }
+  table.__pendingColumns = normalized;
+}
+
+function redrawTableWhenReady(table) {
+  if (!table) return;
+  if (isTableBuilt(table) && typeof table.redraw === "function") {
+    table.redraw(true);
+    return;
+  }
+  table.__pendingRedraw = true;
+}
+
 function redrawTableByPaneId(paneId) {
   const map = {
     paneOpenPositions: "openPositions",
@@ -650,8 +731,7 @@ function redrawTableByPaneId(paneId) {
   const key = map[paneId];
   if (!key) return;
   const table = state.tables[key];
-  if (!table || typeof table.redraw !== "function") return;
-  table.redraw(true);
+  redrawTableWhenReady(table);
 }
 
 function tableHasRows(key) {
@@ -796,6 +876,23 @@ function setAdminOmsMessage(kind, text) {
   uiLog(kind, String(text), { source: "admin_oms" });
 }
 
+function setAdminAccountsMessage(kind, text) {
+  const node = document.getElementById("adminAccountsMessage");
+  if (!node) return;
+  if (!text) {
+    node.textContent = "";
+    node.classList.add("is-hidden");
+    node.classList.remove("notice-success", "notice-error", "notice-info");
+    return;
+  }
+  node.textContent = String(text);
+  node.classList.remove("is-hidden", "notice-success", "notice-error", "notice-info");
+  if (kind === "success") node.classList.add("notice-success");
+  else if (kind === "error") node.classList.add("notice-error");
+  else node.classList.add("notice-info");
+  uiLog(kind, String(text), { source: "admin_accounts" });
+}
+
 function setUserMessage(kind, text) {
   const node = document.getElementById("userMessage");
   if (!node) return;
@@ -897,6 +994,18 @@ function applyLanguageTexts() {
     closeByModal.setAttribute("label", t("closeby.title", "Close By"));
   }
   updatePagerButtonI18n();
+  if (state.tables.adminAccounts) {
+    setTableColumnsWhenReady(state.tables.adminAccounts, buildAdminAccountsColumns());
+  }
+  if (state.tables.adminUsers) {
+    setTableColumnsWhenReady(state.tables.adminUsers, buildAdminUsersColumns());
+  }
+  if (state.tables.adminUsersKeys) {
+    setTableColumnsWhenReady(state.tables.adminUsersKeys, buildAdminUsersKeysColumns());
+  }
+  if (state.tables.adminUsersPermissions) {
+    setTableColumnsWhenReady(state.tables.adminUsersPermissions, buildAdminUsersPermissionsColumns());
+  }
   applyDensityMode(state.densityMode, false);
   updateApiKeyToggleLabel();
   updateLoginPasswordToggleLabel();
@@ -1132,9 +1241,23 @@ function makeTable(id, columns, options = {}) {
     columns: normalizeTabulatorColumns(columns),
     ...mergedOptions,
   });
+  table.__ccxtBuilt = false;
+  if (typeof table.on === "function") {
+    table.on("tableBuilt", () => {
+      table.__ccxtBuilt = true;
+      if (Array.isArray(table.__pendingColumns) && typeof table.setColumns === "function") {
+        table.setColumns(table.__pendingColumns);
+      }
+      table.__pendingColumns = null;
+      if (table.__pendingRedraw && typeof table.redraw === "function") {
+        table.redraw(true);
+      }
+      table.__pendingRedraw = false;
+    });
+  }
   if (tableHost && typeof ResizeObserver !== "undefined") {
     const observer = new ResizeObserver(() => {
-      if (table && typeof table.redraw === "function") table.redraw(true);
+      redrawTableWhenReady(table);
     });
     observer.observe(tableHost);
   }
@@ -1279,6 +1402,89 @@ function buildTradeStrategiesColumns() {
         return String(arr || "");
       },
     },
+  ];
+}
+
+function buildAdminAccountsColumns() {
+  return [
+    {
+      title: "",
+      field: "_save",
+      hozAlign: "center",
+      headerSort: false,
+      width: 56,
+      minWidth: 56,
+      formatter: () => '<i class="fa-solid fa-floppy-disk icon-ok" title="Save" aria-hidden="true"></i>',
+      cellClick: async (_ev, cell) => {
+        const row = cell.getRow().getData();
+        try {
+          const cfg = requireConfig();
+          let extra = row.extra_config_json;
+          if (typeof extra === "string") {
+            extra = parseJsonInput(extra, {});
+          }
+          const body = {
+            exchange_id: String(row.exchange_id || "").trim() || null,
+            label: String(row.label || "").trim() || null,
+            position_mode: String(row.position_mode || "").trim() || null,
+            is_testnet: Boolean(row.is_testnet),
+            status: String(row.status || "").trim() || null,
+            extra_config_json: extra && typeof extra === "object" ? extra : {},
+          };
+          const credentials = {};
+          if (String(row.set_api_key || "").trim()) credentials.api_key = String(row.set_api_key || "").trim();
+          if (String(row.set_secret || "").trim()) credentials.secret = String(row.set_secret || "").trim();
+          if (String(row.set_passphrase || "").trim()) credentials.passphrase = String(row.set_passphrase || "").trim();
+          if (Object.keys(credentials).length > 0) body.credentials = credentials;
+          const out = await apiRequest(`/admin/accounts/${row.account_id}`, {
+            method: "PATCH",
+            body,
+          }, cfg);
+          eventLog("admin_update_account", out);
+          await loadAdminAccounts(cfg);
+          setAdminAccountsMessage(
+            "success",
+            t("admin.accounts_save_ok", "Conta salva com sucesso (ID: {id}).").replace("{id}", String(row.account_id || "")),
+          );
+        } catch (err) {
+          eventLog("admin_update_account_error", { error: String(err), account_id: row.account_id });
+          setAdminAccountsMessage(
+            "error",
+            `${t("admin.accounts_save_error", "Erro ao salvar conta")}: ${String(err)}`,
+          );
+        }
+      },
+    },
+    { title: t("admin.col_account_id", "Account ID"), field: "account_id", width: 100 },
+    { title: t("admin.col_label", "Label"), field: "label", editor: "input", width: 180 },
+    { title: t("admin.col_exchange_id", "Exchange ID"), field: "exchange_id", editor: "input", width: 140 },
+    {
+      title: t("admin.col_position_mode", "Position Mode"),
+      field: "position_mode",
+      editor: "list",
+      editorParams: { values: ["hedge", "netting", "strategy_netting"] },
+      width: 150,
+    },
+    { title: t("admin.col_extra_config_json", "Extra Config JSON"), field: "extra_config_json", editor: "textarea", width: 260 },
+    { title: t("admin.col_testnet", "Testnet"), field: "is_testnet", formatter: "tickCross", editor: true, width: 90 },
+    {
+      title: t("admin.col_status", "Status"),
+      field: "status",
+      editor: "list",
+      editorParams: { values: ["active", "blocked"] },
+      width: 100,
+    },
+    { title: t("admin.col_reconcile_enabled", "Reconcile Enabled"), field: "reconcile_enabled", width: 120 },
+    { title: t("admin.col_dispatcher_worker_hint", "Dispatcher Worker Hint"), field: "dispatcher_worker_hint", width: 150 },
+    { title: t("admin.col_raw_storage_mode", "Raw Storage Mode"), field: "raw_storage_mode", width: 130 },
+    { title: t("oms.col_created_at", "Created At"), field: "created_at", width: 180 },
+    { title: t("admin.col_api_key_enc", "API Key Enc"), field: "api_key_enc", width: 240 },
+    { title: t("admin.col_secret_enc", "Secret Enc"), field: "secret_enc", width: 240 },
+    { title: t("admin.col_passphrase_enc", "Passphrase Enc"), field: "passphrase_enc", width: 220 },
+    { title: t("admin.col_credentials_updated_at", "Credentials Updated At"), field: "credentials_updated_at", width: 180 },
+    { title: t("admin.col_set_api_key", "Set API Key"), field: "set_api_key", editor: "input", width: 180 },
+    { title: t("admin.col_set_secret", "Set Secret"), field: "set_secret", editor: "input", width: 180 },
+    { title: t("admin.col_set_passphrase", "Set Passphrase"), field: "set_passphrase", editor: "input", width: 180 },
   ];
 }
 
@@ -1558,6 +1764,49 @@ function setPagerFromTotal(key, total, page = 1, pageSize = state.omsPageSize) {
   updatePagerInfo(key);
 }
 
+function updateAdminPagerInfo(key) {
+  const pager = state.adminPager[key];
+  if (!pager) return;
+  const infoEl = document.getElementById(`${key}PageInfo`);
+  const inputEl = document.getElementById(`${key}PageInput`);
+  if (infoEl) infoEl.textContent = `${pager.page} / ${pager.totalPages}`;
+  if (inputEl) inputEl.value = String(pager.page);
+}
+
+function setAdminPagerFromTotal(key, total, page = 1, pageSize = state.adminPager[key]?.pageSize || 20) {
+  const normalizedPageSize = Math.max(1, Number(pageSize) || 20);
+  const normalizedTotal = Math.max(0, Number(total) || 0);
+  const totalPages = Math.max(1, Math.ceil(normalizedTotal / normalizedPageSize));
+  const normalizedPage = clampPage(page, totalPages);
+  state.adminPager[key] = {
+    page: normalizedPage,
+    pageSize: normalizedPageSize,
+    total: normalizedTotal,
+    totalPages,
+  };
+  updateAdminPagerInfo(key);
+}
+
+function renderAdminPage(key) {
+  const table = state.tables[key];
+  if (!table) return;
+  const rows = Array.isArray(state.adminLocalData[key]) ? [...state.adminLocalData[key]] : [];
+  const pager = state.adminPager[key] || { page: 1, pageSize: 20 };
+  const pageSize = Math.max(1, Number(pager.pageSize || 20));
+  const totalPages = Math.max(1, Math.ceil(rows.length / pageSize));
+  const page = clampPage(pager.page || 1, totalPages);
+  const offset = (page - 1) * pageSize;
+  const pageRows = rows.slice(offset, offset + pageSize);
+  setAdminPagerFromTotal(key, rows.length, page, pageSize);
+  table.setData(pageRows);
+}
+
+function setAdminLocalRows(key, rows, sorter = sortByIdAsc) {
+  const normalized = Array.isArray(rows) ? [...rows] : [];
+  state.adminLocalData[key] = typeof sorter === "function" ? sorter(normalized) : normalized;
+  renderAdminPage(key);
+}
+
 function renderLocalOmsPage(key) {
   const tableKeyByLocalKey = {
     openPositions: "openPositions",
@@ -1735,7 +1984,7 @@ function updatePagerButtonI18n() {
   const exportExcelTitle = t("common.export_excel", "Export Excel");
   const exportJsonTitle = t("common.export_json", "Export JSON");
   const exportHtmlTitle = t("common.export_html", "Export HTML");
-  for (const key of OMS_PAGER_KEYS) {
+  for (const key of [...OMS_PAGER_KEYS, ...ADMIN_PAGER_KEYS]) {
     const prevBtn = document.getElementById(`${key}PrevPageBtn`);
     const nextBtn = document.getElementById(`${key}NextPageBtn`);
     const copyBtn = document.getElementById(`${key}CopyBtn`);
@@ -1890,6 +2139,23 @@ async function setOmsPageSize(key, nextSize) {
     return;
   }
   await refreshHistoryTable(key, true);
+}
+
+function goToAdminPage(key, nextPage) {
+  const pager = state.adminPager[key];
+  if (!pager) return;
+  const page = clampPage(nextPage, pager.totalPages);
+  state.adminPager[key].page = page;
+  renderAdminPage(key);
+}
+
+function setAdminPageSize(key, nextSize) {
+  const pager = state.adminPager[key];
+  if (!pager) return;
+  const size = Math.max(1, Math.min(500, Number(nextSize) || pager.pageSize || 20));
+  state.adminPager[key].pageSize = size;
+  state.adminPager[key].page = 1;
+  renderAdminPage(key);
 }
 
 async function refreshTables() {
@@ -2382,6 +2648,7 @@ function adminOmsColumnsForView(view) {
       { title: t("oms.col_status", "Status"), field: "status", width: 120, editor: "input" },
       { title: t("oms.col_strategy_id", "Strategy ID"), field: "strategy_id", width: 100, editor: "input" },
       { title: t("oms.col_position_id", "Position ID"), field: "position_id", width: 100, editor: "input" },
+      { title: "Prev Position ID", field: "previous_position_id", width: 130, editor: "input" },
       { title: t("oms.col_qty", "Qty"), field: "qty", width: 100, editor: "input" },
       { title: t("oms.col_price", "Price"), field: "price", width: 110, editor: "input" },
       { title: t("oms.col_stop_loss", "Stop Loss"), field: "stop_loss", width: 120, editor: "input" },
@@ -2392,6 +2659,10 @@ function adminOmsColumnsForView(view) {
       { title: t("oms.col_comment", "Comment"), field: "comment", width: 180, editor: "input" },
       { title: t("oms.col_client_order_id", "Client Order ID"), field: "client_order_id", width: 140, editor: "input" },
       { title: t("oms.col_exchange_order_id", "Exchange Order ID"), field: "exchange_order_id", width: 150, editor: "input" },
+      { title: "Edit Replace State", field: "edit_replace_state", width: 150, editor: "input" },
+      { title: "Edit Replace At", field: "edit_replace_at", width: 170, editor: "input" },
+      { title: "Replace Orphan Order", field: "edit_replace_orphan_order_id", width: 170, editor: "input" },
+      { title: "Replace Origin Order", field: "edit_replace_origin_order_id", width: 170, editor: "input" },
       { title: t("oms.col_created_at", "Created At"), field: "created_at", width: 170, editor: "input" },
       { title: t("oms.col_updated_at", "Updated At"), field: "updated_at", width: 170, editor: "input" },
       { title: t("oms.col_closed_at", "Closed At"), field: "closed_at", width: 170, editor: "input" },
@@ -2419,6 +2690,7 @@ function adminOmsColumnsForView(view) {
     ...shared,
     { title: t("oms.col_order_id", "Order ID"), field: "order_id", width: 90, editor: "input" },
     { title: t("oms.col_position_id", "Position ID"), field: "position_id", width: 100, editor: "input" },
+    { title: "Prev Position ID", field: "previous_position_id", width: 130, editor: "input" },
     { title: t("oms.col_symbol", "Symbol"), field: "symbol", width: 120, editor: "input" },
     { title: t("oms.col_side", "Side"), field: "side", width: 90, editor: "input", formatter: (cell) => sideBadge(cell.getValue()) },
     { title: t("oms.col_qty", "Qty"), field: "qty", width: 100, editor: "input" },
@@ -2433,6 +2705,88 @@ function adminOmsColumnsForView(view) {
     { title: t("oms.col_exchange_trade_id", "Exchange Trade ID"), field: "exchange_trade_id", width: 150, editor: "input" },
     { title: t("oms.col_created_at", "Created At"), field: "created_at", width: 170, editor: "input" },
     { title: t("oms.col_executed_at", "Executed At"), field: "executed_at", width: 170, editor: "input" },
+  ];
+}
+
+function buildAdminUsersColumns() {
+  return [
+    { title: t("user.user_id", "User ID"), field: "user_id", width: 90 },
+    { title: t("user.user_name", "User Name"), field: "user_name", width: 190 },
+    { title: t("user.role", "Role"), field: "role", width: 120 },
+    { title: t("user.status", "Status"), field: "status", width: 110 },
+    { title: t("oms.col_created_at", "Created At"), field: "created_at", width: 180 },
+  ];
+}
+
+function buildAdminUsersKeysColumns() {
+  return [
+    { title: t("user.user_id", "User ID"), field: "user_id", width: 90 },
+    { title: t("user.user_name", "User Name"), field: "user_name", width: 180 },
+    { title: t("user.role", "Role"), field: "role", width: 120 },
+    { title: t("admin.col_user_status", "User Status"), field: "user_status", width: 120 },
+    { title: t("admin.col_api_key_id", "API Key ID"), field: "api_key_id", width: 110 },
+    {
+      title: t("admin.col_api_key_status", "API Key Status"),
+      field: "api_key_status",
+      editor: "list",
+      editorParams: { values: ["active", "disabled"] },
+      width: 140,
+    },
+    { title: t("oms.col_created_at", "Created At"), field: "created_at", width: 180 },
+    {
+      title: "",
+      field: "_save",
+      hozAlign: "center",
+      headerSort: false,
+      width: 56,
+      minWidth: 56,
+      formatter: () => '<i class="fa-solid fa-floppy-disk icon-save" title="Save" aria-hidden="true"></i>',
+      cellClick: async (_ev, cell) => {
+        const row = cell.getRow().getData();
+        try {
+          const cfg = requireConfig();
+          const apiKeyId = Number(row.api_key_id || 0);
+          if (!Number.isFinite(apiKeyId) || apiKeyId <= 0) throw new Error("api_key_id inválido");
+          const status = String(row.api_key_status || "").trim().toLowerCase();
+          if (!["active", "disabled"].includes(status)) throw new Error("api_key_status inválido");
+          const out = await apiRequest(`/admin/api-keys/${apiKeyId}`, {
+            method: "PATCH",
+            body: { status },
+          }, cfg);
+          eventLog("admin_update_api_key_status", out);
+          await loadAdminUsersKeys(cfg);
+        } catch (err) {
+          eventLog("admin_update_api_key_status_error", { error: String(err) });
+          uiLog("error", "Admin update API key status failed", { error: String(err) });
+        }
+      },
+    },
+  ];
+}
+
+function buildAdminUsersPermissionsColumns() {
+  return [
+    { title: t("admin.col_api_key_id", "API Key ID"), field: "api_key_id", width: 110 },
+    { title: t("user.user_id", "User ID"), field: "user_id", width: 90 },
+    { title: t("user.user_name", "User Name"), field: "user_name", width: 180 },
+    { title: t("common.account_id", "Account ID"), field: "account_id", width: 110 },
+    { title: t("risk.can_read", "Read"), field: "can_read", width: 95 },
+    { title: t("risk.can_trade", "Trade"), field: "can_trade", width: 95 },
+    { title: t("risk.can_close_position", "Close Position"), field: "can_close_position", width: 130 },
+    { title: t("risk.can_risk_manage", "Risk Manage"), field: "can_risk_manage", width: 130 },
+    { title: t("risk.can_block_new_positions", "Block New Positions"), field: "can_block_new_positions", width: 165 },
+    { title: t("risk.can_block_account", "Block Account"), field: "can_block_account", width: 125 },
+    { title: t("risk.restrict_to_strategies", "Restrict To Strategies"), field: "restrict_to_strategies", width: 170 },
+    {
+      title: t("risk.strategy_ids", "Strategy IDs"),
+      field: "strategy_ids",
+      width: 170,
+      formatter: (cell) => {
+        const arr = cell.getValue();
+        return Array.isArray(arr) ? arr.join(",") : "";
+      },
+    },
+    { title: t("user.status", "Status"), field: "status", width: 100 },
   ];
 }
 
@@ -2765,6 +3119,11 @@ function setupTables() {
     { title: t("oms.col_avg_fill_price", "Avg Fill Price"), field: "avg_fill_price", width: 130, hozAlign: "right", headerHozAlign: "right" },
     { title: t("oms.col_status", "Status"), field: "status", width: 120 },
     { title: t("oms.col_reconciled", "Reconciled"), field: "reconciled", width: 110 },
+    { title: "Edit Replace State", field: "edit_replace_state", width: 150 },
+    { title: "Edit Replace At", field: "edit_replace_at", width: 170 },
+    { title: "Replace Origin Order", field: "edit_replace_origin_order_id", width: 160 },
+    { title: "Replace Orphan Order", field: "edit_replace_orphan_order_id", width: 160 },
+    { title: "Prev Position ID", field: "previous_position_id", width: 130 },
     { title: t("post_trading.col_target_strategy_id", "Target Strategy ID"), field: "target_strategy_id", width: 140, editor: "input", hozAlign: "right", headerHozAlign: "right" },
     { title: t("oms.col_strategy_id", "Current Strategy ID"), field: "strategy_id", width: 140, hozAlign: "right", headerHozAlign: "right" },
     { title: t("oms.col_created_at", "Created At"), field: "created_at", width: 170 },
@@ -2802,125 +3161,10 @@ function setupTables() {
       },
     },
   );
-  state.tables.adminAccounts = makeTable("adminAccountsTable", [
-    { title: "account_id", field: "account_id", width: 100 },
-    { title: "label", field: "label", editor: "input", width: 180 },
-    { title: "exchange_id", field: "exchange_id", editor: "input", width: 140 },
-    {
-      title: "position_mode",
-      field: "position_mode",
-      editor: "list",
-      editorParams: { values: ["hedge", "netting", "strategy_netting"] },
-      width: 150,
-    },
-    { title: "extra_config_json", field: "extra_config_json", editor: "textarea", width: 260 },
-    { title: "testnet", field: "is_testnet", formatter: "tickCross", editor: true, width: 90 },
-    {
-      title: "status",
-      field: "status",
-      editor: "list",
-      editorParams: { values: ["active", "blocked"] },
-      width: 100,
-    },
-    { title: "reconcile_enabled", field: "reconcile_enabled", width: 120 },
-    { title: "dispatcher_worker_hint", field: "dispatcher_worker_hint", width: 150 },
-    { title: "raw_storage_mode", field: "raw_storage_mode", width: 130 },
-    { title: "created_at", field: "created_at", width: 180 },
-    { title: "api_key_enc", field: "api_key_enc", width: 240 },
-    { title: "secret_enc", field: "secret_enc", width: 240 },
-    { title: "passphrase_enc", field: "passphrase_enc", width: 220 },
-    { title: "credentials_updated_at", field: "credentials_updated_at", width: 180 },
-    { title: "set_api_key", field: "set_api_key", editor: "input", width: 180 },
-    { title: "set_secret", field: "set_secret", editor: "input", width: 180 },
-    { title: "set_passphrase", field: "set_passphrase", editor: "input", width: 180 },
-    {
-      title: "save",
-      field: "_save",
-      hozAlign: "center",
-      formatter: () => t("common.save", "Save"),
-      cellClick: async (_ev, cell) => {
-        const row = cell.getRow().getData();
-        try {
-          const cfg = requireConfig();
-          let extra = row.extra_config_json;
-          if (typeof extra === "string") {
-            extra = parseJsonInput(extra, {});
-          }
-          const body = {
-            exchange_id: String(row.exchange_id || "").trim() || null,
-            label: String(row.label || "").trim() || null,
-            position_mode: String(row.position_mode || "").trim() || null,
-            is_testnet: Boolean(row.is_testnet),
-            status: String(row.status || "").trim() || null,
-            extra_config_json: extra && typeof extra === "object" ? extra : {},
-          };
-          const credentials = {};
-          if (String(row.set_api_key || "").trim()) credentials.api_key = String(row.set_api_key || "").trim();
-          if (String(row.set_secret || "").trim()) credentials.secret = String(row.set_secret || "").trim();
-          if (String(row.set_passphrase || "").trim()) credentials.passphrase = String(row.set_passphrase || "").trim();
-          if (Object.keys(credentials).length > 0) body.credentials = credentials;
-          const out = await apiRequest(`/admin/accounts/${row.account_id}`, {
-            method: "PATCH",
-            body,
-          }, cfg);
-          eventLog("admin_update_account", out);
-          await loadAdminAccounts(cfg);
-        } catch (err) {
-          eventLog("admin_update_account_error", { error: String(err), account_id: row.account_id });
-        }
-      },
-    },
-  ]);
-  state.tables.adminUsers = makeTable("adminUsersTable", [
-    { title: "user_id", field: "user_id", width: 90 },
-    { title: "user_name", field: "user_name", width: 190 },
-    { title: "role", field: "role", width: 90 },
-    { title: "status", field: "status", width: 100 },
-    { title: "created_at", field: "created_at", width: 180 },
-  ]);
-  state.tables.adminUsersKeys = makeTable("adminUsersKeysTable", [
-    { title: "user_id", field: "user_id", width: 90 },
-    { title: "user_name", field: "user_name", width: 180 },
-    { title: "role", field: "role", width: 90 },
-    { title: "user_status", field: "user_status", width: 100 },
-    { title: "api_key_id", field: "api_key_id", width: 100 },
-    {
-      title: "api_key_status",
-      field: "api_key_status",
-      editor: "list",
-      editorParams: { values: ["active", "disabled"] },
-      width: 130,
-    },
-    { title: "created_at", field: "created_at", width: 180 },
-    {
-      title: "",
-      field: "_save",
-      hozAlign: "center",
-      headerSort: false,
-      width: 56,
-      minWidth: 56,
-      formatter: () => '<i class="fa-solid fa-floppy-disk icon-save" title="Save" aria-hidden="true"></i>',
-      cellClick: async (_ev, cell) => {
-        const row = cell.getRow().getData();
-        try {
-          const cfg = requireConfig();
-          const apiKeyId = Number(row.api_key_id || 0);
-          if (!Number.isFinite(apiKeyId) || apiKeyId <= 0) throw new Error("api_key_id inválido");
-          const status = String(row.api_key_status || "").trim().toLowerCase();
-          if (!["active", "disabled"].includes(status)) throw new Error("api_key_status inválido");
-          const out = await apiRequest(`/admin/api-keys/${apiKeyId}`, {
-            method: "PATCH",
-            body: { status },
-          }, cfg);
-          eventLog("admin_update_api_key_status", out);
-          await loadAdminUsersKeys(cfg);
-        } catch (err) {
-          eventLog("admin_update_api_key_status_error", { error: String(err) });
-          uiLog("error", "Admin update API key status failed", { error: String(err) });
-        }
-      },
-    },
-  ]);
+  state.tables.adminAccounts = makeTable("adminAccountsTable", buildAdminAccountsColumns());
+  state.tables.adminUsers = makeTable("adminUsersTable", buildAdminUsersColumns());
+  state.tables.adminUsersKeys = makeTable("adminUsersKeysTable", buildAdminUsersKeysColumns());
+  state.tables.adminUsersPermissions = makeTable("adminUsersPermissionsTable", buildAdminUsersPermissionsColumns());
   state.tables.userApiKeys = makeTable("userApiKeysTable", [
     { title: "api_key_id", field: "api_key_id", width: 110, hozAlign: "right", headerHozAlign: "right" },
     { title: "user_id", field: "user_id", width: 100, hozAlign: "right", headerHozAlign: "right" },
@@ -3024,13 +3268,54 @@ async function loadAdminAccounts(cfgOverride = null) {
 async function loadAdminUsersKeys(cfgOverride = null) {
   const cfg = cfgOverride || requireConfig();
   const res = await apiRequest("/admin/users-api-keys", {}, cfg);
-  state.tables.adminUsersKeys.setData(res.items || []);
+  const keyRows = Array.isArray(res.items) ? res.items : [];
+  setAdminLocalRows("adminUsersKeys", keyRows);
+  const permissionRows = [];
+  if (keyRows.length > 0) {
+    const byKey = new Map();
+    for (const row of keyRows) byKey.set(Number(row.api_key_id || 0), row);
+    const permResults = await Promise.all(
+      keyRows.map(async (row) => {
+        const apiKeyId = Number(row.api_key_id || 0);
+        if (!Number.isFinite(apiKeyId) || apiKeyId <= 0) return [];
+        try {
+          const out = await apiRequest(`/admin/api-keys/${apiKeyId}/permissions`, {}, cfg);
+          const items = Array.isArray(out.items) ? out.items : [];
+          return items.map((p) => {
+            const base = byKey.get(apiKeyId) || {};
+            return {
+              ...p,
+              api_key_id: apiKeyId,
+              user_id: Number(base.user_id || 0) || null,
+              user_name: String(base.user_name || ""),
+            };
+          });
+        } catch (err) {
+          eventLog("admin_load_api_key_permissions_error", { api_key_id: apiKeyId, error: String(err) });
+          return [];
+        }
+      }),
+    );
+    for (const chunk of permResults) permissionRows.push(...chunk);
+  }
+  setAdminLocalRows("adminUsersPermissions", permissionRows, (rows) => {
+    return [...rows].sort((a, b) => {
+      const aAccount = Number(a?.account_id || 0);
+      const bAccount = Number(b?.account_id || 0);
+      if (aAccount !== bAccount) return aAccount - bAccount;
+      const aKey = Number(a?.api_key_id || 0);
+      const bKey = Number(b?.api_key_id || 0);
+      return aKey - bKey;
+    });
+  });
 }
 
 async function loadAdminUsers(cfgOverride = null) {
   const cfg = cfgOverride || requireConfig();
   const res = await apiRequest("/admin/users", {}, cfg);
-  state.tables.adminUsers.setData(res.items || []);
+  const rows = Array.isArray(res.items) ? res.items : [];
+  setAdminLocalRows("adminUsers", rows);
+  renderAdminUserOptions(rows);
 }
 
 function setAdminSystemStatus(text, kind = "info") {
@@ -3531,6 +3816,57 @@ function bindForms() {
           exportOmsTable(key, "html");
         } catch (err) {
           eventLog("oms_export_html_error", { key, error: String(err) });
+        }
+      });
+    }
+  }
+  for (const key of ADMIN_PAGER_KEYS) {
+    const prevBtn = document.getElementById(`${key}PrevPageBtn`);
+    const nextBtn = document.getElementById(`${key}NextPageBtn`);
+    const pageInput = document.getElementById(`${key}PageInput`);
+    const pageSize = document.getElementById(`${key}PageSize`);
+    if (prevBtn) {
+      prevBtn.addEventListener("click", () => {
+        try {
+          goToAdminPage(key, (state.adminPager[key]?.page || 1) - 1);
+        } catch (err) {
+          eventLog("admin_pager_prev_error", { key, error: String(err) });
+        }
+      });
+    }
+    if (nextBtn) {
+      nextBtn.addEventListener("click", () => {
+        try {
+          goToAdminPage(key, (state.adminPager[key]?.page || 1) + 1);
+        } catch (err) {
+          eventLog("admin_pager_next_error", { key, error: String(err) });
+        }
+      });
+    }
+    if (pageInput) {
+      pageInput.addEventListener("keydown", (ev) => {
+        if (ev.key !== "Enter") return;
+        ev.preventDefault();
+        try {
+          goToAdminPage(key, Number(pageInput.value || 1));
+        } catch (err) {
+          eventLog("admin_pager_page_input_error", { key, error: String(err) });
+        }
+      });
+      pageInput.addEventListener("blur", () => {
+        try {
+          goToAdminPage(key, Number(pageInput.value || 1));
+        } catch (err) {
+          eventLog("admin_pager_page_blur_error", { key, error: String(err) });
+        }
+      });
+    }
+    if (pageSize) {
+      pageSize.addEventListener("change", () => {
+        try {
+          setAdminPageSize(key, Number(pageSize.value || state.adminPager[key]?.pageSize || 20));
+        } catch (err) {
+          eventLog("admin_pager_size_error", { key, error: String(err) });
         }
       });
     }
@@ -4206,8 +4542,10 @@ function bindForms() {
     try {
       await loadAdminAccounts();
       eventLog("admin_load_accounts", { ok: true });
+      setAdminAccountsMessage("info", t("admin.accounts_loaded", "Contas carregadas."));
     } catch (err) {
       eventLog("admin_load_accounts_error", { error: String(err) });
+      setAdminAccountsMessage("error", `${t("admin.accounts_load_error", "Erro ao carregar contas")}: ${String(err)}`);
     }
   });
   $("adminRefreshSystemStatusBtn").addEventListener("click", async () => {
@@ -4241,9 +4579,11 @@ function bindForms() {
       const cfg = requireConfig();
       const userId = Number($("adminApiKeyUserId").value || 0);
       if (!Number.isFinite(userId) || userId <= 0) throw new Error("user_id inválido");
+      const labelValue = String($("adminApiKeyLabel").value || "").trim();
       const apiKeyRaw = String($("adminApiKeyValue").value || "").trim();
       const body = { user_id: userId };
       if (apiKeyRaw) body.api_key = apiKeyRaw;
+      if (labelValue) body.label = labelValue;
       const out = await apiRequest("/admin/api-keys", {
         method: "POST",
         body,
@@ -4257,6 +4597,12 @@ function bindForms() {
           .replace("{api_key_id}", String(out.api_key_id))
           .replace("{key}", plain),
       );
+      openAdminApiKeyModal({
+        userId,
+        apiKeyId: Number(out.api_key_id || 0),
+        key: plain,
+        label: labelValue,
+      });
       await loadAdminUsersKeys(cfg);
     } catch (err) {
       eventLog("admin_create_api_key_error", { error: String(err) });
@@ -4264,6 +4610,27 @@ function bindForms() {
       uiLog("error", "Admin create API key failed", { error: String(err) });
     }
   });
+  const apiKeyCopyBtn = document.getElementById("adminApiKeyCreatedCopyBtn");
+  if (apiKeyCopyBtn) {
+    apiKeyCopyBtn.addEventListener("click", async () => {
+      const valueInput = document.getElementById("adminApiKeyCreatedValue");
+      const value = valueInput ? String(valueInput.value || "") : "";
+      try {
+        if (!value) throw new Error("api_key_empty");
+        if (!navigator.clipboard || typeof navigator.clipboard.writeText !== "function") {
+          throw new Error("clipboard_unavailable");
+        }
+        await navigator.clipboard.writeText(value);
+        uiLog("success", t("admin.api_key_modal_copy_success", "API Key copied to clipboard"));
+      } catch (err) {
+        uiLog("error", "API key copy failed", { error: String(err) });
+      }
+    });
+  }
+  const apiKeyCloseBtn = document.getElementById("adminApiKeyCreatedCloseBtn");
+  if (apiKeyCloseBtn) {
+    apiKeyCloseBtn.addEventListener("click", () => closeAdminApiKeyModal());
+  }
   $("loadCcxtExchangesBtn").addEventListener("click", async () => {
     try {
       await loadCcxtExchanges();
@@ -4533,7 +4900,7 @@ function switchTab(tab) {
     });
   }
   if (isAdminUsers) {
-    Promise.all([loadAdminUsers()]).catch((err) => {
+    Promise.all([loadAdminUsers(), loadAdminUsersKeys()]).catch((err) => {
       eventLog("admin_load_users_error", { error: String(err) });
     });
   }
@@ -4922,7 +5289,7 @@ async function loadAdminOms(resetPage = false) {
   const table = state.tables.adminOms;
   if (table) {
     const cols = adminOmsColumnsForView(view);
-    table.setColumns(normalizeTabulatorColumns(cols));
+    setTableColumnsWhenReady(table, cols);
     table.setData(Array.isArray(out.items) ? out.items : []);
   }
   setPagerFromTotal("adminOms", Number(out.total || 0), Number(out.page || page), Number(out.page_size || pageSize));

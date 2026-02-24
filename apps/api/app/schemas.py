@@ -67,6 +67,12 @@ class SendOrderPayload(StrictModel):
     trailing_amount: Decimal | None = None
     trailing_percent: Decimal | None = None
 
+    @model_validator(mode="after")
+    def validate_limit_price(self) -> "SendOrderPayload":
+        if str(self.order_type or "").strip().lower() == "limit" and self.price is None:
+            raise ValueError("price is required for limit order")
+        return self
+
 class CancelOrderPayload(StrictModel):
     order_id: int | None = Field(default=None, gt=0)
     order_ids: list[int] = Field(default_factory=list)
@@ -271,6 +277,12 @@ class CcxtCoreCreateOrderInput(BaseModel):
     price: Decimal | None = None
     params: dict[str, Any] = Field(default_factory=dict)
 
+    @model_validator(mode="after")
+    def validate_limit_price(self) -> "CcxtCoreCreateOrderInput":
+        if str(self.order_type or "").strip().lower() == "limit" and self.price is None:
+            raise ValueError("price is required for limit order")
+        return self
+
 class CcxtCoreCancelOrderInput(BaseModel):
     id: str = Field(min_length=1)
     symbol: str | None = None
@@ -377,6 +389,11 @@ class ReassignPreviewItem(BaseModel):
     reconciled: bool | None = None
     strategy_id: int | None = None
     position_id: int | None = None
+    previous_position_id: int | None = None
+    edit_replace_state: str | None = None
+    edit_replace_at: datetime | None = None
+    edit_replace_orphan_order_id: int | None = None
+    edit_replace_origin_order_id: int | None = None
     executed_at: datetime | None = None
     created_at: datetime | None = None
 
@@ -391,6 +408,7 @@ class PositionOrderModel(BaseModel):
     status: OrderStatus
     strategy_id: int = Field(validation_alias=AliasChoices("strategy_id"))
     position_id: int
+    previous_position_id: int | None = None
     reason: str
     comment: str | None = None
     client_order_id: str | None = None
@@ -401,6 +419,10 @@ class PositionOrderModel(BaseModel):
     stop_gain: Decimal | None = None
     filled_qty: Decimal
     avg_fill_price: Decimal | None = None
+    edit_replace_state: str | None = None
+    edit_replace_at: datetime | None = None
+    edit_replace_orphan_order_id: int | None = None
+    edit_replace_origin_order_id: int | None = None
     created_at: datetime
     updated_at: datetime
     closed_at: datetime | None = None
@@ -411,6 +433,7 @@ class PositionDealModel(BaseModel):
     account_id: int
     order_id: int | None = None
     position_id: int
+    previous_position_id: int | None = None
     symbol: str
     side: OrderSide
     qty: Decimal
@@ -642,6 +665,7 @@ class AdminCreateUserApiKeyInput(BaseModel):
     api_key: str | None = None
     password: str | None = None
     permissions: list[AdminApiKeyAccountPermissionInput] = Field(default_factory=list)
+    label: str | None = None
 
 
 class AdminCreateUserApiKeyResponse(BaseModel):
@@ -649,11 +673,13 @@ class AdminCreateUserApiKeyResponse(BaseModel):
     user_id: int
     api_key_id: int
     api_key_plain: str
+    label: str | None = None
 
 
 class AdminCreateApiKeyInput(BaseModel):
     user_id: int = Field(ge=1)
     api_key: str | None = None
+    label: str | None = None
 
 
 class AdminCreateApiKeyResponse(BaseModel):
@@ -661,6 +687,7 @@ class AdminCreateApiKeyResponse(BaseModel):
     user_id: int
     api_key_id: int
     api_key_plain: str
+    label: str | None = None
 
 
 class AdminUserApiKeyItem(BaseModel):
@@ -670,6 +697,7 @@ class AdminUserApiKeyItem(BaseModel):
     user_status: str
     api_key_id: int
     api_key_status: str
+    label: str | None = None
     created_at: str
 
 
@@ -779,6 +807,7 @@ class AdminOmsOrderRow(BaseModel):
     status: str | None = None
     strategy_id: int | None = None
     position_id: int | None = None
+    previous_position_id: int | None = None
     reason: str | None = None
     comment: str | None = None
     client_order_id: str | None = None
@@ -789,6 +818,10 @@ class AdminOmsOrderRow(BaseModel):
     stop_gain: Decimal | None = None
     filled_qty: Decimal | None = None
     avg_fill_price: Decimal | None = None
+    edit_replace_state: str | None = None
+    edit_replace_at: str | None = None
+    edit_replace_orphan_order_id: int | None = None
+    edit_replace_origin_order_id: int | None = None
     created_at: str | None = None
     updated_at: str | None = None
     closed_at: str | None = None
@@ -817,6 +850,7 @@ class AdminOmsDealRow(BaseModel):
     account_id: int | None = None
     order_id: int | None = None
     position_id: int | None = None
+    previous_position_id: int | None = None
     symbol: str | None = None
     side: str | None = None
     qty: Decimal | None = None
@@ -936,6 +970,7 @@ class UserApiKeyItem(BaseModel):
     role: str
     status: str
     created_at: str
+    label: str | None = None
 
 
 class UserApiKeysResponse(BaseModel):
@@ -945,6 +980,7 @@ class UserApiKeysResponse(BaseModel):
 class UserCreateApiKeyInput(BaseModel):
     user_id: int | None = Field(default=None, ge=1)
     api_key: str | None = None
+    label: str | None = None
 
 
 class UserCreateApiKeyResponse(BaseModel):
@@ -952,6 +988,7 @@ class UserCreateApiKeyResponse(BaseModel):
     user_id: int
     api_key_id: int
     api_key_plain: str
+    label: str | None = None
 
 
 class UserUpdateApiKeyInput(BaseModel):

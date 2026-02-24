@@ -2,6 +2,11 @@ from typing import Any
 
 import ccxt.async_support as ccxt_async
 
+try:
+    import ccxt.pro as ccxt_pro  # type: ignore
+except Exception:
+    ccxt_pro = None
+
 
 def _as_plain_secret(value: str | None) -> str | None:
     if value is None:
@@ -15,14 +20,22 @@ class CCXTAdapter:
         self.logger = logger
 
     @staticmethod
-    def _resolve_exchange_class_id(exchange_id: str) -> str:
+    def _resolve_exchange_class_id(exchange_id: str) -> tuple[str, str]:
         raw = str(exchange_id or "").strip()
         if not raw:
-            return raw
+            raise RuntimeError("unsupported_engine")
         lowered = raw.lower()
-        if lowered.startswith("ccxt.") or lowered.startswith("ccxtpro."):
-            return raw.split(".", 1)[1].strip()
-        return raw
+        if lowered.startswith("ccxtpro."):
+            cls_id = raw.split(".", 1)[1].strip()
+            if not cls_id:
+                raise RuntimeError("unsupported_engine")
+            return "ccxtpro", cls_id
+        if lowered.startswith("ccxt."):
+            cls_id = raw.split(".", 1)[1].strip()
+            if not cls_id:
+                raise RuntimeError("unsupported_engine")
+            return "ccxt", cls_id
+        raise RuntimeError("unsupported_engine")
 
     def _build_exchange(
         self,
@@ -33,8 +46,17 @@ class CCXTAdapter:
         passphrase: str | None,
         extra_config: dict[str, Any] | None = None,
     ) -> Any:
-        exchange_class_id = self._resolve_exchange_class_id(exchange_id)
-        exchange_cls = getattr(ccxt_async, exchange_class_id, None)
+        engine, exchange_class_id = self._resolve_exchange_class_id(exchange_id)
+        module: Any
+        if engine == "ccxt":
+            module = ccxt_async
+        elif engine == "ccxtpro":
+            if ccxt_pro is None:
+                raise RuntimeError("engine_unavailable")
+            module = ccxt_pro
+        else:
+            raise RuntimeError("unsupported_engine")
+        exchange_cls = getattr(module, exchange_class_id, None)
         if exchange_cls is None:
             raise RuntimeError(f"unsupported exchange_id: {exchange_id}")
         config: dict[str, Any] = {}
@@ -235,6 +257,47 @@ class CCXTAdapter:
 
             await exchange.cancel_order(id=exchange_order_id, symbol=symbol, params={})
             return await exchange.create_order(
+                symbol=symbol,
+                type=order_type,
+                side=side,
+                amount=amount,
+                price=price,
+                params=params,
+            )
+        finally:
+            await exchange.close()
+
+    async def edit_order_if_supported(
+        self,
+        exchange_id: str,
+        use_testnet: bool,
+        api_key: str | None,
+        secret: str | None,
+        passphrase: str | None,
+        extra_config: dict[str, Any] | None,
+        exchange_order_id: str,
+        symbol: str,
+        side: str,
+        order_type: str,
+        amount: Any,
+        price: Any,
+        params: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        exchange = self._build_exchange(
+            exchange_id=exchange_id,
+            use_testnet=use_testnet,
+            api_key=api_key,
+            secret=secret,
+            passphrase=passphrase,
+            extra_config=extra_config,
+        )
+        try:
+            await exchange.load_markets()
+            can_edit = bool(exchange.has.get("editOrder")) if isinstance(exchange.has, dict) else False
+            if not can_edit:
+                return None
+            return await exchange.edit_order(
+                id=exchange_order_id,
                 symbol=symbol,
                 type=order_type,
                 side=side,

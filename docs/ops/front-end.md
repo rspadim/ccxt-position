@@ -1,6 +1,6 @@
-# Simple Front
+# Front End
 
-`apps/simple-front` is the local trading UI for `ccxt-position`.
+`apps/front-end` is the local trading UI for `ccxt-position`.
 
 ## Stack
 
@@ -11,10 +11,10 @@
 
 ## Main Files
 
-- `apps/simple-front/index.html`: UI layout and forms
-- `apps/simple-front/src/main.js`: behavior, API calls, WebSocket handling
-- `apps/simple-front/src/style.css`: visual styles
-- `apps/simple-front/src/i18n.json`: labels/translations
+- `apps/front-end/index.html`: UI layout and forms
+- `apps/front-end/src/main.js`: behavior, API calls, WebSocket handling
+- `apps/front-end/src/style.css`: visual styles
+- `apps/front-end/src/i18n.json`: labels/translations
 
 ## UI Structure
 
@@ -36,7 +36,7 @@
 ## Run
 
 ```powershell
-cd apps/simple-front
+cd apps/front-end
 npm install
 npm run dev
 ```

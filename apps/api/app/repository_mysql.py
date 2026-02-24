@@ -165,14 +165,14 @@ class MySQLCommandRepository:
             return None
         return str(row[0])
 
-    async def create_api_key(self, conn: Any, user_id: int, api_key_hash: str) -> int:
+    async def create_api_key(self, conn: Any, user_id: int, api_key_hash: str, label: str | None = None) -> int:
         async with conn.cursor() as cur:
             await cur.execute(
                 """
-                INSERT INTO user_api_keys (user_id, api_key_hash, status)
-                VALUES (%s, %s, 'active')
+                INSERT INTO user_api_keys (user_id, label, api_key_hash, status)
+                VALUES (%s, %s, %s, 'active')
                 """,
-                (user_id, api_key_hash),
+                (user_id, label, api_key_hash),
             )
             return int(cur.lastrowid)
 
@@ -195,7 +195,7 @@ class MySQLCommandRepository:
         async with conn.cursor() as cur:
             await cur.execute(
                 """
-                SELECT k.id, u.id, u.name, u.role, k.status, k.created_at
+                SELECT k.id, u.id, u.name, u.role, k.status, k.label, k.created_at
                 FROM user_api_keys k
                 JOIN users u ON u.id = k.user_id
                 WHERE k.user_id = %s
@@ -213,7 +213,8 @@ class MySQLCommandRepository:
                     "user_name": str(row[2]),
                     "role": str(row[3]),
                     "status": str(row[4]),
-                    "created_at": str(row[5]),
+                    "label": str(row[5]) if row[5] is not None else "",
+                    "created_at": str(row[6]),
                 }
             )
         return out
@@ -222,7 +223,7 @@ class MySQLCommandRepository:
         async with conn.cursor() as cur:
             await cur.execute(
                 """
-                SELECT k.id, u.id, u.name, u.role, u.status, k.status
+                SELECT k.id, u.id, u.name, u.role, u.status, k.status, k.label
                 FROM user_api_keys k
                 JOIN users u ON u.id = k.user_id
                 WHERE k.id = %s
@@ -240,6 +241,7 @@ class MySQLCommandRepository:
             "role": str(row[3]),
             "user_status": str(row[4]),
             "api_key_status": str(row[5]),
+            "label": str(row[6]) if row[6] is not None else "",
         }
 
     async def create_auth_token(
@@ -1074,10 +1076,39 @@ class MySQLCommandRepository:
                 UPDATE oms_orders
                 SET status = 'SUBMITTED',
                     exchange_order_id = %s,
+                    closed_at = NULL,
+                    edit_replace_state = NULL,
+                    edit_replace_orphan_order_id = NULL,
                     updated_at = NOW()
                 WHERE id = %s
                 """,
                 (exchange_order_id, order_id),
+            )
+
+    async def mark_order_submitted_exchange_with_values(
+        self,
+        conn: Any,
+        order_id: int,
+        exchange_order_id: str | None,
+        qty: Any,
+        price: Any,
+    ) -> None:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                UPDATE oms_orders
+                SET status = 'SUBMITTED',
+                    exchange_order_id = %s,
+                    qty = %s,
+                    price = %s,
+                    closed_at = NULL,
+                    edit_replace_state = 'consolidated_to_self',
+                    edit_replace_at = NOW(),
+                    edit_replace_orphan_order_id = NULL,
+                    updated_at = NOW()
+                WHERE id = %s
+                """,
+                (exchange_order_id, qty, price, order_id),
             )
 
     async def mark_order_rejected(self, conn: Any, order_id: int) -> None:
@@ -1100,6 +1131,84 @@ class MySQLCommandRepository:
                 WHERE id = %s
                 """,
                 (order_id,),
+            )
+
+    async def mark_order_canceled_edit_pending(self, conn: Any, order_id: int) -> None:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                UPDATE oms_orders
+                SET status = 'CANCELED',
+                    closed_at = NOW(),
+                    edit_replace_state = 'create_pending',
+                    edit_replace_at = NOW(),
+                    updated_at = NOW()
+                WHERE id = %s
+                """,
+                (order_id,),
+            )
+
+    async def mark_order_edit_replace_failed(self, conn: Any, order_id: int) -> None:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                UPDATE oms_orders
+                SET edit_replace_state = 'create_failed',
+                    edit_replace_at = NOW(),
+                    updated_at = NOW()
+                WHERE id = %s
+                """,
+                (order_id,),
+            )
+
+    async def mark_order_consolidated_to_orphan(
+        self, conn: Any, order_id: int, orphan_order_id: int
+    ) -> None:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                UPDATE oms_orders
+                SET status = 'CANCELED',
+                    closed_at = COALESCE(closed_at, NOW()),
+                    edit_replace_state = 'consolidated_to_orphan',
+                    edit_replace_at = NOW(),
+                    edit_replace_orphan_order_id = %s,
+                    updated_at = NOW()
+                WHERE id = %s
+                """,
+                (int(orphan_order_id), int(order_id)),
+            )
+
+    async def adopt_external_orphan_order(
+        self,
+        conn: Any,
+        orphan_order_id: int,
+        *,
+        origin_order_id: int,
+        strategy_id: int,
+        reason: str,
+        comment: str | None,
+    ) -> None:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                UPDATE oms_orders
+                SET strategy_id = %s,
+                    reason = %s,
+                    comment = %s,
+                    edit_replace_origin_order_id = %s,
+                    edit_replace_state = 'consolidated_to_orphan',
+                    edit_replace_at = NOW(),
+                    updated_at = NOW()
+                WHERE id = %s
+                """,
+                (
+                    int(strategy_id),
+                    str(reason),
+                    comment,
+                    int(origin_order_id),
+                    int(orphan_order_id),
+                ),
             )
 
     async def update_order_position_link(self, conn: Any, order_id: int, position_id: int) -> int:
@@ -1159,7 +1268,9 @@ class MySQLCommandRepository:
             await cur.execute(
                 """
                 SELECT id, symbol, side, order_type, status, qty, price, stop_loss, stop_gain, filled_qty,
-                       strategy_id, position_id, reason, comment, client_order_id, exchange_order_id
+                       strategy_id, position_id, reason, comment, client_order_id, exchange_order_id,
+                       previous_position_id, edit_replace_state, edit_replace_at, edit_replace_orphan_order_id,
+                       edit_replace_origin_order_id
                 FROM oms_orders
                 WHERE id = %s AND account_id = %s
                 LIMIT 1
@@ -1186,6 +1297,11 @@ class MySQLCommandRepository:
             "comment": row[13],
             "client_order_id": row[14],
             "exchange_order_id": row[15],
+            "previous_position_id": None if row[16] is None else int(row[16]),
+            "edit_replace_state": None if row[17] is None else str(row[17]),
+            "edit_replace_at": None if row[18] is None else str(row[18]),
+            "edit_replace_orphan_order_id": None if row[19] is None else int(row[19]),
+            "edit_replace_origin_order_id": None if row[20] is None else int(row[20]),
         }
 
     async def list_cancelable_orders(
@@ -1983,6 +2099,61 @@ class MySQLCommandRepository:
             "reason": "external",
         }
 
+    async def find_external_orphan_order_for_replace(
+        self,
+        conn: Any,
+        *,
+        account_id: int,
+        exchange_order_id: str | None,
+        client_order_id: str | None,
+        symbol: str,
+        side: str,
+    ) -> dict[str, Any] | None:
+        if not exchange_order_id and not client_order_id:
+            return None
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT id, strategy_id, position_id, reason, comment, client_order_id, exchange_order_id
+                FROM oms_orders
+                WHERE account_id = %s
+                  AND reason = 'external'
+                  AND strategy_id = 0
+                  AND symbol = %s
+                  AND LOWER(side) = LOWER(%s)
+                  AND (
+                    (%s IS NOT NULL AND %s <> '' AND exchange_order_id = %s)
+                    OR
+                    (%s IS NOT NULL AND %s <> '' AND client_order_id = %s)
+                  )
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (
+                    int(account_id),
+                    str(symbol),
+                    str(side),
+                    exchange_order_id,
+                    exchange_order_id,
+                    exchange_order_id,
+                    client_order_id,
+                    client_order_id,
+                    client_order_id,
+                ),
+            )
+            row = await cur.fetchone()
+        if row is None:
+            return None
+        return {
+            "id": int(row[0]),
+            "strategy_id": int(row[1]),
+            "position_id": int(row[2]),
+            "reason": str(row[3]),
+            "comment": row[4],
+            "client_order_id": None if row[5] is None else str(row[5]),
+            "exchange_order_id": None if row[6] is None else str(row[6]),
+        }
+
     async def fetch_outbox_events(
         self, conn: Any, account_id: int, from_event_id: int, limit: int = 100
     ) -> list[dict[str, Any]]:
@@ -2364,7 +2535,7 @@ class MySQLCommandRepository:
         async with conn.cursor() as cur:
             await cur.execute(
                 """
-                SELECT u.id, u.name, u.role, u.status, k.id, k.status, k.created_at
+                SELECT u.id, u.name, u.role, u.status, k.id, k.status, k.label, k.created_at
                 FROM users u
                 JOIN user_api_keys k ON k.user_id = u.id
                 ORDER BY u.id ASC, k.id ASC
@@ -2381,7 +2552,8 @@ class MySQLCommandRepository:
                     "user_status": str(row[3]),
                     "api_key_id": int(row[4]),
                     "api_key_status": str(row[5]),
-                    "created_at": str(row[6]),
+                    "label": str(row[6]) if row[6] is not None else "",
+                    "created_at": str(row[7]),
                 }
             )
         return out
@@ -2403,20 +2575,23 @@ class MySQLCommandRepository:
                     akap.can_block_account,
                     akap.restrict_to_strategies,
                     akap.status,
+                    k.label,
                     COALESCE(
-                      GROUP_CONCAT(
-                        DISTINCT CASE
-                          WHEN asp.status = 'active' AND asp.can_read = TRUE THEN asp.strategy_id
-                          ELSE NULL
-                        END
-                        ORDER BY asp.strategy_id SEPARATOR ','
-                      ),
-                      ''
+                        GROUP_CONCAT(
+                            DISTINCT CASE
+                                WHEN asp.status = 'active' AND asp.can_read = TRUE THEN asp.strategy_id
+                                ELSE NULL
+                            END
+                            ORDER BY asp.strategy_id SEPARATOR ','
+                        ),
+                        ''
                     ) AS strategy_ids_csv
                 FROM api_key_account_permissions akap
                 LEFT JOIN api_key_strategy_permissions asp
                   ON asp.api_key_id = akap.api_key_id
                  AND asp.account_id = akap.account_id
+                LEFT JOIN user_api_keys k
+                  ON k.id = akap.api_key_id
                 WHERE akap.api_key_id = %s
                 GROUP BY
                     akap.api_key_id,
@@ -2436,7 +2611,8 @@ class MySQLCommandRepository:
             rows = await cur.fetchall()
         out: list[dict[str, Any]] = []
         for row in rows:
-            csv = str(row[10] or "")
+            label_value = str(row[10] or "")
+            csv = str(row[11] or "")
             strategy_ids = [int(x) for x in csv.split(",") if x.strip().isdigit()]
             out.append(
                 {
@@ -2450,6 +2626,7 @@ class MySQLCommandRepository:
                     "can_block_account": bool(row[7]),
                     "restrict_to_strategies": bool(row[8]),
                     "status": str(row[9]),
+                    "label": label_value,
                     "strategy_ids": strategy_ids,
                 }
             )
@@ -2546,7 +2723,9 @@ class MySQLCommandRepository:
                 f"""
                 SELECT id, symbol, side, order_type, status, strategy_id, position_id, reason,
                        comment, client_order_id, exchange_order_id, qty, price, stop_loss, stop_gain, filled_qty, avg_fill_price,
-                       created_at, updated_at, closed_at, command_id
+                       created_at, updated_at, closed_at, command_id,
+                       previous_position_id, edit_replace_state, edit_replace_at,
+                       edit_replace_orphan_order_id, edit_replace_origin_order_id
                 FROM oms_orders
                 WHERE account_id = %s {status_filter} {strategy_filter} {date_filter}
                 ORDER BY id ASC
@@ -2581,6 +2760,11 @@ class MySQLCommandRepository:
                     "updated_at": str(r[18]),
                     "closed_at": None if r[19] is None else str(r[19]),
                     "command_id": None if r[20] is None else int(r[20]),
+                    "previous_position_id": None if r[21] is None else int(r[21]),
+                    "edit_replace_state": None if r[22] is None else str(r[22]),
+                    "edit_replace_at": None if r[23] is None else str(r[23]),
+                    "edit_replace_orphan_order_id": None if r[24] is None else int(r[24]),
+                    "edit_replace_origin_order_id": None if r[25] is None else int(r[25]),
                 }
             )
         return out
@@ -2607,7 +2791,8 @@ class MySQLCommandRepository:
             await cur.execute(
                 f"""
                 SELECT id, order_id, position_id, symbol, side, qty, price, fee, fee_currency,
-                       pnl, strategy_id, reason, comment, reconciled, exchange_trade_id, created_at, executed_at
+                       pnl, strategy_id, reason, comment, reconciled, exchange_trade_id, created_at, executed_at,
+                       previous_position_id
                 FROM oms_deals
                 WHERE account_id = %s {strategy_filter} {date_filter}
                 ORDER BY id ASC
@@ -2637,6 +2822,7 @@ class MySQLCommandRepository:
                     "exchange_trade_id": r[14],
                     "created_at": str(r[15]),
                     "executed_at": str(r[16]),
+                    "previous_position_id": None if r[17] is None else int(r[17]),
                 }
             )
         return out
@@ -2798,7 +2984,7 @@ class MySQLCommandRepository:
             total = int(total_row[0] or 0) if total_row else 0
             await cur.execute(
                 f"""
-                SELECT id, account_id, symbol, side, reconciled, strategy_id, position_id, executed_at, created_at
+                SELECT id, account_id, symbol, side, reconciled, strategy_id, position_id, executed_at, created_at, previous_position_id
                 FROM oms_deals
                 WHERE {where_sql}
                 ORDER BY id ASC
@@ -2821,6 +3007,7 @@ class MySQLCommandRepository:
                     "position_id": None if r[6] is None else int(r[6]),
                     "executed_at": None if r[7] is None else str(r[7]),
                     "created_at": None if r[8] is None else str(r[8]),
+                    "previous_position_id": None if r[9] is None else int(r[9]),
                 }
             )
         return items, total
@@ -2848,6 +3035,50 @@ class MySQLCommandRepository:
                   AND id IN ({placeholders})
                 """,
                 params,
+            )
+            return int(cur.rowcount or 0)
+
+    async def reassign_open_orders_position(
+        self,
+        conn: Any,
+        *,
+        account_id: int,
+        from_position_id: int,
+        to_position_id: int,
+    ) -> int:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                UPDATE oms_orders
+                SET previous_position_id = position_id,
+                    position_id = %s,
+                    updated_at = NOW()
+                WHERE account_id = %s
+                  AND position_id = %s
+                  AND status IN ('PENDING_SUBMIT','SUBMITTED','PARTIALLY_FILLED')
+                """,
+                (int(to_position_id), int(account_id), int(from_position_id)),
+            )
+            return int(cur.rowcount or 0)
+
+    async def reassign_deals_position(
+        self,
+        conn: Any,
+        *,
+        account_id: int,
+        from_position_id: int,
+        to_position_id: int,
+    ) -> int:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                UPDATE oms_deals
+                SET previous_position_id = position_id,
+                    position_id = %s
+                WHERE account_id = %s
+                  AND position_id = %s
+                """,
+                (int(to_position_id), int(account_id), int(from_position_id)),
             )
             return int(cur.rowcount or 0)
 
@@ -2981,6 +3212,10 @@ class MySQLCommandRepository:
                     o.filled_qty,
                     o.avg_fill_price,
                     o.exchange_order_id,
+                    o.edit_replace_state,
+                    o.edit_replace_at,
+                    o.edit_replace_orphan_order_id,
+                    o.edit_replace_origin_order_id,
                     o.created_at,
                     o.updated_at,
                     o.reconciled
@@ -3011,9 +3246,13 @@ class MySQLCommandRepository:
                     "filled_qty": None if r[10] is None else str(r[10]),
                     "avg_fill_price": None if r[11] is None else str(r[11]),
                     "exchange_order_id": None if r[12] is None else str(r[12]),
-                    "created_at": None if r[13] is None else str(r[13]),
+                    "edit_replace_state": None if r[13] is None else str(r[13]),
+                    "edit_replace_at": None if r[14] is None else str(r[14]),
+                    "edit_replace_orphan_order_id": None if r[15] is None else int(r[15]),
+                    "edit_replace_origin_order_id": None if r[16] is None else int(r[16]),
+                    "created_at": None if r[17] is None else str(r[17]),
                     "executed_at": None,
-                    "reconciled": bool(r[15]),
+                    "reconciled": bool(r[19]),
                 }
             )
         return items, total
@@ -3032,7 +3271,7 @@ class MySQLCommandRepository:
             async with conn.cursor() as cur:
                 await cur.execute(
                     f"""
-                    SELECT id, strategy_id, position_id, reconciled
+                SELECT id, strategy_id, position_id, reconciled
                     FROM oms_deals
                     WHERE account_id = %s
                       AND id IN ({placeholders})
@@ -3055,7 +3294,7 @@ class MySQLCommandRepository:
             async with conn.cursor() as cur:
                 await cur.execute(
                     f"""
-                    SELECT id, strategy_id, position_id, status
+                SELECT id, strategy_id, position_id, status
                     FROM oms_orders
                     WHERE account_id = %s
                       AND id IN ({placeholders})
@@ -3090,7 +3329,9 @@ class MySQLCommandRepository:
                 f"""
                 SELECT id, command_id, account_id, symbol, side, order_type, status, strategy_id, position_id,
                        reason, comment, client_order_id, exchange_order_id, qty, price, stop_loss, stop_gain,
-                       filled_qty, avg_fill_price, reconciled, created_at, updated_at, closed_at
+                       filled_qty, avg_fill_price, reconciled, created_at, updated_at, closed_at,
+                       previous_position_id, edit_replace_state, edit_replace_at,
+                       edit_replace_orphan_order_id, edit_replace_origin_order_id
                 FROM oms_orders
                 WHERE id = %s {account_sql}
                 LIMIT 1
@@ -3124,6 +3365,11 @@ class MySQLCommandRepository:
             "created_at": str(row[20]),
             "updated_at": str(row[21]),
             "closed_at": None if row[22] is None else str(row[22]),
+            "previous_position_id": None if row[23] is None else int(row[23]),
+            "edit_replace_state": None if row[24] is None else str(row[24]),
+            "edit_replace_at": None if row[25] is None else str(row[25]),
+            "edit_replace_orphan_order_id": None if row[26] is None else int(row[26]),
+            "edit_replace_origin_order_id": None if row[27] is None else int(row[27]),
         }
 
     async def admin_fetch_oms_position_by_id(
@@ -3182,7 +3428,7 @@ class MySQLCommandRepository:
             await cur.execute(
                 f"""
                 SELECT id, account_id, order_id, position_id, symbol, side, qty, price, fee, fee_currency, pnl,
-                       strategy_id, reason, comment, reconciled, exchange_trade_id, created_at, executed_at
+                       strategy_id, reason, comment, reconciled, exchange_trade_id, created_at, executed_at, previous_position_id
                 FROM oms_deals
                 WHERE id = %s {account_sql}
                 LIMIT 1
@@ -3211,6 +3457,7 @@ class MySQLCommandRepository:
             "exchange_trade_id": row[15],
             "created_at": str(row[16]),
             "executed_at": str(row[17]),
+            "previous_position_id": None if row[18] is None else int(row[18]),
         }
 
     async def admin_list_oms_orders_multi(
@@ -3248,7 +3495,9 @@ class MySQLCommandRepository:
                 f"""
                 SELECT id, command_id, account_id, symbol, side, order_type, status, strategy_id, position_id,
                        reason, comment, client_order_id, exchange_order_id, qty, price, stop_loss, stop_gain,
-                       filled_qty, avg_fill_price, reconciled, created_at, updated_at, closed_at
+                       filled_qty, avg_fill_price, reconciled, created_at, updated_at, closed_at,
+                       previous_position_id, edit_replace_state, edit_replace_at,
+                       edit_replace_orphan_order_id, edit_replace_origin_order_id
                 FROM oms_orders
                 WHERE 1=1 {account_sql} {status_sql} {date_sql}
                 ORDER BY id ASC
@@ -3284,6 +3533,11 @@ class MySQLCommandRepository:
                     "created_at": str(r[20]),
                     "updated_at": str(r[21]),
                     "closed_at": None if r[22] is None else str(r[22]),
+                    "previous_position_id": None if r[23] is None else int(r[23]),
+                    "edit_replace_state": None if r[24] is None else str(r[24]),
+                    "edit_replace_at": None if r[25] is None else str(r[25]),
+                    "edit_replace_orphan_order_id": None if r[26] is None else int(r[26]),
+                    "edit_replace_origin_order_id": None if r[27] is None else int(r[27]),
                 }
             )
         return out, total
@@ -3386,7 +3640,7 @@ class MySQLCommandRepository:
             await cur.execute(
                 f"""
                 SELECT id, account_id, order_id, position_id, symbol, side, qty, price, fee, fee_currency, pnl,
-                       strategy_id, reason, comment, reconciled, exchange_trade_id, created_at, executed_at
+                       strategy_id, reason, comment, reconciled, exchange_trade_id, created_at, executed_at, previous_position_id
                 FROM oms_deals
                 WHERE 1=1 {account_sql} {date_sql}
                 ORDER BY id ASC
@@ -3417,6 +3671,7 @@ class MySQLCommandRepository:
                     "exchange_trade_id": r[15],
                     "created_at": str(r[16]),
                     "executed_at": str(r[17]),
+                    "previous_position_id": None if r[18] is None else int(r[18]),
                 }
             )
         return out, total
@@ -3426,6 +3681,8 @@ class MySQLCommandRepository:
             "id", "command_id", "account_id", "symbol", "side", "order_type", "status", "strategy_id", "position_id",
             "reason", "comment", "client_order_id", "exchange_order_id", "qty", "price", "stop_loss", "stop_gain",
             "filled_qty", "avg_fill_price", "reconciled", "created_at", "updated_at", "closed_at",
+            "previous_position_id", "edit_replace_state", "edit_replace_at",
+            "edit_replace_orphan_order_id", "edit_replace_origin_order_id",
         ]
         cols = [k for k in allowed if k in row]
         if not cols:
@@ -3444,6 +3701,8 @@ class MySQLCommandRepository:
             "command_id", "account_id", "symbol", "side", "order_type", "status", "strategy_id", "position_id",
             "reason", "comment", "client_order_id", "exchange_order_id", "qty", "price", "stop_loss", "stop_gain",
             "filled_qty", "avg_fill_price", "reconciled", "created_at", "updated_at", "closed_at",
+            "previous_position_id", "edit_replace_state", "edit_replace_at",
+            "edit_replace_orphan_order_id", "edit_replace_origin_order_id",
         ]
         sets: list[str] = []
         params: list[Any] = []
@@ -3521,6 +3780,7 @@ class MySQLCommandRepository:
         allowed = [
             "id", "account_id", "order_id", "position_id", "symbol", "side", "qty", "price", "fee", "fee_currency",
             "pnl", "strategy_id", "reason", "comment", "reconciled", "exchange_trade_id", "created_at", "executed_at",
+            "previous_position_id",
         ]
         cols = [k for k in allowed if k in row]
         if not cols:
@@ -3538,6 +3798,7 @@ class MySQLCommandRepository:
         allowed = [
             "account_id", "order_id", "position_id", "symbol", "side", "qty", "price", "fee", "fee_currency",
             "pnl", "strategy_id", "reason", "comment", "reconciled", "exchange_trade_id", "created_at", "executed_at",
+            "previous_position_id",
         ]
         sets: list[str] = []
         params: list[Any] = []

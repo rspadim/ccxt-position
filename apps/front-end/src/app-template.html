@@ -733,10 +733,20 @@
             <label>Extra Config JSON<textarea name="extra_config_json">{}</textarea></label>
             <wa-button type="submit" data-i18n="admin.create_account">Create Account</wa-button>
           </form>
-          <div class="card">
+          <div>
             <h3 data-i18n="admin.accounts">Accounts</h3>
             <div class="actions">
               <wa-button id="loadAdminAccountsBtn" type="button" variant="neutral" data-i18n="admin.load_accounts">Load Accounts</wa-button>
+            </div>
+            <div id="adminAccountsMessage" class="notice notice-info is-hidden"></div>
+            <div class="pager-row">
+              <div class="pager-group">
+                <wa-button id="adminAccountsPrevPageBtn" type="button" variant="neutral"><i class="fa-solid fa-chevron-left" aria-hidden="true"></i></wa-button>
+                <wa-button id="adminAccountsNextPageBtn" type="button" variant="neutral"><i class="fa-solid fa-chevron-right" aria-hidden="true"></i></wa-button>
+                <label class="pager-label"><span data-i18n="common.items_per_page">Items/Page</span><select id="adminAccountsPageSize"><option value="50">50</option><option value="100" selected>100</option><option value="200">200</option><option value="500">500</option></select></label>
+                <label class="pager-label"><span data-i18n="common.page">Page</span><input id="adminAccountsPageInput" type="number" min="1" value="1" /></label>
+                <div id="adminAccountsPageInfo" class="pager-info">1 / 1</div>
+              </div>
             </div>
             <div id="adminAccountsTable"></div>
           </div>
@@ -765,6 +775,15 @@
             <div class="actions">
               <wa-button id="loadAdminUsersBtn" type="button" variant="neutral" data-i18n="admin.load_users">Load Users</wa-button>
             </div>
+            <div class="pager-row">
+              <div class="pager-group">
+                <wa-button id="adminUsersPrevPageBtn" type="button" variant="neutral"><i class="fa-solid fa-chevron-left" aria-hidden="true"></i></wa-button>
+                <wa-button id="adminUsersNextPageBtn" type="button" variant="neutral"><i class="fa-solid fa-chevron-right" aria-hidden="true"></i></wa-button>
+                <label class="pager-label"><span data-i18n="common.items_per_page">Items/Page</span><select id="adminUsersPageSize"><option value="10">10</option><option value="20" selected>20</option><option value="50">50</option></select></label>
+                <label class="pager-label"><span data-i18n="common.page">Page</span><input id="adminUsersPageInput" type="number" min="1" value="1" /></label>
+                <div id="adminUsersPageInfo" class="pager-info">1 / 1</div>
+              </div>
+            </div>
             <div id="adminUsersTable"></div>
           </div>
         </div>
@@ -772,8 +791,14 @@
         <div id="adminApiKeysSection" class="is-hidden">
           <form id="adminCreateApiKeyForm">
             <h3>Adicionar API Key</h3>
-            <label>User ID<input id="adminApiKeyUserId" name="user_id" type="number" min="1" placeholder="1" /></label>
-            <label>API Key (opcional)<input id="adminApiKeyValue" name="api_key" placeholder="vazio = gerar automaticamente" /></label>
+            <label><span data-i18n="admin.user_id">User ID</span>
+              <div class="inline-input">
+                <input id="adminApiKeyUserId" name="user_id" type="number" min="1" placeholder="1" list="adminUserOptions" />
+                <datalist id="adminUserOptions"></datalist>
+              </div>
+            </label>
+            <label><span data-i18n="admin.api_key_label">Label</span><input id="adminApiKeyLabel" name="label" placeholder="Opcional" /></label>
+            <label><span data-i18n="admin.api_key_value">API Key (opcional)</span><input id="adminApiKeyValue" name="api_key" placeholder="vazio = gerar automaticamente" /></label>
             <wa-button id="adminCreateApiKeyBtn" type="submit" variant="brand">Criar API Key</wa-button>
           </form>
           <div id="adminCreatedApiKeyBox" class="notice notice-info is-hidden"></div>
@@ -782,7 +807,29 @@
             <div class="actions">
               <wa-button id="loadAdminUsersKeysBtn" type="button" variant="neutral" data-i18n="admin.load_users_keys">Load Users+Keys</wa-button>
             </div>
+            <div class="pager-row">
+              <div class="pager-group">
+                <wa-button id="adminUsersKeysPrevPageBtn" type="button" variant="neutral"><i class="fa-solid fa-chevron-left" aria-hidden="true"></i></wa-button>
+                <wa-button id="adminUsersKeysNextPageBtn" type="button" variant="neutral"><i class="fa-solid fa-chevron-right" aria-hidden="true"></i></wa-button>
+                <label class="pager-label"><span data-i18n="common.items_per_page">Items/Page</span><select id="adminUsersKeysPageSize"><option value="10">10</option><option value="20" selected>20</option><option value="50">50</option></select></label>
+                <label class="pager-label"><span data-i18n="common.page">Page</span><input id="adminUsersKeysPageInput" type="number" min="1" value="1" /></label>
+                <div id="adminUsersKeysPageInfo" class="pager-info">1 / 1</div>
+              </div>
+            </div>
             <div id="adminUsersKeysTable"></div>
+          </div>
+          <div class="card">
+            <h3 data-i18n="admin.api_key_permissions">Permissões por API Key</h3>
+                        <div class="pager-row">
+              <div class="pager-group">
+                <wa-button id="adminUsersPermissionsPrevPageBtn" type="button" variant="neutral"><i class="fa-solid fa-chevron-left" aria-hidden="true"></i></wa-button>
+                <wa-button id="adminUsersPermissionsNextPageBtn" type="button" variant="neutral"><i class="fa-solid fa-chevron-right" aria-hidden="true"></i></wa-button>
+                <label class="pager-label"><span data-i18n="common.items_per_page">Items/Page</span><select id="adminUsersPermissionsPageSize"><option value="10">10</option><option value="20" selected>20</option><option value="50">50</option></select></label>
+                <label class="pager-label"><span data-i18n="common.page">Page</span><input id="adminUsersPermissionsPageInput" type="number" min="1" value="1" /></label>
+                <div id="adminUsersPermissionsPageInfo" class="pager-info">1 / 1</div>
+              </div>
+            </div>
+            <div id="adminUsersPermissionsTable"></div>
           </div>
         </div>
 

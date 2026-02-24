@@ -1,4 +1,4 @@
-﻿# ccxt-position
+# ccxt-position
 
 `ccxt-position` is a single-host OMS gateway that combines:
 
@@ -53,7 +53,7 @@ Specification-first bootstrap with first implementation slice available in `apps
 - Schema catalog: `docs/data/table-catalog.md`
 - Security model: `docs/security/authentication.md`
 - Operations: `docs/ops/deployment-single-host.md`
-- Simple Front: `docs/ops/simple-front.md`
+- Simple Front: `docs/ops/front-end.md`
 - Roadmap: `docs/roadmap/mvp-scope.md`
 - Testnet bootstrap: `test/testnet/README.md`
   - Includes `run.py` (bootstrap) and `scenarios.py` (hedge/netting + multi-strategy live validation)
