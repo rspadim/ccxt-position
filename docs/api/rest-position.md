@@ -1,6 +1,6 @@
-﻿# REST: Position Domain
+﻿# REST: OMS Domain
 
-## `POST /position/commands`
+## `POST /oms/commands`
 
 Unified command endpoint (single or batch):
 
@@ -10,9 +10,7 @@ Unified command endpoint (single or batch):
 - `close_by`
 - `close_position`
 
-Batch response is index-aligned with request input.
-
-Request body is a discriminated union by `command`:
+Request body is a discriminated union keyed by `command`:
 
 - Common fields:
   - `account_id` (int > 0)
@@ -38,34 +36,35 @@ Request body is a discriminated union by `command`:
   - `position_id` (int > 0)
   - optional: `order_type` (`market|limit`, default `market`), `price` (required for `limit`), `qty`, `strategy_id`, `reason`, `client_order_id`
 
-Invalid payload now fails fast with HTTP `422` before queueing.
+Invalid payloads fail fast with HTTP `422` before queueing.
 
 Behavior:
 
-- `close_position` is converted internally to a reduce-only `send_order`.
+- `close_position` is converted to a reduce-only `send_order`.
 - `close_position` acquires a position-level lock and rejects parallel close attempts.
 - `change_order` is validated against current order state before queueing.
 
 ## Query endpoints
 
-- `GET /position/orders/open`
-- `GET /position/orders/history`
-- `GET /position/deals`
-- `GET /position/positions/open`
-- `GET /position/positions/history`
-- `POST /position/reassign`
-- `POST /position/reconcile`
-- `GET /position/reconcile/{account_id}/status`
-- `GET /position/reconcile/status`
+- `GET /oms/orders/open`
+- `GET /oms/orders/history`
+- `GET /oms/deals`
+- `GET /oms/positions/open`
+- `GET /oms/positions/history`
+- `POST /oms/reassign`
+- `POST /oms/reconcile`
+- `GET /oms/reconcile/{account_id}/status`
+- `GET /oms/reconcile/status`
 
-`/position/reassign` updates `strategy_id` and `position_id` for selected deals/orders and marks deals as reconciled.
+`/oms/reassign` updates `strategy_id` and `position_id` for selected deals/orders and marks deals as reconciled.
 
-`/position/reconcile` triggers on-demand reconciliation.
+`/oms/reconcile` triggers on-demand reconciliation:
 
 - with `account_id`: runs for one account
 - without `account_id`: runs for all accounts visible to the authenticated user
 
-`/position/reconcile/{account_id}/status` returns one account reconciliation health.
+`/oms/reconcile/{account_id}/status` returns one account reconciliation health.
 
-`/position/reconcile/status` returns all visible accounts and supports `?status=fresh|stale|never`.
+`/oms/reconcile/status` returns all visible accounts and supports `?status=fresh|stale|never`.
 
+Legacy note: the database column previously named `magic_id` is now called `strategy_id`, so new commands and payloads should rely on the renamed field.

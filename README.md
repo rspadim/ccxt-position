@@ -3,7 +3,7 @@
 `ccxt-position` is a single-host OMS gateway that combines:
 
 - A CCXT-like API surface (`/ccxt`) for direct exchange routing
-- An MT5-like position engine (`/position`) for orders, deals, positions, and reconciliation
+- An MT5-like position engine (`/oms`) for orders, deals, positions, and reconciliation
 
 ## Project Status
 
@@ -11,7 +11,7 @@ Specification-first bootstrap with first implementation slice available in `apps
 
 - FastAPI app startup/shutdown
 - API key auth (`x-api-key`, SHA-256 lookup)
-- `POST /position/commands` with batch support
+- `POST /oms/commands` with batch support
 - Position query/reassign endpoints and CCXT gateway endpoints
 - WebSocket (`/ws`) with command/call and outbox event streaming
 - MySQL persistence for commands/orders/deals/positions, raw sync, and queue
@@ -36,9 +36,9 @@ Specification-first bootstrap with first implementation slice available in `apps
 
 ## API Surfaces
 
-- `POST /position/commands`: unified MT5-like command entrypoint
+- `POST /oms/commands`: unified MT5-like command entrypoint
 - `POST /ccxt/{account_id}/{func}`: CCXT function gateway
-- `POST /ccxt/multiple_commands`: batch CCXT commands
+- `POST /ccxt/commands`: batch CCXT commands
 - `WS /ws`: unified websocket envelope (`position_*` and `ccxt_*`)
 
 ## Documentation Index
@@ -83,14 +83,14 @@ Note:
 
 ```bash
 docker compose -f apps/api/docker-compose.stack.yml exec api \
-  python -m apps.api.cli install --with-account --exchange-id binance --label binance-testnet --testnet
+  python -m apps.api.cli install --with-account --exchange-id ccxt.binance --label binance-testnet --testnet
 ```
 
 If schema was already initialized by MySQL entrypoint, use:
 
 ```bash
 docker compose -f apps/api/docker-compose.stack.yml exec api \
-  python -m apps.api.cli install --skip-schema --with-account --exchange-id binance --label binance-testnet --testnet
+  python -m apps.api.cli install --skip-schema --with-account --exchange-id ccxt.binance --label binance-testnet --testnet
 ```
 
 Save values returned by installer:

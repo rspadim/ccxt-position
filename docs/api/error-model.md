@@ -15,3 +15,9 @@ Recommended classes:
 - `exchange_error`
 - `conflict`
 - `internal_error`
+
+Dispatcher/engine specific classes:
+
+- `unsupported_engine`
+- `engine_unavailable`
+- `account_engine_mismatch`

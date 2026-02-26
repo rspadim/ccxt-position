@@ -8,10 +8,11 @@ Core tables:
 - `account_credentials_encrypted`
 - `user_account_permissions`
 - `account_risk_state`
-- `position_commands`
-- `position_orders`
-- `position_deals`
-- `position_positions`
+- `oms_commands`
+- `oms_orders`
+- `oms_deals`
+- `oms_positions`
+- `oms_close_locks`
 - `reconciliation_cursor`
 - `audit_log`
 - `event_outbox`
