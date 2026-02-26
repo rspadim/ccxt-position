@@ -296,6 +296,148 @@ body {
   color: #123357;
 }
 
+.system-status-kpis {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.system-kpi {
+  border: 1px solid #d9e6f7;
+  background: #f8fbff;
+  border-radius: 8px;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.system-kpi span {
+  font-size: 11px;
+  color: #5a7192;
+}
+
+.system-kpi strong {
+  font-size: 12px;
+  color: #102a4c;
+  overflow-wrap: anywhere;
+}
+
+.system-kpi strong.ok {
+  color: #15633b;
+}
+
+.system-kpi strong.error {
+  color: #8c1f1f;
+}
+
+.system-status-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.system-panel {
+  border: 1px solid #d9e6f7;
+  background: #fbfdff;
+  border-radius: 8px;
+  padding: 8px 10px;
+  min-height: 120px;
+}
+
+.system-panel h4 {
+  margin: 0 0 8px;
+  font-size: 12px;
+  color: #203a60;
+}
+
+.system-tree-list {
+  list-style: none;
+  margin: 0;
+  padding-left: 12px;
+}
+
+.system-tree-list.root {
+  padding-left: 0;
+}
+
+.system-tree-list li {
+  margin: 2px 0;
+}
+
+.system-tree-list summary {
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  user-select: none;
+}
+
+.system-tree-list .folder,
+.system-tree-list .meta {
+  font-size: 11px;
+  color: #6f84a3;
+}
+
+.system-tree-list .k {
+  color: #27456b;
+  font-size: 12px;
+}
+
+.system-tree-list .v {
+  color: #102a4c;
+  font-size: 12px;
+  margin-left: 0;
+  word-break: break-all;
+}
+
+.system-tree-list .v.is-ok {
+  color: #17623b;
+}
+
+.system-tree-list .v.is-error {
+  color: #8c1f1f;
+}
+
+.system-tree-list .v.is-warn {
+  color: #a25f00;
+}
+
+.system-tree-list .v.is-muted {
+  color: #6f84a3;
+}
+
+.system-tree-leaf {
+  display: grid;
+  grid-template-columns: minmax(140px, 220px) 1fr;
+  align-items: start;
+  gap: 10px;
+  width: 100%;
+}
+
+.system-tree-leaf .k {
+  color: #35557e;
+}
+
+#adminExpandSystemTreeBtn::part(base) {
+  border-color: #84b9ff;
+  background: linear-gradient(180deg, #e9f3ff 0%, #d9eaff 100%);
+  color: #0f4f9b;
+}
+
+#adminCollapseSystemTreeBtn::part(base) {
+  border-color: #b8c6de;
+  background: linear-gradient(180deg, #f3f7ff 0%, #e6eefc 100%);
+  color: #324a70;
+}
+
+@media (max-width: 980px) {
+  .system-status-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 .status-label {
   font-size: 12px;
   color: #425a7a;
@@ -540,6 +682,11 @@ textarea {
   font-size: 12px;
   color: #14233a;
   background: #ffffff;
+}
+
+select.readonly-select {
+  background-color: #f4f8ff;
+  color: #27456b;
 }
 
 input::placeholder,
@@ -1269,6 +1416,83 @@ wa-tab-panel::part(base) {
   background: #172033;
   border-color: #334155;
   color: #dbeafe;
+}
+
+:root[data-theme="dark"] .system-kpi {
+  border-color: #334155;
+  background: #121d30;
+}
+
+:root[data-theme="dark"] .system-kpi span {
+  color: #91a4c4;
+}
+
+:root[data-theme="dark"] .system-kpi strong {
+  color: #dbeafe;
+}
+
+:root[data-theme="dark"] .system-kpi strong.ok {
+  color: #9de3ba;
+}
+
+:root[data-theme="dark"] .system-kpi strong.error {
+  color: #f2a8a8;
+}
+
+:root[data-theme="dark"] .system-panel {
+  border-color: #334155;
+  background: #0f172a;
+}
+
+:root[data-theme="dark"] .system-panel h4 {
+  color: #c8d6ec;
+}
+
+:root[data-theme="dark"] .system-tree-list .folder,
+:root[data-theme="dark"] .system-tree-list .meta {
+  color: #7f95b8;
+}
+
+:root[data-theme="dark"] .system-tree-list .k {
+  color: #c8d6ec;
+}
+
+:root[data-theme="dark"] .system-tree-list .v {
+  color: #dbeafe;
+}
+
+:root[data-theme="dark"] .system-tree-list .v.is-ok {
+  color: #9de3ba;
+}
+
+:root[data-theme="dark"] .system-tree-list .v.is-error {
+  color: #f2a8a8;
+}
+
+:root[data-theme="dark"] .system-tree-list .v.is-warn {
+  color: #f8c98f;
+}
+
+:root[data-theme="dark"] .system-tree-list .v.is-muted {
+  color: #8ea4c5;
+}
+
+:root[data-theme="dark"] select.readonly-select {
+  background-color: #1a2438;
+  color: #dbeafe;
+  border-color: #3b4c69;
+}
+
+:root[data-theme="dark"] #adminExpandSystemTreeBtn::part(base) {
+  border-color: #2d5c99;
+  background: linear-gradient(180deg, #173055 0%, #142947 100%);
+  color: #bfdbfe;
+}
+
+:root[data-theme="dark"] #adminCollapseSystemTreeBtn::part(base) {
+  border-color: #44536d;
+  background: linear-gradient(180deg, #1b2740 0%, #162238 100%);
+  color: #c8d6ec;
 }
 
 :root[data-theme="dark"] .menu wa-button::part(base) {

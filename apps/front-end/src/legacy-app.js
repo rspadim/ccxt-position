@@ -2246,8 +2246,14 @@ setupTables();
 bootstrapDefaults();
 bindForms();
 {
+  const allowedTabs = new Set(["login", "commands", "positions", "system", "strategies", "risk", "admin"]);
+  const paramTab = String(new URLSearchParams(window.location.search).get("tab") || "").trim().toLowerCase();
   const savedTab = String(localStorage.getItem(STORAGE.activeMenu) || "login").trim();
-  switchTab(savedTab);
+  const bootTab = allowedTabs.has(paramTab) ? paramTab : savedTab;
+  if (allowedTabs.has(paramTab)) {
+    localStorage.setItem(STORAGE.activeMenu, paramTab);
+  }
+  switchTab(bootTab);
 }
 status("ready", false);
 loadAccountsByApiKey().catch((err) => {

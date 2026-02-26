@@ -73,6 +73,39 @@ const UI_NUMBER_FORMAT = {
   smartSteps: [14, 5, 2, 0],
 };
 
+function formatDecimalForUi(value) {
+  if (value === null || value === undefined) return "";
+  const raw = String(value).trim();
+  if (!raw) return "";
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return raw;
+  const maxPlaces = Math.max(0, Number(UI_NUMBER_FORMAT.decimalPlaces) || 14);
+  const zeroThreshold = 10 ** (-maxPlaces);
+  if (Math.abs(n) < zeroThreshold) return "0";
+  const normalize = (num, places) => Number(num.toFixed(places));
+  const render = (num, places) => {
+    const fixed = num.toFixed(places);
+    const trimmed = fixed.replace(/\.?0+$/, "");
+    return trimmed === "-0" ? "0" : trimmed;
+  };
+  const base = normalize(n, maxPlaces);
+  const seen = new Set();
+  const steps = [];
+  for (const step of UI_NUMBER_FORMAT.smartSteps || []) {
+    const p = Math.max(0, Number(step) || 0);
+    if (!seen.has(p)) {
+      seen.add(p);
+      steps.push(p);
+    }
+  }
+  if (!seen.has(maxPlaces)) steps.unshift(maxPlaces);
+  let chosen = maxPlaces;
+  for (const p of steps) {
+    if (normalize(n, p) === base) chosen = p;
+  }
+  return render(n, chosen);
+}
+
 const UI_LOG_STORAGE = {
   dbName: "ccxt_oms_ui_logs",
   storeName: "ui_logs",
@@ -955,12 +988,15 @@ function applyLanguageTexts() {
   applyMenu("tabUserProfileBtn", "user.tab_profile", "Profile");
   applyMenu("tabUserApiKeysBtn", "user.tab_api_keys", "API Keys");
   applyMenu("tabStrategiesBtn", "menu.strategies", "Strategies");
-  applyMenu("tabPositionsBtn", "menu.oms", "OMS");
+  applyMenu("tabOmsGroupBtn", "menu.oms", "OMS");
+  applyMenu("tabPositionsBtn", "positions.open_positions", "Open Positions");
+  applyMenu("tabCommandsBtn", "menu.ccxt_commands", "CCXT Commands");
   applyMenu("tabPostTradingGroupBtn", "menu.post_trading", "Post Trading");
   applyMenu("tabPostTradingOrdersBtn", "menu.post_trading_external_orders", "External Orders");
-  applyMenu("tabCommandsBtn", "menu.ccxt_commands", "CCXT Commands");
   applyMenu("tabSystemBtn", "menu.system_monitor", "System Monitor");
-  applyMenu("tabRiskBtn", "menu.risk", "Risk");
+  applyMenu("tabRiskGroupBtn", "menu.risk", "Risk");
+  applyMenu("tabRiskAccountsBtn", "admin.accounts", "Accounts");
+  applyMenu("tabRiskApiKeysBtn", "menu.api_keys", "API Keys");
   applyMenu("tabAdminGroupBtn", "menu.admin", "Administration");
   applyMenu("tabAdminBtn", "admin.accounts", "Accounts");
   applyMenu("tabAdminUsersBtn", "admin.users", "Users");
@@ -1006,6 +1042,15 @@ function applyLanguageTexts() {
   if (state.tables.adminUsersPermissions) {
     setTableColumnsWhenReady(state.tables.adminUsersPermissions, buildAdminUsersPermissionsColumns());
   }
+  if (state.tables.userApiKeys) {
+    setTableColumnsWhenReady(state.tables.userApiKeys, buildUserApiKeysColumns());
+  }
+  if (state.tables.userApiKeyPermissions) {
+    setTableColumnsWhenReady(state.tables.userApiKeyPermissions, buildUserApiKeyPermissionsColumns());
+  }
+  if (state.tables.riskPermissions) {
+    setTableColumnsWhenReady(state.tables.riskPermissions, buildRiskPermissionsColumns());
+  }
   applyDensityMode(state.densityMode, false);
   updateApiKeyToggleLabel();
   updateLoginPasswordToggleLabel();
@@ -1042,8 +1087,12 @@ function bindSidebarMenu() {
   const userSubmenu = $("userSubmenu");
   const adminGroup = $("tabAdminGroupBtn");
   const adminSubmenu = $("adminSubmenu");
+  const omsGroup = $("tabOmsGroupBtn");
+  const omsSubmenu = $("omsSubmenu");
   const postTradingGroup = $("tabPostTradingGroupBtn");
   const postTradingSubmenu = $("postTradingSubmenu");
+  const riskGroup = $("tabRiskGroupBtn");
+  const riskSubmenu = $("riskSubmenu");
   const setUserExpanded = (expanded) => {
     userSubmenu.classList.toggle("is-hidden", !expanded);
     userGroup.classList.toggle("active", expanded);
@@ -1052,9 +1101,17 @@ function bindSidebarMenu() {
     adminSubmenu.classList.toggle("is-hidden", !expanded);
     adminGroup.classList.toggle("active", expanded);
   };
+  const setOmsExpanded = (expanded) => {
+    omsSubmenu.classList.toggle("is-hidden", !expanded);
+    omsGroup.classList.toggle("active", expanded);
+  };
   const setPostTradingExpanded = (expanded) => {
     postTradingSubmenu.classList.toggle("is-hidden", !expanded);
     postTradingGroup.classList.toggle("active", expanded);
+  };
+  const setRiskExpanded = (expanded) => {
+    riskSubmenu.classList.toggle("is-hidden", !expanded);
+    riskGroup.classList.toggle("active", expanded);
   };
   $("tabLoginBtn").addEventListener("click", () => switchTab("login"));
   userGroup.addEventListener("click", () => {
@@ -1064,11 +1121,22 @@ function bindSidebarMenu() {
   });
   $("tabUserProfileBtn").addEventListener("click", () => switchTab("userProfile"));
   $("tabUserApiKeysBtn").addEventListener("click", () => switchTab("userApiKeys"));
-  $("tabCommandsBtn").addEventListener("click", () => switchTab("commands"));
+  omsGroup.addEventListener("click", () => {
+    const collapsed = omsSubmenu.classList.contains("is-hidden");
+    setOmsExpanded(collapsed);
+    if (collapsed) switchTab("positions");
+  });
   $("tabPositionsBtn").addEventListener("click", () => switchTab("positions"));
+  $("tabCommandsBtn").addEventListener("click", () => switchTab("commands"));
   $("tabSystemBtn").addEventListener("click", () => switchTab("system"));
   $("tabStrategiesBtn").addEventListener("click", () => switchTab("strategies"));
-  $("tabRiskBtn").addEventListener("click", () => switchTab("risk"));
+  riskGroup.addEventListener("click", () => {
+    const collapsed = riskSubmenu.classList.contains("is-hidden");
+    setRiskExpanded(collapsed);
+    if (collapsed) switchTab("riskAccounts");
+  });
+  $("tabRiskAccountsBtn").addEventListener("click", () => switchTab("riskAccounts"));
+  $("tabRiskApiKeysBtn").addEventListener("click", () => switchTab("riskApiKeys"));
   postTradingGroup.addEventListener("click", () => {
     const collapsed = postTradingSubmenu.classList.contains("is-hidden");
     setPostTradingExpanded(collapsed);
@@ -1087,7 +1155,9 @@ function bindSidebarMenu() {
   $("tabAdminOmsBtn").addEventListener("click", () => switchTab("adminOms"));
   setUserExpanded(false);
   setAdminExpanded(false);
+  setOmsExpanded(false);
   setPostTradingExpanded(false);
+  setRiskExpanded(false);
 }
 
 function bindShellControls() {
@@ -1149,6 +1219,9 @@ function normalizeTabulatorColumns(input) {
       || key.includes("price")
       || key.includes("fee")
       || key.includes("pnl")
+      || key.includes("cost")
+      || key.includes("tick")
+      || key.includes("step")
     );
   };
   const shouldCenter = (field) => {
@@ -2790,6 +2863,100 @@ function buildAdminUsersPermissionsColumns() {
   ];
 }
 
+function buildUserApiKeysColumns() {
+  return [
+    { title: t("admin.col_api_key_id", "API Key ID"), field: "api_key_id", width: 110, hozAlign: "right", headerHozAlign: "right" },
+    { title: t("user.user_id", "User ID"), field: "user_id", width: 100, hozAlign: "right", headerHozAlign: "right" },
+    { title: t("user.user_name", "User Name"), field: "user_name", width: 200 },
+    { title: t("user.role", "Role"), field: "role", width: 120 },
+    {
+      title: t("admin.col_api_key_status", "API Key Status"),
+      field: "status",
+      editor: "list",
+      editorParams: { values: ["active", "disabled"] },
+      width: 130,
+    },
+    { title: t("oms.col_created_at", "Created At"), field: "created_at", width: 180 },
+    {
+      title: "",
+      field: "_save",
+      hozAlign: "center",
+      headerSort: false,
+      width: 56,
+      minWidth: 56,
+      formatter: () => '<i class="fa-solid fa-floppy-disk icon-save" title="Save" aria-hidden="true"></i>',
+      cellClick: async (_ev, cell) => {
+        const row = cell.getRow().getData();
+        try {
+          const cfg = requireConfig();
+          const apiKeyId = Number(row.api_key_id || 0);
+          if (!Number.isFinite(apiKeyId) || apiKeyId <= 0) throw new Error("api_key_id invalido");
+          const status = String(row.status || "").trim().toLowerCase();
+          if (!["active", "disabled"].includes(status)) throw new Error("status invalido");
+          const out = await apiRequest(`/user/api-keys/${apiKeyId}`, {
+            method: "PATCH",
+            body: { status },
+          }, cfg);
+          eventLog("user_update_api_key_status", out);
+          await Promise.all([loadUserApiKeys(cfg), loadUserApiKeyPermissions(cfg)]);
+          setUserMessage("success", t("user.api_key_status_updated", "Status da API Key atualizado."));
+        } catch (err) {
+          eventLog("user_update_api_key_status_error", { error: String(err) });
+          setUserMessage("error", `${t("user.api_key_status_update_error", "Erro ao atualizar status da API Key")}: ${String(err)}`);
+        }
+      },
+    },
+  ];
+}
+
+function buildUserApiKeyPermissionsColumns() {
+  return [
+    { title: t("admin.col_api_key_id", "API Key ID"), field: "api_key_id", width: 110, hozAlign: "right", headerHozAlign: "right" },
+    { title: t("common.account_id", "Account ID"), field: "account_id", width: 110, hozAlign: "right", headerHozAlign: "right" },
+    { title: t("risk.can_read", "Read"), field: "can_read", width: 100 },
+    { title: t("risk.can_trade", "Trade"), field: "can_trade", width: 100 },
+    { title: t("risk.can_close_position", "Close Position"), field: "can_close_position", width: 150 },
+    { title: t("risk.can_risk_manage", "Risk Manage"), field: "can_risk_manage", width: 140 },
+    { title: t("risk.can_block_new_positions", "Block New Positions"), field: "can_block_new_positions", width: 180 },
+    { title: t("risk.can_block_account", "Block Account"), field: "can_block_account", width: 150 },
+    { title: t("risk.restrict_to_strategies", "Restrict To Strategies"), field: "restrict_to_strategies", width: 170 },
+    {
+      title: t("risk.strategy_ids", "Strategy IDs"),
+      field: "strategy_ids",
+      width: 180,
+      formatter: (cell) => {
+        const arr = cell.getValue();
+        return Array.isArray(arr) ? arr.join(",") : "";
+      },
+    },
+    { title: t("user.status", "Status"), field: "status", width: 100 },
+  ];
+}
+
+function buildRiskPermissionsColumns() {
+  return [
+    { title: t("admin.col_api_key_id", "API Key ID"), field: "api_key_id", width: 100, hozAlign: "right", headerHozAlign: "right" },
+    { title: t("common.account_id", "Account ID"), field: "account_id", width: 100, hozAlign: "right", headerHozAlign: "right" },
+    { title: t("risk.can_read", "Read"), field: "can_read", width: 95 },
+    { title: t("risk.can_trade", "Trade"), field: "can_trade", width: 95 },
+    { title: t("risk.can_close_position", "Close Position"), field: "can_close_position", width: 130 },
+    { title: t("risk.can_risk_manage", "Risk Manage"), field: "can_risk_manage", width: 130 },
+    { title: t("risk.can_block_new_positions", "Block New Positions"), field: "can_block_new_positions", width: 160 },
+    { title: t("risk.can_block_account", "Block Account"), field: "can_block_account", width: 140 },
+    { title: t("risk.restrict_to_strategies", "Restrict To Strategies"), field: "restrict_to_strategies", width: 160 },
+    {
+      title: t("risk.strategy_ids", "Strategy IDs"),
+      field: "strategy_ids",
+      width: 160,
+      formatter: (cell) => {
+        const arr = cell.getValue();
+        return Array.isArray(arr) ? arr.join(",") : "";
+      },
+    },
+    { title: t("user.status", "Status"), field: "status", width: 95 },
+  ];
+}
+
 function setupTables() {
   state.tables.openPositions = makeTable("openPositionsTable", [
     omsRowNumberColumn("openPositions"),
@@ -3165,91 +3332,9 @@ function setupTables() {
   state.tables.adminUsers = makeTable("adminUsersTable", buildAdminUsersColumns());
   state.tables.adminUsersKeys = makeTable("adminUsersKeysTable", buildAdminUsersKeysColumns());
   state.tables.adminUsersPermissions = makeTable("adminUsersPermissionsTable", buildAdminUsersPermissionsColumns());
-  state.tables.userApiKeys = makeTable("userApiKeysTable", [
-    { title: "api_key_id", field: "api_key_id", width: 110, hozAlign: "right", headerHozAlign: "right" },
-    { title: "user_id", field: "user_id", width: 100, hozAlign: "right", headerHozAlign: "right" },
-    { title: "user_name", field: "user_name", width: 200 },
-    { title: "role", field: "role", width: 120 },
-    {
-      title: "status",
-      field: "status",
-      editor: "list",
-      editorParams: { values: ["active", "disabled"] },
-      width: 130,
-    },
-    { title: "created_at", field: "created_at", width: 180 },
-    {
-      title: "",
-      field: "_save",
-      hozAlign: "center",
-      headerSort: false,
-      width: 56,
-      minWidth: 56,
-      formatter: () => '<i class="fa-solid fa-floppy-disk icon-save" title="Save" aria-hidden="true"></i>',
-      cellClick: async (_ev, cell) => {
-        const row = cell.getRow().getData();
-        try {
-          const cfg = requireConfig();
-          const apiKeyId = Number(row.api_key_id || 0);
-          if (!Number.isFinite(apiKeyId) || apiKeyId <= 0) throw new Error("api_key_id invalido");
-          const status = String(row.status || "").trim().toLowerCase();
-          if (!["active", "disabled"].includes(status)) throw new Error("status invalido");
-          const out = await apiRequest(`/user/api-keys/${apiKeyId}`, {
-            method: "PATCH",
-            body: { status },
-          }, cfg);
-          eventLog("user_update_api_key_status", out);
-          await Promise.all([loadUserApiKeys(cfg), loadUserApiKeyPermissions(cfg)]);
-          setUserMessage("success", t("user.api_key_status_updated", "Status da API Key atualizado."));
-        } catch (err) {
-          eventLog("user_update_api_key_status_error", { error: String(err) });
-          setUserMessage("error", `${t("user.api_key_status_update_error", "Erro ao atualizar status da API Key")}: ${String(err)}`);
-        }
-      },
-    },
-  ]);
-  state.tables.userApiKeyPermissions = makeTable("userApiKeyPermissionsTable", [
-    { title: "api_key_id", field: "api_key_id", width: 110, hozAlign: "right", headerHozAlign: "right" },
-    { title: "account_id", field: "account_id", width: 110, hozAlign: "right", headerHozAlign: "right" },
-    { title: "can_read", field: "can_read", width: 100 },
-    { title: "can_trade", field: "can_trade", width: 100 },
-    { title: "can_close_position", field: "can_close_position", width: 150 },
-    { title: "can_risk_manage", field: "can_risk_manage", width: 140 },
-    { title: "can_block_new_positions", field: "can_block_new_positions", width: 180 },
-    { title: "can_block_account", field: "can_block_account", width: 150 },
-    { title: "restrict_to_strategies", field: "restrict_to_strategies", width: 170 },
-    {
-      title: "strategy_ids",
-      field: "strategy_ids",
-      width: 180,
-      formatter: (cell) => {
-        const arr = cell.getValue();
-        return Array.isArray(arr) ? arr.join(",") : "";
-      },
-    },
-    { title: "status", field: "status", width: 100 },
-  ]);
-  state.tables.riskPermissions = makeTable("riskPermissionsTable", [
-    { title: "api_key_id", field: "api_key_id", width: 90 },
-    { title: "account_id", field: "account_id", width: 90 },
-    { title: "can_read", field: "can_read", width: 90 },
-    { title: "can_trade", field: "can_trade", width: 90 },
-    { title: "can_close_position", field: "can_close_position", width: 130 },
-    { title: "can_risk_manage", field: "can_risk_manage", width: 130 },
-    { title: "can_block_new_positions", field: "can_block_new_positions", width: 160 },
-    { title: "can_block_account", field: "can_block_account", width: 140 },
-    { title: "restrict_to_strategies", field: "restrict_to_strategies", width: 150 },
-    {
-      title: "strategy_ids",
-      field: "strategy_ids",
-      width: 160,
-      formatter: (cell) => {
-        const arr = cell.getValue();
-        return Array.isArray(arr) ? arr.join(",") : "";
-      },
-    },
-    { title: "status", field: "status", width: 90 },
-  ]);
+  state.tables.userApiKeys = makeTable("userApiKeysTable", buildUserApiKeysColumns());
+  state.tables.userApiKeyPermissions = makeTable("userApiKeyPermissionsTable", buildUserApiKeyPermissionsColumns());
+  state.tables.riskPermissions = makeTable("riskPermissionsTable", buildRiskPermissionsColumns());
 }
 
 async function loadAdminAccounts(cfgOverride = null) {
@@ -3328,6 +3413,75 @@ function setAdminSystemStatus(text, kind = "info") {
   else box.classList.add("notice-info");
 }
 
+function escapeHtml(text) {
+  return String(text ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+function renderSystemTreeNode(key, value, depth = 0) {
+  const isArray = Array.isArray(value);
+  const isObject = value !== null && typeof value === "object" && !isArray;
+  if (isArray || isObject) {
+    const entries = isArray
+      ? value.map((item, idx) => [String(idx), item])
+      : Object.entries(value);
+    if (entries.length === 0) {
+      return `<li class="system-tree-leaf"><span class="k">${escapeHtml(key)}</span><span class="v">${isArray ? "[]" : "{}"}</span></li>`;
+    }
+    const openAttr = " open";
+    return `<li class="system-tree-branch"><details${openAttr}><summary><span class="folder">[+]</span><span class="k">${escapeHtml(key)}</span><span class="meta">${escapeHtml(isArray ? `[${entries.length}]` : `{${entries.length}}`)}</span></summary><ul class="system-tree-list">${entries.map(([childKey, childValue]) => renderSystemTreeNode(childKey, childValue, depth + 1)).join("")}</ul></details></li>`;
+  }
+  const text = value === null ? "null" : String(value);
+  const normalized = text.trim().toLowerCase();
+  let valueClass = "v";
+  if (normalized === "ok" || normalized === "active" || normalized === "true") valueClass = "v is-ok";
+  else if (normalized === "error" || normalized === "failed" || normalized === "false") valueClass = "v is-error";
+  else if (/^-?\d+(\.\d+)?$/.test(normalized)) valueClass = Number(normalized) > 0 ? "v is-warn" : "v is-muted";
+  else if (normalized === "null") valueClass = "v is-muted";
+  return `<li class="system-tree-leaf"><span class="k">${escapeHtml(key)}</span><span class="${valueClass}">${escapeHtml(text)}</span></li>`;
+}
+
+function renderSystemTreePanel(title, data) {
+  const payload = data === undefined ? null : data;
+  return `<div class="system-panel"><h4>${escapeHtml(title)}</h4><ul class="system-tree-list root">${renderSystemTreeNode("root", payload, 0)}</ul></div>`;
+}
+
+function renderAdminSystemStatusDetails(health, dispatcher, healthErr = "", dispatcherErr = "") {
+  const kpis = document.getElementById("adminSystemStatusKpis");
+  const details = document.getElementById("adminSystemStatusDetails");
+  if (!kpis || !details) return;
+  const startedAt = Number(dispatcher?.started_at || 0);
+  const startedAtIso = startedAt > 0 ? new Date(startedAt * 1000).toISOString() : "-";
+  kpis.innerHTML = [
+    `<div class="system-kpi"><span>${escapeHtml(t("admin.api_status", "API"))}</span><strong class="${health ? "ok" : "error"}">${escapeHtml(health ? String(health.status || "ok") : "error")}</strong></div>`,
+    `<div class="system-kpi"><span>${escapeHtml(t("admin.dispatcher_status", "Dispatcher"))}</span><strong class="${dispatcher ? "ok" : "error"}">${escapeHtml(dispatcher ? "ok" : "error")}</strong></div>`,
+    `<div class="system-kpi"><span>DB</span><strong>${escapeHtml(String(health?.db_engine || "-"))}</strong></div>`,
+    `<div class="system-kpi"><span>Env</span><strong>${escapeHtml(String(health?.env || "-"))}</strong></div>`,
+    `<div class="system-kpi"><span>accounts_mapped</span><strong>${escapeHtml(String(dispatcher?.accounts_mapped ?? "-"))}</strong></div>`,
+    `<div class="system-kpi"><span>total_requests</span><strong>${escapeHtml(String(dispatcher?.total_requests ?? "-"))}</strong></div>`,
+    `<div class="system-kpi"><span>total_errors</span><strong>${escapeHtml(String(dispatcher?.total_errors ?? "-"))}</strong></div>`,
+    `<div class="system-kpi"><span>control_queue_depth</span><strong>${escapeHtml(String(dispatcher?.control_queue_depth ?? "-"))}</strong></div>`,
+    `<div class="system-kpi"><span>started_at</span><strong>${escapeHtml(startedAtIso)}</strong></div>`,
+  ].join("");
+
+  details.innerHTML = [
+    renderSystemTreePanel("healthz", health || (healthErr ? { error: healthErr } : {})),
+    renderSystemTreePanel("dispatcher/status", dispatcher || (dispatcherErr ? { error: dispatcherErr } : {})),
+  ].join("");
+}
+
+function setSystemTreeExpanded(expanded) {
+  const root = document.getElementById("adminSystemStatusDetails");
+  if (!root) return;
+  root.querySelectorAll("details").forEach((node) => {
+    node.open = Boolean(expanded);
+  });
+}
+
 async function loadAdminSystemStatus(cfgOverride = null) {
   const cfg = cfgOverride || requireConfig();
   let health = null;
@@ -3347,6 +3501,7 @@ async function loadAdminSystemStatus(cfgOverride = null) {
   } catch (err) {
     dispatcherErr = String(err);
   }
+  renderAdminSystemStatusDetails(health, dispatcher, healthErr, dispatcherErr);
   if (health && dispatcher) {
     const txt = `${t("admin.api_status", "API")}: ${String(health.status || "ok")} | ${t("admin.dispatcher_status", "Dispatcher")}: ok`;
     setAdminSystemStatus(txt, "success");
@@ -3359,9 +3514,18 @@ async function loadAdminSystemStatus(cfgOverride = null) {
 async function loadUserProfile(cfgOverride = null) {
   const cfg = cfgOverride || requireConfig();
   const res = await apiRequest("/user/profile", {}, cfg);
+  const roleValue = String(res.role || "");
+  const roleSelect = $("userProfileRole");
+  if (roleSelect && !Array.from(roleSelect.options || []).some((opt) => String(opt.value) === roleValue)) {
+    const opt = document.createElement("option");
+    opt.value = roleValue;
+    opt.textContent = roleValue;
+    roleSelect.appendChild(opt);
+  }
   $("userProfileUserId").value = String(res.user_id || "");
   $("userProfileName").value = String(res.user_name || "");
-  $("userProfileRole").value = String(res.role || "");
+  $("userProfileRole").value = roleValue;
+  $("userProfileRole").dataset.currentValue = roleValue;
   $("userProfileStatus").value = String(res.status || "");
   $("userProfileApiKeyId").value = String(res.api_key_id || "");
   return res;
@@ -4430,7 +4594,7 @@ function bindForms() {
     try {
       const cfg = requireConfig();
       await Promise.all([loadUserProfile(cfg), loadUserApiKeys(cfg), loadUserApiKeyPermissions(cfg)]);
-      setUserMessage("info", t("user.reloaded", "Dados do usuário recarregados."));
+      setUserMessage("success", t("user.reloaded", "Dados do usuário recarregados."));
     } catch (err) {
       eventLog("user_load_error", { error: String(err) });
       setUserMessage("error", `${t("user.load_error", "Erro ao carregar dados do usuário")}: ${String(err)}`);
@@ -4557,6 +4721,14 @@ function bindForms() {
       setAdminSystemStatus(`${t("admin.status_error", "Erro ao consultar estado")}: ${String(err)}`, "error");
     }
   });
+  const expandTreeBtn = document.getElementById("adminExpandSystemTreeBtn");
+  if (expandTreeBtn) {
+    expandTreeBtn.addEventListener("click", () => setSystemTreeExpanded(true));
+  }
+  const collapseTreeBtn = document.getElementById("adminCollapseSystemTreeBtn");
+  if (collapseTreeBtn) {
+    collapseTreeBtn.addEventListener("click", () => setSystemTreeExpanded(false));
+  }
   $("loadAdminUsersKeysBtn").addEventListener("click", async () => {
     try {
       await loadAdminUsersKeys();
@@ -4798,8 +4970,13 @@ function bindForms() {
   });
 
   const adminCreateUserForm = $("adminCreateUserApiKeyForm");
+  const userProfileRoleSelect = $("userProfileRole");
   const adminRoleSelect = adminCreateUserForm.querySelector("select[name='role']");
   const adminPermsTextarea = adminCreateUserForm.querySelector("textarea[name='permissions']");
+  userProfileRoleSelect.addEventListener("change", () => {
+    const current = String(userProfileRoleSelect.dataset.currentValue || userProfileRoleSelect.value || "");
+    userProfileRoleSelect.value = current;
+  });
   const syncPermissionsPreset = () => {
     const role = String(adminRoleSelect.value || "trader").trim();
     adminPermsTextarea.value = JSON.stringify(presetPermissionsForRole(role), null, 2);
@@ -4809,7 +4986,8 @@ function bindForms() {
 }
 
 function switchTab(tab) {
-  const requestedTab = tab === "user" ? "userProfile" : tab;
+  let requestedTab = tab === "user" ? "userProfile" : tab;
+  if (requestedTab === "risk") requestedTab = "riskAccounts";
   const allowedTabs = new Set([
     "login",
     "userProfile",
@@ -4819,7 +4997,8 @@ function switchTab(tab) {
     "postTrading",
     "system",
     "strategies",
-    "risk",
+    "riskAccounts",
+    "riskApiKeys",
     "admin",
     "adminUsers",
     "adminApiKeys",
@@ -4834,10 +5013,13 @@ function switchTab(tab) {
   const inUserGroup = isUserProfile || isUserApiKeys;
   const isCommands = nextTab === "commands";
   const isPositions = nextTab === "positions";
+  const inOmsGroup = isCommands || isPositions;
   const isPostTrading = nextTab === "postTrading";
   const isSystem = nextTab === "system";
   const isStrategies = nextTab === "strategies";
-  const isRisk = nextTab === "risk";
+  const isRiskAccounts = nextTab === "riskAccounts";
+  const isRiskApiKeys = nextTab === "riskApiKeys";
+  const inRiskGroup = isRiskAccounts || isRiskApiKeys;
   const isAdmin = nextTab === "admin";
   const isAdminUsers = nextTab === "adminUsers";
   const isAdminApiKeys = nextTab === "adminApiKeys";
@@ -4856,17 +5038,22 @@ function switchTab(tab) {
   setMenuActive("tabPostTradingOrdersBtn", isPostTrading);
   setMenuActive("tabSystemBtn", isSystem);
   setMenuActive("tabStrategiesBtn", isStrategies);
-  setMenuActive("tabRiskBtn", isRisk);
+  setMenuActive("tabRiskAccountsBtn", isRiskAccounts);
+  setMenuActive("tabRiskApiKeysBtn", isRiskApiKeys);
   setMenuActive("tabAdminBtn", isAdmin);
   setMenuActive("tabAdminUsersBtn", isAdminUsers);
   setMenuActive("tabAdminApiKeysBtn", isAdminApiKeys);
   setMenuActive("tabAdminStatusBtn", isAdminStatus);
   setMenuActive("tabAdminOmsBtn", isAdminOms);
   $("tabUserGroupBtn").classList.toggle("active", inUserGroup);
+  $("tabOmsGroupBtn").classList.toggle("active", inOmsGroup);
   $("tabPostTradingGroupBtn").classList.toggle("active", isPostTrading);
+  $("tabRiskGroupBtn").classList.toggle("active", inRiskGroup);
   const inAdminGroup = isAdmin || isAdminUsers || isAdminApiKeys || isAdminStatus || isAdminOms;
   $("tabAdminGroupBtn").classList.toggle("active", inAdminGroup);
   $("userSubmenu").classList.toggle("is-hidden", !inUserGroup);
+  $("omsSubmenu").classList.toggle("is-hidden", !inOmsGroup);
+  $("riskSubmenu").classList.toggle("is-hidden", !inRiskGroup);
   $("adminSubmenu").classList.toggle("is-hidden", !inAdminGroup);
   $("postTradingSubmenu").classList.toggle("is-hidden", !isPostTrading);
   $("loginPanel").classList.toggle("is-hidden", !isLogin);
@@ -4876,7 +5063,9 @@ function switchTab(tab) {
   $("postTradingPanel").classList.toggle("is-hidden", !isPostTrading);
   $("systemPanel").classList.toggle("is-hidden", !isSystem);
   $("strategiesPanel").classList.toggle("is-hidden", !isStrategies);
-  $("riskPanel").classList.toggle("is-hidden", !isRisk);
+  $("riskPanel").classList.toggle("is-hidden", !inRiskGroup);
+  $("riskAccountsSection").classList.toggle("is-hidden", !isRiskAccounts);
+  $("riskApiKeysSection").classList.toggle("is-hidden", !isRiskApiKeys);
   $("adminPanel").classList.toggle("is-hidden", !(isAdmin || isAdminUsers || isAdminApiKeys || isAdminStatus));
   $("adminOmsPanel").classList.toggle("is-hidden", !isAdminOms);
   $("adminStatusSection").classList.toggle("is-hidden", !isAdminStatus);
@@ -4933,7 +5122,7 @@ function switchTab(tab) {
       eventLog("trade_load_strategies_error", { error: String(err) });
     });
   }
-  if (isRisk) {
+  if (inRiskGroup) {
     loadAccountsByApiKey().catch((err) => {
       eventLog("risk_load_accounts_error", { error: String(err) });
     });

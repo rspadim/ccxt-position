@@ -11,20 +11,27 @@
         </div>
         <div class="menu">
           <wa-button id="tabLoginBtn" class="tab" variant="neutral"><i class="fa-solid fa-sliders" aria-hidden="true"></i><span>Login / Config</span></wa-button>
+          <wa-button id="tabSystemBtn" class="tab" variant="neutral"><i class="fa-solid fa-wave-square" aria-hidden="true"></i><span>System Monitor</span></wa-button>
           <wa-button id="tabUserGroupBtn" class="tab" variant="neutral"><i class="fa-solid fa-user" aria-hidden="true"></i><span>Usuário</span></wa-button>
           <div id="userSubmenu" class="menu-submenu is-hidden">
             <wa-button id="tabUserProfileBtn" class="tab submenu-item" variant="neutral"><i class="fa-solid fa-id-card" aria-hidden="true"></i><span>Perfil</span></wa-button>
             <wa-button id="tabUserApiKeysBtn" class="tab submenu-item" variant="neutral"><i class="fa-solid fa-key" aria-hidden="true"></i><span>API Keys</span></wa-button>
           </div>
           <wa-button id="tabStrategiesBtn" class="tab" variant="neutral"><i class="fa-solid fa-diagram-project" aria-hidden="true"></i><span>Strategies</span></wa-button>
-          <wa-button id="tabPositionsBtn" class="tab" variant="neutral"><i class="fa-solid fa-layer-group" aria-hidden="true"></i><span>OMS</span></wa-button>
+          <wa-button id="tabOmsGroupBtn" class="tab" variant="neutral"><i class="fa-solid fa-layer-group" aria-hidden="true"></i><span>OMS</span></wa-button>
+          <div id="omsSubmenu" class="menu-submenu is-hidden">
+            <wa-button id="tabPositionsBtn" class="tab submenu-item" variant="neutral"><i class="fa-solid fa-chart-line" aria-hidden="true"></i><span>Posições</span></wa-button>
+            <wa-button id="tabCommandsBtn" class="tab submenu-item active" variant="brand"><i class="fa-solid fa-terminal" aria-hidden="true"></i><span>Comandos CCXT</span></wa-button>
+          </div>
           <wa-button id="tabPostTradingGroupBtn" class="tab" variant="neutral"><i class="fa-solid fa-shuffle" aria-hidden="true"></i><span>Post Trading</span></wa-button>
           <div id="postTradingSubmenu" class="menu-submenu is-hidden">
             <wa-button id="tabPostTradingOrdersBtn" class="tab submenu-item" variant="neutral"><i class="fa-solid fa-file-import" aria-hidden="true"></i><span>Ordens Externas</span></wa-button>
           </div>
-          <wa-button id="tabCommandsBtn" class="tab active" variant="brand"><i class="fa-solid fa-terminal" aria-hidden="true"></i><span>CCXT Commands</span></wa-button>
-          <wa-button id="tabSystemBtn" class="tab" variant="neutral"><i class="fa-solid fa-wave-square" aria-hidden="true"></i><span>System Monitor</span></wa-button>
-          <wa-button id="tabRiskBtn" class="tab" variant="neutral"><i class="fa-solid fa-shield-halved" aria-hidden="true"></i><span>Risk</span></wa-button>
+          <wa-button id="tabRiskGroupBtn" class="tab" variant="neutral"><i class="fa-solid fa-shield-halved" aria-hidden="true"></i><span>Risk</span></wa-button>
+          <div id="riskSubmenu" class="menu-submenu is-hidden">
+            <wa-button id="tabRiskAccountsBtn" class="tab submenu-item" variant="neutral"><i class="fa-solid fa-building-columns" aria-hidden="true"></i><span>Contas</span></wa-button>
+            <wa-button id="tabRiskApiKeysBtn" class="tab submenu-item" variant="neutral"><i class="fa-solid fa-key" aria-hidden="true"></i><span>API Keys</span></wa-button>
+          </div>
           <wa-button id="tabAdminGroupBtn" class="tab" variant="neutral"><i class="fa-solid fa-user-gear" aria-hidden="true"></i><span>Administração</span></wa-button>
           <div id="adminSubmenu" class="menu-submenu is-hidden">
             <wa-button id="tabAdminBtn" class="tab submenu-item" variant="neutral"><i class="fa-solid fa-building-columns" aria-hidden="true"></i><span>Contas</span></wa-button>
@@ -132,7 +139,16 @@
             <form id="userProfileForm">
               <h3 data-i18n="user.profile">Meu Perfil</h3>
               <label><span data-i18n="user.user_id">ID do Usuário</span><input id="userProfileUserId" readonly /></label>
-              <label><span data-i18n="user.role">Perfil</span><input id="userProfileRole" readonly /></label>
+              <label><span data-i18n="user.role">Perfil</span>
+                <select id="userProfileRole" class="readonly-select" aria-readonly="true">
+                  <option value="admin">admin</option>
+                  <option value="trader">trader</option>
+                  <option value="portfolio_manager">portfolio_manager</option>
+                  <option value="robot">robot</option>
+                  <option value="risk">risk</option>
+                  <option value="readonly">readonly</option>
+                </select>
+              </label>
               <label><span data-i18n="user.status">Status</span><input id="userProfileStatus" readonly /></label>
               <label><span data-i18n="user.current_api_key_id">API Key Atual</span><input id="userProfileApiKeyId" readonly /></label>
               <label><span data-i18n="user.user_name">Nome do Usuário</span><input id="userProfileName" /></label>
@@ -708,8 +724,12 @@
           <h3 data-i18n="admin.system_status">Estado do Sistema</h3>
           <div class="actions">
             <wa-button id="adminRefreshSystemStatusBtn" type="button" variant="neutral" data-i18n="admin.refresh_status">Atualizar estado</wa-button>
+            <wa-button id="adminExpandSystemTreeBtn" type="button" variant="neutral">Expandir tudo</wa-button>
+            <wa-button id="adminCollapseSystemTreeBtn" type="button" variant="neutral">Recolher tudo</wa-button>
           </div>
           <div id="adminSystemStatusBox" class="notice notice-info">-</div>
+          <div id="adminSystemStatusKpis" class="system-status-kpis"></div>
+          <div id="adminSystemStatusDetails" class="system-status-grid"></div>
         </div>
 
         <div id="adminAccountsSection">
@@ -880,53 +900,59 @@
 
       <section class="card forms is-hidden" id="riskPanel">
         <h2 data-i18n="menu.risk">Risk</h2>
-        <div class="grid cols-2">
-          <form id="riskAccountForm">
-            <h3 data-i18n="risk.account_controls">Account Risk Controls</h3>
-            <label>Account ID<input id="riskAccountId" list="accountHistory" /></label>
-            <label>Comment<input id="riskAccountComment" placeholder="motivo obrigatorio" /></label>
-            <div class="actions">
-              <wa-button id="riskAllowNewPositionsBtn" type="button" data-i18n="risk.allow_new_positions">Allow New Positions</wa-button>
-              <wa-button id="riskBlockNewPositionsBtn" type="button" variant="neutral" data-i18n="risk.block_new_positions">Block New Positions</wa-button>
-            </div>
-            <div class="actions">
-              <wa-button id="riskSetAccountActiveBtn" type="button" data-i18n="risk.set_active">Set Active</wa-button>
-              <wa-button id="riskSetAccountBlockedBtn" type="button" variant="neutral" data-i18n="risk.block_account">Block Account</wa-button>
-            </div>
-          </form>
+        <div id="riskAccountsSection">
+          <div class="grid cols-2">
+            <form id="riskAccountForm">
+              <h3 data-i18n="risk.account_controls">Account Risk Controls</h3>
+              <label><span data-i18n="common.account_id">Account ID</span><input id="riskAccountId" list="accountHistory" /></label>
+              <label><span data-i18n="cmd.field.comment">Comment</span><input id="riskAccountComment" placeholder="motivo obrigatorio" /></label>
+              <div class="actions">
+                <wa-button id="riskAllowNewPositionsBtn" type="button" data-i18n="risk.allow_new_positions">Allow New Positions</wa-button>
+                <wa-button id="riskBlockNewPositionsBtn" type="button" variant="neutral" data-i18n="risk.block_new_positions">Block New Positions</wa-button>
+              </div>
+              <div class="actions">
+                <wa-button id="riskSetAccountActiveBtn" type="button" data-i18n="risk.set_active">Set Active</wa-button>
+                <wa-button id="riskSetAccountBlockedBtn" type="button" variant="neutral" data-i18n="risk.block_account">Block Account</wa-button>
+              </div>
+            </form>
 
-          <form id="riskStrategyForm">
-            <h3 data-i18n="risk.strategy_controls">Strategy Risk Controls</h3>
-            <label>Account ID<input id="riskStrategyAccountId" list="accountHistory" /></label>
-            <label>Strategy ID<input id="riskStrategyId" type="number" min="0" value="0" /></label>
-            <label>Comment<input id="riskStrategyComment" placeholder="motivo obrigatorio" /></label>
-            <div class="actions">
-              <wa-button id="riskAllowStrategyBtn" type="button" data-i18n="risk.allow_strategy_opens">Allow Strategy Opens</wa-button>
-              <wa-button id="riskBlockStrategyBtn" type="button" variant="neutral" data-i18n="risk.block_strategy_opens">Block Strategy Opens</wa-button>
-            </div>
-          </form>
-
-          <form id="riskPermissionForm">
-            <h3 data-i18n="risk.api_permissions">API Key Permissions</h3>
-            <label>API Key ID<input id="riskApiKeyId" type="number" min="1" /></label>
-            <label>Account ID<input id="riskPermAccountId" list="accountHistory" /></label>
-            <label class="inline"><input id="riskCanRead" type="checkbox" checked /> can_read</label>
-            <label class="inline"><input id="riskCanTrade" type="checkbox" /> can_trade</label>
-            <label class="inline"><input id="riskCanClosePosition" type="checkbox" /> can_close_position</label>
-            <label class="inline"><input id="riskCanRiskManage" type="checkbox" /> can_risk_manage</label>
-            <label class="inline"><input id="riskCanBlockNewPositions" type="checkbox" /> can_block_new_positions</label>
-            <label class="inline"><input id="riskCanBlockAccount" type="checkbox" /> can_block_account</label>
-            <label class="inline"><input id="riskRestrictStrategies" type="checkbox" /> restrict_to_strategies</label>
-            <label>Strategy IDs CSV<input id="riskStrategyIdsCsv" placeholder="1,2,3" /></label>
-            <div class="actions">
-              <wa-button id="riskLoadPermissionsBtn" type="button" variant="neutral" data-i18n="risk.load_permissions">Load Permissions</wa-button>
-              <wa-button id="riskSavePermissionBtn" type="button" data-i18n="risk.save_permission">Save Permission</wa-button>
-            </div>
-          </form>
+            <form id="riskStrategyForm">
+              <h3 data-i18n="risk.strategy_controls">Strategy Risk Controls</h3>
+              <label><span data-i18n="common.account_id">Account ID</span><input id="riskStrategyAccountId" list="accountHistory" /></label>
+              <label><span data-i18n="oms.col_strategy_id">Strategy ID</span><input id="riskStrategyId" type="number" min="0" value="0" /></label>
+              <label><span data-i18n="cmd.field.comment">Comment</span><input id="riskStrategyComment" placeholder="motivo obrigatorio" /></label>
+              <div class="actions">
+                <wa-button id="riskAllowStrategyBtn" type="button" data-i18n="risk.allow_strategy_opens">Allow Strategy Opens</wa-button>
+                <wa-button id="riskBlockStrategyBtn" type="button" variant="neutral" data-i18n="risk.block_strategy_opens">Block Strategy Opens</wa-button>
+              </div>
+            </form>
+          </div>
         </div>
-        <div class="card">
-          <h3 data-i18n="risk.permission_rows">API Key Permission Rows</h3>
-          <div id="riskPermissionsTable"></div>
+
+        <div id="riskApiKeysSection" class="is-hidden">
+          <div class="grid cols-2">
+            <form id="riskPermissionForm">
+              <h3 data-i18n="risk.api_permissions">API Key Permissions</h3>
+              <label><span data-i18n="admin.col_api_key_id">API Key ID</span><input id="riskApiKeyId" type="number" min="1" /></label>
+              <label><span data-i18n="common.account_id">Account ID</span><input id="riskPermAccountId" list="accountHistory" /></label>
+              <label class="inline"><input id="riskCanRead" type="checkbox" checked /><span data-i18n="risk.can_read">can_read</span></label>
+              <label class="inline"><input id="riskCanTrade" type="checkbox" /><span data-i18n="risk.can_trade">can_trade</span></label>
+              <label class="inline"><input id="riskCanClosePosition" type="checkbox" /><span data-i18n="risk.can_close_position">can_close_position</span></label>
+              <label class="inline"><input id="riskCanRiskManage" type="checkbox" /><span data-i18n="risk.can_risk_manage">can_risk_manage</span></label>
+              <label class="inline"><input id="riskCanBlockNewPositions" type="checkbox" /><span data-i18n="risk.can_block_new_positions">can_block_new_positions</span></label>
+              <label class="inline"><input id="riskCanBlockAccount" type="checkbox" /><span data-i18n="risk.can_block_account">can_block_account</span></label>
+              <label class="inline"><input id="riskRestrictStrategies" type="checkbox" /><span data-i18n="risk.restrict_to_strategies">restrict_to_strategies</span></label>
+              <label><span data-i18n="risk.strategy_ids">Strategy IDs</span><input id="riskStrategyIdsCsv" placeholder="1,2,3" /></label>
+              <div class="actions">
+                <wa-button id="riskLoadPermissionsBtn" type="button" variant="neutral" data-i18n="risk.load_permissions">Load Permissions</wa-button>
+                <wa-button id="riskSavePermissionBtn" type="button" data-i18n="risk.save_permission">Save Permission</wa-button>
+              </div>
+            </form>
+          </div>
+          <div class="card">
+            <h3 data-i18n="risk.permission_rows">API Key Permission Rows</h3>
+            <div id="riskPermissionsTable"></div>
+          </div>
         </div>
       </section>
       </main>
