@@ -57,9 +57,9 @@ async def _project_trade_to_position(
     exchange_trade: dict[str, Any],
     reason: str,
     reconciled: bool,
-) -> None:
+) -> dict[str, Any]:
     if await repo.deal_exists_by_exchange_trade_id(conn, account_id, exchange_trade.get("id")):
-        return
+        return {"skipped_duplicate": True}
 
     qty = exchange_trade["amount"]
     price = exchange_trade["price"]
@@ -327,7 +327,7 @@ async def _project_trade_to_position(
                         reason=reason,
                     )
 
-    await repo.insert_position_deal(
+    deal_id = await repo.insert_position_deal(
         conn=conn,
         account_id=account_id,
         order_id=order_id,
@@ -357,8 +357,19 @@ async def _project_trade_to_position(
             "symbol": symbol,
             "side": side,
             "strategy_id": strategy_id,
+            "order_id": order_id,
+            "deal_id": deal_id,
         },
     )
+    return {
+        "skipped_duplicate": False,
+        "order_id": order_id,
+        "position_id": position_id,
+        "deal_id": int(deal_id),
+        "strategy_id": strategy_id,
+        "exchange_trade_id": exchange_trade.get("id"),
+        "exchange_order_id": exchange_order_id,
+    }
 
 
 def _normalized_trades(trades: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -371,6 +382,209 @@ def _normalized_trades(trades: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return out
 
 
+def _extract_symbols_from_orders(rows: list[dict[str, Any]]) -> list[str]:
+    out: set[str] = set()
+    for row in rows:
+        symbol = row.get("symbol")
+        if symbol:
+            out.add(str(symbol))
+    return sorted(out)
+
+
+def _prioritize_symbols(symbols: list[str], max_items: int = 3) -> list[str]:
+    preferred = [
+        "BTC/USDT",
+        "ETH/USDT",
+        "SOL/USDT",
+        "BNB/USDT",
+        "XRP/USDT",
+        "ADA/USDT",
+        "DOGE/USDT",
+        "TRX/USDT",
+    ]
+    pool = {str(s).strip() for s in symbols if str(s).strip()}
+    out: list[str] = []
+    for symbol in preferred:
+        if symbol in pool:
+            out.append(symbol)
+            pool.remove(symbol)
+        if len(out) >= max_items:
+            return out
+    for symbol in sorted(pool):
+        out.append(symbol)
+        if len(out) >= max_items:
+            break
+    return out
+
+
+async def _discover_symbols_from_exchange_activity(
+    ccxt_adapter: CCXTAdapter,
+    exchange_id: str,
+    is_testnet: bool,
+    api_key: str | None,
+    secret: str | None,
+    passphrase: str | None,
+    extra_config: dict[str, Any] | None,
+    since: int,
+    limit: int,
+    seed_symbols: list[str],
+) -> tuple[list[str], list[dict[str, Any]]]:
+    discovered: set[str] = set()
+    attempts: list[dict[str, Any]] = []
+    probes = [
+        ("fetch_closed_orders", ["fetchClosedOrders"], "closed_orders"),
+        ("fetch_open_orders", ["fetchOpenOrders"], "open_orders"),
+        ("fetch_orders", ["fetchOrders"], "all_orders"),
+    ]
+    normalized_limit = max(10, int(limit))
+    seeds = _prioritize_symbols(seed_symbols, max_items=3)
+
+    for method, capabilities, source in probes:
+        # First try account-wide discovery without symbol.
+        try:
+            all_rows = await ccxt_adapter.execute_unified_with_capability(
+                exchange_id=exchange_id,
+                use_testnet=is_testnet,
+                api_key=api_key,
+                secret=secret,
+                passphrase=passphrase,
+                extra_config=extra_config,
+                method=method,
+                capabilities=capabilities,
+                args=[None, since, normalized_limit, {}],
+            )
+            rows = all_rows if isinstance(all_rows, list) else []
+            symbols = _extract_symbols_from_orders(rows)
+            discovered.update(symbols)
+            attempts.append(
+                {
+                    "source": source,
+                    "symbol": None,
+                    "ok": True,
+                    "rows": len(rows),
+                    "symbols": symbols,
+                }
+            )
+            if symbols:
+                break
+            continue
+        except Exception as exc:
+            attempts.append(
+                {
+                    "source": source,
+                    "symbol": None,
+                    "ok": False,
+                    "error": str(exc),
+                }
+            )
+
+        # If account-wide is unavailable, probe known local symbols.
+        for symbol in seeds:
+            try:
+                sym_rows = await ccxt_adapter.execute_unified_with_capability(
+                    exchange_id=exchange_id,
+                    use_testnet=is_testnet,
+                    api_key=api_key,
+                    secret=secret,
+                    passphrase=passphrase,
+                    extra_config=extra_config,
+                    method=method,
+                    capabilities=capabilities,
+                    args=[symbol, since, normalized_limit, {}],
+                )
+                rows = sym_rows if isinstance(sym_rows, list) else []
+                symbols = _extract_symbols_from_orders(rows)
+                if symbols:
+                    discovered.update(symbols)
+                attempts.append(
+                    {
+                        "source": source,
+                        "symbol": symbol,
+                        "ok": True,
+                        "rows": len(rows),
+                        "symbols": symbols,
+                    }
+                )
+                if symbols:
+                    break
+            except Exception as exc:
+                attempts.append(
+                    {
+                        "source": source,
+                        "symbol": symbol,
+                        "ok": False,
+                        "error": str(exc),
+                    }
+                )
+        if discovered:
+            break
+    return sorted(discovered), attempts
+
+
+async def _discover_symbols_from_balance(
+    ccxt_adapter: CCXTAdapter,
+    exchange_id: str,
+    is_testnet: bool,
+    api_key: str | None,
+    secret: str | None,
+    passphrase: str | None,
+    extra_config: dict[str, Any] | None,
+) -> tuple[list[str], str | None]:
+    try:
+        balance = await ccxt_adapter.execute_unified_with_capability(
+            exchange_id=exchange_id,
+            use_testnet=is_testnet,
+            api_key=api_key,
+            secret=secret,
+            passphrase=passphrase,
+            extra_config=extra_config,
+            method="fetch_balance",
+            capabilities=["fetchBalance"],
+            args=[{}],
+        )
+    except Exception as exc:
+        return [], str(exc)
+
+    assets_qty: dict[str, Decimal] = {}
+    if isinstance(balance, dict):
+        total_map = balance.get("total")
+        if isinstance(total_map, dict):
+            for asset, raw in total_map.items():
+                try:
+                    qty = Decimal(str(raw or 0))
+                    if qty > 0:
+                        assets_qty[str(asset).upper()] = max(assets_qty.get(str(asset).upper(), Decimal("0")), qty)
+                except Exception:
+                    continue
+        for asset, raw in balance.items():
+            if asset in {"info", "free", "used", "total", "timestamp", "datetime"}:
+                continue
+            if isinstance(raw, dict):
+                try:
+                    qty = Decimal(str(raw.get("total", raw.get("free", 0)) or 0))
+                except Exception:
+                    qty = Decimal("0")
+                if qty > 0:
+                    assets_qty[str(asset).upper()] = max(assets_qty.get(str(asset).upper(), Decimal("0")), qty)
+
+    if not assets_qty:
+        return [], None
+
+    top_assets = sorted(
+        assets_qty.items(),
+        key=lambda item: item[1],
+        reverse=True,
+    )
+    out: list[str] = []
+    for asset, _ in top_assets:
+        if asset in {"USDT", "USDC", "BUSD", "USD"}:
+            continue
+        out.append(f"{asset}/USDT")
+        if len(out) >= 3:
+            break
+    return _prioritize_symbols(out, max_items=3), None
+
+
 async def _reconcile_account_once(
     conn: Any,
     repo: MySQLCommandRepository,
@@ -379,8 +593,9 @@ async def _reconcile_account_once(
     account_id: int,
     lookback_seconds: int,
     scope: str,
+    symbols_hint: list[str] | None,
     limit: int,
-) -> None:
+) -> dict[str, Any]:
     exchange_id, is_testnet, api_key_enc, secret_enc, passphrase_enc, extra_config = await repo.fetch_account_exchange_credentials(
         conn, account_id
     )
@@ -395,6 +610,17 @@ async def _reconcile_account_once(
     cursor_since = int(cursor_raw) if cursor_raw and cursor_raw.isdigit() else None
     since = floor_since if cursor_since is None else min(cursor_since, floor_since)
 
+    fetch_path = "fetch_my_trades_all"
+    primary_fetch_error: str | None = None
+    normalized_symbols_hint = _prioritize_symbols(symbols_hint or [], max_items=3)
+    local_symbols = await repo.list_recent_symbols_for_account(conn, account_id, limit=20)
+    local_symbols = _prioritize_symbols([*normalized_symbols_hint, *local_symbols], max_items=3)
+    balance_symbols: list[str] = []
+    balance_discovery_error: str | None = None
+    discovered_symbols: list[str] = []
+    discovery_attempts: list[dict[str, Any]] = []
+    symbols_probed: list[str] = []
+
     try:
         trades = await ccxt_adapter.fetch_my_trades(
             exchange_id=exchange_id,
@@ -408,8 +634,38 @@ async def _reconcile_account_once(
             limit=max(10, int(limit)),
             params={},
         )
-    except Exception:
-        symbols = await repo.list_recent_symbols_for_account(conn, account_id, limit=20)
+    except Exception as exc:
+        trades = []
+        primary_fetch_error = str(exc)
+
+    if not trades:
+        fetch_path = "fetch_my_trades_by_symbol"
+        balance_symbols, balance_discovery_error = await _discover_symbols_from_balance(
+            ccxt_adapter=ccxt_adapter,
+            exchange_id=exchange_id,
+            is_testnet=is_testnet,
+            api_key=api_key,
+            secret=secret,
+            passphrase=passphrase,
+            extra_config=extra_config,
+        )
+        discovered_symbols, discovery_attempts = await _discover_symbols_from_exchange_activity(
+            ccxt_adapter=ccxt_adapter,
+            exchange_id=exchange_id,
+            is_testnet=is_testnet,
+            api_key=api_key,
+            secret=secret,
+            passphrase=passphrase,
+            extra_config=extra_config,
+            since=since,
+            limit=max(10, int(limit)),
+            seed_symbols=[*normalized_symbols_hint, *local_symbols, *balance_symbols],
+        )
+        symbols = _prioritize_symbols(
+            [*normalized_symbols_hint, *local_symbols, *balance_symbols, *discovered_symbols],
+            max_items=3,
+        )
+        symbols_probed = list(symbols)
         trades = []
         for symbol in symbols:
             try:
@@ -430,9 +686,22 @@ async def _reconcile_account_once(
                 continue
 
     normalized = _normalized_trades(trades)
+    exchange_trade_ids: list[str] = []
+    exchange_order_ids: list[str] = []
+    projected_deal_ids: list[int] = []
+    projected_order_ids: list[int] = []
+    projected_position_ids: list[int] = []
+    skipped_duplicate_count = 0
+    raw_inserted_count = 0
     max_ts = cursor_since or 0
     for norm in normalized:
-        await repo.insert_ccxt_trade_raw(
+        trade_id = str(norm.get("id") or "")
+        order_id = str(norm.get("order") or "")
+        if trade_id:
+            exchange_trade_ids.append(trade_id)
+        if order_id:
+            exchange_order_ids.append(order_id)
+        inserted_raw = await repo.insert_ccxt_trade_raw(
             conn=conn,
             account_id=account_id,
             exchange_id=exchange_id,
@@ -441,7 +710,9 @@ async def _reconcile_account_once(
             symbol=norm["symbol"],
             raw_json=norm["raw"],
         )
-        await _project_trade_to_position(
+        if inserted_raw:
+            raw_inserted_count += 1
+        projection = await _project_trade_to_position(
             repo=repo,
             conn=conn,
             account_id=account_id,
@@ -449,16 +720,29 @@ async def _reconcile_account_once(
             reason="external",
             reconciled=False,
         )
+        if bool(projection.get("skipped_duplicate")):
+            skipped_duplicate_count += 1
+        deal_id = projection.get("deal_id")
+        if deal_id is not None:
+            projected_deal_ids.append(int(deal_id))
+        proj_order_id = projection.get("order_id")
+        if proj_order_id is not None:
+            projected_order_ids.append(int(proj_order_id))
+        proj_position_id = projection.get("position_id")
+        if proj_position_id is not None:
+            projected_position_ids.append(int(proj_position_id))
         if isinstance(norm["timestamp"], int) and norm["timestamp"] > max_ts:
             max_ts = norm["timestamp"]
 
-    if max_ts > 0:
-        await repo.update_reconciliation_cursor(
-            conn=conn,
-            account_id=account_id,
-            entity="my_trades_since",
-            cursor_value=str(max_ts + 1),
-        )
+    # Always advance/update cursor timestamp so reconcile status reflects execution,
+    # even when no trades are returned in this tick.
+    next_cursor = (max_ts + 1) if max_ts > 0 else max(1, int(since or floor_since))
+    await repo.update_reconciliation_cursor(
+        conn=conn,
+        account_id=account_id,
+        entity="my_trades_since",
+        cursor_value=str(next_cursor),
+    )
     await repo.insert_event(
         conn=conn,
         account_id=account_id,
@@ -468,7 +752,39 @@ async def _reconcile_account_once(
             "scope": scope,
             "lookback_seconds": int(lookback_seconds),
             "trades_count": len(normalized),
-            "cursor": max_ts + 1 if max_ts > 0 else None,
+            "cursor": next_cursor,
+            "fetch_path": fetch_path,
+            "raw_inserted_count": raw_inserted_count,
+            "projected_deals_count": len(projected_deal_ids),
+            "projected_orders_count": len(set(projected_order_ids)),
+            "skipped_duplicate_count": skipped_duplicate_count,
         },
     )
+    return {
+        "account_id": int(account_id),
+        "scope": str(scope),
+        "lookback_seconds": int(lookback_seconds),
+        "fetch_path": fetch_path,
+        "symbols_hint": normalized_symbols_hint,
+        "primary_fetch_error": primary_fetch_error,
+        "fallback_symbols_local": local_symbols,
+        "fallback_symbols_balance": balance_symbols,
+        "fallback_symbols_balance_error": balance_discovery_error,
+        "fallback_symbols_exchange": discovered_symbols,
+        "fallback_symbols_used": symbols_probed,
+        "fallback_discovery_attempts": discovery_attempts,
+        "since_used": int(since),
+        "cursor_before": cursor_since,
+        "cursor_after": int(next_cursor),
+        "exchange_trades_fetched_count": len(normalized),
+        "exchange_trade_ids": exchange_trade_ids,
+        "exchange_order_ids": exchange_order_ids,
+        "raw_inserted_count": int(raw_inserted_count),
+        "projected_deals_count": len(projected_deal_ids),
+        "projected_deal_ids": projected_deal_ids,
+        "projected_orders_count": len(set(projected_order_ids)),
+        "projected_order_ids": sorted(set(projected_order_ids)),
+        "projected_position_ids": sorted(set(projected_position_ids)),
+        "skipped_duplicate_count": int(skipped_duplicate_count),
+    }
 

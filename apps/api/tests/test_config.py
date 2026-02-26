@@ -26,6 +26,13 @@ def test_flatten_sectioned_config_maps_sections() -> None:
             "reconcile_long_interval_seconds": 86400,
             "reconcile_long_lookback_days": 10,
         },
+        "dispatcher": {
+            "host": "127.0.0.1",
+            "port": 9100,
+            "request_timeout_seconds": 30,
+            "pool_size_ccxt": 6,
+            "pool_size_ccxtpro": 3,
+        },
         "logging": {"log_dir": "logs-dev", "disable_uvicorn_access_log": True},
         "security": {"encryption_master_key": "abc"},
     }
@@ -37,6 +44,8 @@ def test_flatten_sectioned_config_maps_sections() -> None:
     assert out["worker_poll_interval_ms"] == 250
     assert out["worker_reconcile_short_interval_seconds"] == 45
     assert out["worker_reconcile_short_lookback_minutes"] == 15
+    assert out["dispatcher_pool_size_ccxt"] == 6
+    assert out["dispatcher_pool_size_ccxtpro"] == 3
     assert out["log_dir"] == "logs-dev"
     assert out["encryption_master_key"] == "abc"
 

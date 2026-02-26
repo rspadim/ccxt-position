@@ -83,7 +83,7 @@ def test_ccxt_adapter_capability_check_blocks_unsupported() -> None:
         adapter = CCXTAdapter()
         result = asyncio.run(
                 adapter.execute_unified_with_capability(
-                    exchange_id="fakeex",
+                    exchange_id="ccxt.fakeex",
                     use_testnet=False,
                     api_key=None,
                     secret=None,
@@ -99,7 +99,7 @@ def test_ccxt_adapter_capability_check_blocks_unsupported() -> None:
         with pytest.raises(RuntimeError):
             asyncio.run(
                 adapter.execute_unified_with_capability(
-                    exchange_id="fakeex",
+                    exchange_id="ccxt.fakeex",
                     use_testnet=False,
                     api_key=None,
                     secret=None,

@@ -842,7 +842,7 @@ class MySQLCommandRepository:
                 ) VALUES (
                     %s, %s, %s, %s, %s, 'PENDING_SUBMIT',
                     %s, %s, %s, %s,
-                    %s, %s, %s, %s
+                    %s, %s, %s, %s, %s
                 )
                 """,
                 (
@@ -1409,7 +1409,7 @@ class MySQLCommandRepository:
         exchange_order_id: str | None,
         symbol: str | None,
         raw_json: dict[str, Any],
-    ) -> None:
+    ) -> bool:
         payload = _json_param(raw_json)
         fingerprint = hashlib.sha256(payload.encode("utf-8")).hexdigest()
         async with conn.cursor() as cur:
@@ -1421,6 +1421,7 @@ class MySQLCommandRepository:
                 """,
                 (account_id, exchange_id, exchange_trade_id, exchange_order_id, symbol, payload, fingerprint),
             )
+            return int(cur.rowcount or 0) > 0
 
     async def list_ccxt_orders_raw(
         self,

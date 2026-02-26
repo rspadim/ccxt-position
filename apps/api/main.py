@@ -125,6 +125,10 @@ def _map_command_error_code_to_http_status(code: str, message: str = "") -> int:
         return 404
     if normalized in {"risk_blocked"}:
         return 409
+    if normalized in {"unsupported_engine"}:
+        return 422
+    if normalized in {"engine_unavailable"}:
+        return 503
     if normalized in {"dispatcher_error"}:
         return 502
     return 400
@@ -302,6 +306,26 @@ def _normalize_account_targets(
             targets.append(aid)
             seen.add(aid)
     return targets
+
+
+def _normalize_symbols_hint(symbols_hint: list[str] | None) -> list[str]:
+    if not isinstance(symbols_hint, list):
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in symbols_hint:
+        symbol = str(raw or "").strip().upper()
+        if not symbol:
+            continue
+        if "/" not in symbol:
+            continue
+        if symbol in seen:
+            continue
+        seen.add(symbol)
+        out.append(symbol)
+        if len(out) >= 20:
+            break
+    return out
 
 
 async def _oms_query_multi_account(
@@ -493,7 +517,14 @@ async def post_ccxt_call(
     )
     if dispatched.get("ok"):
         return {"ok": True, "result": dispatched.get("result")}
-    raise HTTPException(status_code=400, detail=dispatched.get("error") or {"code": "ccxt_error"})
+    err = dispatched.get("error") or {"code": "ccxt_error"}
+    raise HTTPException(
+        status_code=_map_command_error_code_to_http_status(
+            str(err.get("code") or ""),
+            str(err.get("message") or ""),
+        ),
+        detail=err,
+    )
 
 
 @app.post("/ccxt/core/{account_id}/create_order", response_model=CcxtResponse)
@@ -945,6 +976,7 @@ async def post_position_reconcile_now(
         return ReconcileNowResponse(ok=True, account_ids=[], triggered_count=0)
 
     scope = str(request.scope or "short").strip().lower()
+    symbols_hint = _normalize_symbols_hint(request.symbols_hint)
     lookback_override: int | None = None
     if scope == "period":
         start_date = _parse_date_yyyy_mm_dd(str(request.start_date or ""), "start_date")
@@ -969,6 +1001,7 @@ async def post_position_reconcile_now(
                 "x_api_key": x_api_key,
                 "account_id": int(account_id),
                 "scope": scope,
+                "symbols_hint": symbols_hint,
                 "lookback_seconds": (
                     int(lookback_override)
                     if lookback_override is not None
@@ -1232,6 +1265,8 @@ async def post_admin_create_user_api_key(
     req: AdminCreateUserApiKeyInput,
     x_api_key: str = Header(default=""),
 ) -> AdminCreateUserApiKeyResponse:
+    label = str(req.label or "").strip()
+    label = label if label else None
     out = await dispatch_request(
         host=settings.dispatcher_host,
         port=settings.dispatcher_port,
@@ -1244,6 +1279,7 @@ async def post_admin_create_user_api_key(
             "api_key": req.api_key,
             "password": req.password,
             "permissions": [item.model_dump(mode="json") for item in req.permissions],
+            "label": label,
         },
     )
     if not out.get("ok"):
@@ -1254,6 +1290,7 @@ async def post_admin_create_user_api_key(
         user_id=int(res.get("user_id", 0)),
         api_key_id=int(res.get("api_key_id", 0)),
         api_key_plain=str(res.get("api_key_plain", "")),
+        label=label,
     )
 
 
@@ -1280,6 +1317,8 @@ async def post_admin_create_api_key(
     req: AdminCreateApiKeyInput,
     x_api_key: str = Header(default=""),
 ) -> AdminCreateApiKeyResponse:
+    label = str(req.label or "").strip()
+    label = label if label else None
     out = await dispatch_request(
         host=settings.dispatcher_host,
         port=settings.dispatcher_port,
@@ -1289,6 +1328,7 @@ async def post_admin_create_api_key(
             "x_api_key": x_api_key,
             "user_id": req.user_id,
             "api_key": req.api_key,
+            "label": label,
         },
     )
     if not out.get("ok"):
@@ -1299,6 +1339,7 @@ async def post_admin_create_api_key(
         user_id=int(res.get("user_id", req.user_id)),
         api_key_id=int(res.get("api_key_id", 0)),
         api_key_plain=str(res.get("api_key_plain", "")),
+        label=label,
     )
 
 
@@ -1563,6 +1604,8 @@ async def post_user_api_key(
     req: UserCreateApiKeyInput,
     x_api_key: str = Header(default=""),
 ) -> UserCreateApiKeyResponse:
+    label = str(req.label or "").strip()
+    label = label if label else None
     out = await dispatch_request(
         host=settings.dispatcher_host,
         port=settings.dispatcher_port,
@@ -1571,6 +1614,7 @@ async def post_user_api_key(
             "op": "user_api_key_create",
             "x_api_key": x_api_key,
             "api_key": req.api_key,
+            "label": label,
         },
     )
     if not out.get("ok"):
@@ -1581,6 +1625,7 @@ async def post_user_api_key(
         user_id=int(res.get("user_id", 0)),
         api_key_id=int(res.get("api_key_id", 0)),
         api_key_plain=str(res.get("api_key_plain", "")),
+        label=label,
     )
 
 

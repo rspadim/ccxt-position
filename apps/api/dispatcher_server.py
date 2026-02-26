@@ -48,22 +48,35 @@ class Dispatcher:
         self.loggers = setup_application_logging(
             self.settings.disable_uvicorn_access_log, log_dir=self.settings.log_dir
         )
-        self._hint_dispatcher_loggers: dict[int, Any] = {}
-        self._hint_ccxt_loggers: dict[int, Any] = {}
+        self._hint_dispatcher_loggers: dict[tuple[str, int], Any] = {}
+        self._hint_ccxt_loggers: dict[tuple[str, int], Any] = {}
         self.ccxt = CCXTAdapter(logger=self.loggers.get("ccxt"))
         self.codec = CredentialsCodec(
             self.settings.encryption_master_key,
             require_encrypted=self.settings.require_encrypted_credentials,
         )
-        self.pool_size = max(1, int(self.settings.dispatcher_pool_size))
-        self.worker_queues: dict[int, asyncio.Queue[_Job]] = {}
-        self.worker_tasks: dict[int, asyncio.Task] = {}
-        self.account_worker: dict[int, int] = {}
-        self.account_locks: dict[int, asyncio.Lock] = {}
-        self.worker_active_accounts: dict[int, set[int]] = {
-            wid: set() for wid in range(self.pool_size)
+        self.pool_size_by_engine: dict[str, int] = {
+            "ccxt": int(self.settings.dispatcher_pool_size_ccxt),
+            "ccxtpro": int(self.settings.dispatcher_pool_size_ccxtpro),
         }
-        self.worker_inflight: dict[int, int] = {wid: 0 for wid in range(self.pool_size)}
+        self.worker_queues: dict[str, dict[int, asyncio.Queue[_Job]]] = {
+            engine: {} for engine in self.pool_size_by_engine
+        }
+        self.worker_tasks: dict[str, dict[int, asyncio.Task]] = {
+            engine: {} for engine in self.pool_size_by_engine
+        }
+        self.account_worker: dict[tuple[str, int], int] = {}
+        self.account_locks: dict[tuple[str, int], asyncio.Lock] = {}
+        self.worker_active_accounts: dict[str, dict[int, set[int]]] = {
+            engine: {wid: set() for wid in range(size)}
+            for engine, size in self.pool_size_by_engine.items()
+        }
+        self.worker_inflight: dict[str, dict[int, int]] = {
+            engine: {wid: 0 for wid in range(size)}
+            for engine, size in self.pool_size_by_engine.items()
+        }
+        self.control_queue: asyncio.Queue[_Job] = asyncio.Queue()
+        self.control_task: asyncio.Task | None = None
         self.started_at = int(time.time())
         self.total_requests = 0
         self.total_errors = 0
@@ -73,30 +86,32 @@ class Dispatcher:
         self._ws_event_seq = 0
         self._ws_event_buffer_limit = 5000
 
-    def _dispatcher_logger_for_hint(self, hint_id: int) -> Any:
+    def _dispatcher_logger_for_hint(self, engine: str, hint_id: int) -> Any:
         hint = int(hint_id)
-        logger = self._hint_dispatcher_loggers.get(hint)
+        key = (str(engine), hint)
+        logger = self._hint_dispatcher_loggers.get(key)
         if logger is not None:
             return logger
         base = Path(self.settings.log_dir)
         logger = build_file_logger(
-            f"ccxt_position.dispatcher.hint.{hint}",
-            base / f"dispatcher-hint-{hint}.log",
+            f"ccxt_position.dispatcher.{engine}.hint.{hint}",
+            base / f"dispatcher-{engine}-hint-{hint}.log",
         )
-        self._hint_dispatcher_loggers[hint] = logger
+        self._hint_dispatcher_loggers[key] = logger
         return logger
 
-    def _ccxt_logger_for_hint(self, hint_id: int) -> Any:
+    def _ccxt_logger_for_hint(self, engine: str, hint_id: int) -> Any:
         hint = int(hint_id)
-        logger = self._hint_ccxt_loggers.get(hint)
+        key = (str(engine), hint)
+        logger = self._hint_ccxt_loggers.get(key)
         if logger is not None:
             return logger
         base = Path(self.settings.log_dir)
         logger = build_file_logger(
-            f"ccxt_position.ccxt.hint.{hint}",
-            base / f"ccxt-hint-{hint}.log",
+            f"ccxt_position.ccxt.{engine}.hint.{hint}",
+            base / f"ccxt-{engine}-hint-{hint}.log",
         )
-        self._hint_ccxt_loggers[hint] = logger
+        self._hint_ccxt_loggers[key] = logger
         return logger
 
     async def _auth_from_payload(self, msg: dict[str, Any]) -> AuthContext:
@@ -137,24 +152,30 @@ class Dispatcher:
     def _exchange_engine_id(value: Any) -> str:
         raw = str(value or "").strip()
         if not raw:
-            return raw
+            raise RuntimeError("unsupported_engine")
         low = raw.lower()
+        # Backward compatibility: legacy records stored bare exchange id (e.g. "binance").
+        # Default those to the ccxt engine.
+        if "." not in raw:
+            return f"ccxt.{raw}"
         if low.startswith("ccxt.") or low.startswith("ccxtpro."):
+            parts = raw.split(".", 1)
+            if len(parts) != 2 or not parts[1].strip():
+                raise RuntimeError("unsupported_engine")
             return raw
-        return f"ccxt.{raw}"
+        raise RuntimeError("unsupported_engine")
+
+    @staticmethod
+    def _engine_of_exchange_id(value: Any) -> str:
+        normalized = Dispatcher._exchange_engine_id(value).lower()
+        if normalized.startswith("ccxtpro."):
+            return "ccxtpro"
+        if normalized.startswith("ccxt."):
+            return "ccxt"
+        raise RuntimeError("unsupported_engine")
 
     @classmethod
     def _decorate_exchange_ids(cls, payload: Any) -> Any:
-        if isinstance(payload, list):
-            return [cls._decorate_exchange_ids(x) for x in payload]
-        if isinstance(payload, dict):
-            out: dict[str, Any] = {}
-            for key, value in payload.items():
-                if key == "exchange_id":
-                    out[key] = cls._exchange_engine_id(value)
-                else:
-                    out[key] = cls._decorate_exchange_ids(value)
-            return out
         return payload
 
     @staticmethod
@@ -176,6 +197,14 @@ class Dispatcher:
             return False
         expected = cls._hash_password(password, parts[1])
         return hmac.compare_digest(expected, stored_hash)
+
+    async def _engine_for_account(self, account_id: int) -> str:
+        async with self.db.connection() as conn:
+            account = await self.repo.fetch_account_by_id(conn, account_id)
+            await conn.commit()
+        if account is None:
+            raise RuntimeError("account_not_found")
+        return self._engine_of_exchange_id(account.get("exchange_id"))
 
     async def _require_account_permission(
         self,
@@ -411,10 +440,14 @@ class Dispatcher:
 
     async def start(self) -> None:
         await self.db.connect()
-        for wid in range(self.pool_size):
-            q: asyncio.Queue[_Job] = asyncio.Queue()
-            self.worker_queues[wid] = q
-            self.worker_tasks[wid] = asyncio.create_task(self._worker_loop(wid, q))
+        for engine, pool_size in self.pool_size_by_engine.items():
+            for wid in range(pool_size):
+                q: asyncio.Queue[_Job] = asyncio.Queue()
+                self.worker_queues[engine][wid] = q
+                self.worker_tasks[engine][wid] = asyncio.create_task(
+                    self._worker_loop(engine, wid, q)
+                )
+        self.control_task = asyncio.create_task(self._worker_loop_control())
         self._server = await asyncio.start_server(
             self._handle_client,
             host=self.settings.dispatcher_host,
@@ -425,61 +458,73 @@ class Dispatcher:
         if self._server is not None:
             self._server.close()
             await self._server.wait_closed()
-        for task in self.worker_tasks.values():
-            task.cancel()
+        if self.control_task is not None:
+            self.control_task.cancel()
+        for workers in self.worker_tasks.values():
+            for task in workers.values():
+                task.cancel()
         await self.db.disconnect()
 
-    async def _resolve_worker_for_account(self, account_id: int) -> int:
-        cached = self.account_worker.get(account_id)
-        if cached is not None and 0 <= cached < self.pool_size:
-            self._dispatcher_logger_for_hint(cached).info(
+    async def _resolve_worker_for_account(self, account_id: int) -> tuple[str, int]:
+        engine = await self._engine_for_account(account_id)
+        engine_pool_size = self.pool_size_by_engine.get(engine, 0)
+        if engine_pool_size <= 0:
+            raise RuntimeError("unsupported_engine")
+        cache_key = (engine, int(account_id))
+        cached = self.account_worker.get(cache_key)
+        if cached is not None and 0 <= cached < engine_pool_size:
+            self._dispatcher_logger_for_hint(engine, cached).info(
                 "resolve account_id=%s source=cache worker_id=%s",
                 int(account_id),
                 int(cached),
             )
-            return cached
+            return engine, cached
 
         hinted: int | None = None
         async with self.db.connection() as conn:
             hinted = await self.repo.fetch_account_dispatcher_worker_hint(conn, account_id)
             await conn.commit()
-        if hinted is not None and 0 <= int(hinted) < self.pool_size:
+        if hinted is not None and 0 <= int(hinted) < engine_pool_size:
             wid = int(hinted)
-            self.account_worker[account_id] = wid
-            self.worker_active_accounts[wid].add(account_id)
-            self._dispatcher_logger_for_hint(wid).info(
+            self.account_worker[cache_key] = wid
+            self.worker_active_accounts[engine][wid].add(account_id)
+            self._dispatcher_logger_for_hint(engine, wid).info(
                 "resolve account_id=%s source=hint worker_id=%s",
                 int(account_id),
                 int(wid),
             )
-            return wid
+            return engine, wid
 
         # Least-loaded by (inflight + active_accounts).
         wid = min(
-            range(self.pool_size),
-            key=lambda w: (self.worker_inflight[w], len(self.worker_active_accounts[w]), w),
+            range(engine_pool_size),
+            key=lambda w: (
+                self.worker_inflight[engine][w],
+                len(self.worker_active_accounts[engine][w]),
+                w,
+            ),
         )
-        self.account_worker[account_id] = wid
-        self.worker_active_accounts[wid].add(account_id)
+        self.account_worker[cache_key] = wid
+        self.worker_active_accounts[engine][wid].add(account_id)
         async with self.db.connection() as conn:
             await self.repo.set_account_dispatcher_worker_hint(conn, account_id, wid)
             await conn.commit()
-        self._dispatcher_logger_for_hint(wid).info(
+        self._dispatcher_logger_for_hint(engine, wid).info(
             "resolve account_id=%s source=least_loaded worker_id=%s inflight=%s active_accounts=%s",
             int(account_id),
             int(wid),
-            int(self.worker_inflight[wid]),
-            int(len(self.worker_active_accounts[wid])),
+            int(self.worker_inflight[engine][wid]),
+            int(len(self.worker_active_accounts[engine][wid])),
         )
-        return wid
+        return engine, wid
 
-    async def _worker_loop(self, worker_id: int, queue: asyncio.Queue[_Job]) -> None:
+    async def _worker_loop(self, engine: str, worker_id: int, queue: asyncio.Queue[_Job]) -> None:
         while True:
             job = await queue.get()
             started_at = time.perf_counter()
             try:
-                self.worker_inflight[worker_id] += 1
-                lock = self.account_locks.setdefault(job.account_id, asyncio.Lock())
+                self.worker_inflight[engine][worker_id] += 1
+                lock = self.account_locks.setdefault((engine, int(job.account_id)), asyncio.Lock())
                 async with lock:
                     out = await self._execute(job.payload)
                 if not job.future.done():
@@ -492,41 +537,78 @@ class Dispatcher:
                     )
             finally:
                 elapsed_ms = round((time.perf_counter() - started_at) * 1000, 2)
-                self._dispatcher_logger_for_hint(worker_id).info(
-                    "worker_done worker_id=%s account_id=%s op=%s elapsed_ms=%s inflight=%s queue_depth=%s",
+                self._dispatcher_logger_for_hint(engine, worker_id).info(
+                    "worker_done engine=%s worker_id=%s account_id=%s op=%s elapsed_ms=%s inflight=%s queue_depth=%s",
+                    str(engine),
                     int(worker_id),
                     int(job.account_id),
                     str(job.payload.get("op", "")),
                     elapsed_ms,
-                    int(self.worker_inflight[worker_id]),
+                    int(self.worker_inflight[engine][worker_id]),
                     int(queue.qsize()),
                 )
-                self.worker_inflight[worker_id] = max(0, self.worker_inflight[worker_id] - 1)
+                self.worker_inflight[engine][worker_id] = max(
+                    0, self.worker_inflight[engine][worker_id] - 1
+                )
                 queue.task_done()
+
+    async def _worker_loop_control(self) -> None:
+        while True:
+            job = await self.control_queue.get()
+            try:
+                out = await self._execute(job.payload)
+                if not job.future.done():
+                    job.future.set_result(out)
+            except Exception as exc:
+                self.total_errors += 1
+                if not job.future.done():
+                    job.future.set_result(
+                        {"ok": False, "error": {"code": "dispatcher_error", "message": str(exc)}}
+                    )
+            finally:
+                self.control_queue.task_done()
 
     async def _dispatch_to_account(self, account_id: int, payload: dict[str, Any]) -> dict[str, Any]:
         fut: asyncio.Future = asyncio.get_running_loop().create_future()
-        wid = await self._resolve_worker_for_account(account_id)
-        logger = self._dispatcher_logger_for_hint(wid)
+        try:
+            engine, wid = await self._resolve_worker_for_account(account_id)
+        except RuntimeError as exc:
+            code = str(exc)
+            if code not in {"unsupported_engine", "account_not_found"}:
+                code = "dispatcher_error"
+            return {"ok": False, "error": {"code": code, "message": str(exc)}}
+        logger = self._dispatcher_logger_for_hint(engine, wid)
         enqueued_at = time.perf_counter()
         logger.info(
-            "enqueue worker_id=%s account_id=%s op=%s inflight=%s queue_depth_before=%s",
+            "enqueue engine=%s worker_id=%s account_id=%s op=%s inflight=%s queue_depth_before=%s",
+            str(engine),
             int(wid),
             int(account_id),
             str(payload.get("op", "")),
-            int(self.worker_inflight[wid]),
-            int(self.worker_queues[wid].qsize()),
+            int(self.worker_inflight[engine][wid]),
+            int(self.worker_queues[engine][wid].qsize()),
         )
-        await self.worker_queues[wid].put(_Job(account_id=account_id, payload=payload, future=fut))
+        await self.worker_queues[engine][wid].put(
+            _Job(account_id=account_id, payload=payload, future=fut)
+        )
         out = await fut
         logger.info(
-            "result worker_id=%s account_id=%s op=%s elapsed_ms=%s ok=%s",
+            "result engine=%s worker_id=%s account_id=%s op=%s elapsed_ms=%s ok=%s",
+            str(engine),
             int(wid),
             int(account_id),
             str(payload.get("op", "")),
             round((time.perf_counter() - enqueued_at) * 1000, 2),
             bool(isinstance(out, dict) and out.get("ok")),
         )
+        if isinstance(out, dict):
+            return out
+        return {"ok": False, "error": {"code": "dispatcher_error", "message": "invalid_worker_response"}}
+
+    async def _dispatch_to_control(self, payload: dict[str, Any]) -> dict[str, Any]:
+        fut: asyncio.Future = asyncio.get_running_loop().create_future()
+        await self.control_queue.put(_Job(account_id=0, payload=payload, future=fut))
+        out = await fut
         if isinstance(out, dict):
             return out
         return {"ok": False, "error": {"code": "dispatcher_error", "message": "invalid_worker_response"}}
@@ -601,9 +683,7 @@ class Dispatcher:
             if account_id > 0:
                 out = await self._dispatch_to_account(account_id, req["payload"])
             else:
-                fut: asyncio.Future = asyncio.get_running_loop().create_future()
-                await self.worker_queues[0].put(_Job(account_id=0, payload=req["payload"], future=fut))
-                out = await fut
+                out = await self._dispatch_to_control(req["payload"])
             if out.get("ok") and isinstance(out.get("result"), dict):
                 return out["result"]
             return {
@@ -719,11 +799,15 @@ class Dispatcher:
             account = await self._require_account_permission(
                 auth, account_id, require_trade=require_trade, for_ws=for_ws
             )
+            try:
+                exchange_id = self._exchange_engine_id(account.get("exchange_id"))
+            except RuntimeError:
+                return {"ok": False, "error": {"code": "unsupported_engine"}}
             return {
                 "ok": True,
                 "result": {
                     "account_id": account_id,
-                    "exchange_id": self._exchange_engine_id(account.get("exchange_id")),
+                    "exchange_id": exchange_id,
                 },
             }
 
@@ -754,11 +838,19 @@ class Dispatcher:
             api_key = self.codec.decrypt_maybe(api_key_enc)
             secret = self.codec.decrypt_maybe(secret_enc)
             passphrase = self.codec.decrypt_maybe(passphrase_enc)
-            hint_id = self.account_worker.get(account_id)
-            if hint_id is None or not (0 <= int(hint_id) < self.pool_size):
-                hint_id = await self._resolve_worker_for_account(account_id)
+            try:
+                exchange_id = self._exchange_engine_id(account.get("exchange_id"))
+                engine = self._engine_of_exchange_id(exchange_id)
+            except RuntimeError:
+                return {"ok": False, "error": {"code": "unsupported_engine"}}
+            if engine == "ccxtpro" and ccxt_pro is None:
+                return {"ok": False, "error": {"code": "engine_unavailable", "message": "ccxtpro"}}
+            cache_key = (engine, int(account_id))
+            hint_id = self.account_worker.get(cache_key)
+            if hint_id is None or not (0 <= int(hint_id) < self.pool_size_by_engine[engine]):
+                _, hint_id = await self._resolve_worker_for_account(account_id)
             result = await self.ccxt.execute_method(
-                exchange_id=account["exchange_id"],
+                exchange_id=exchange_id,
                 use_testnet=is_testnet,
                 api_key=api_key,
                 secret=secret,
@@ -767,7 +859,7 @@ class Dispatcher:
                 method=func,
                 args=args,
                 kwargs=kwargs,
-                logger=self._ccxt_logger_for_hint(int(hint_id)),
+                logger=self._ccxt_logger_for_hint(engine, int(hint_id)),
             )
             return {"ok": True, "result": result}
 
@@ -1332,9 +1424,22 @@ class Dispatcher:
             account_id = int(msg.get("account_id", 0) or 0)
             lookback_seconds = int(msg.get("lookback_seconds", 600) or 600)
             scope = str(msg.get("scope", "manual")).strip() or "manual"
+            raw_symbols_hint = msg.get("symbols_hint")
+            symbols_hint: list[str] = []
+            if isinstance(raw_symbols_hint, list):
+                seen_symbols: set[str] = set()
+                for raw in raw_symbols_hint:
+                    symbol = str(raw or "").strip().upper()
+                    if not symbol or "/" not in symbol or symbol in seen_symbols:
+                        continue
+                    seen_symbols.add(symbol)
+                    symbols_hint.append(symbol)
+                    if len(symbols_hint) >= 20:
+                        break
             await self._require_account_permission(auth, account_id, require_trade=False)
+            started_ms = int(time.time() * 1000)
             async with self.db.connection() as conn:
-                await _reconcile_account_once(
+                stats = await _reconcile_account_once(
                     conn=conn,
                     repo=self.repo,
                     ccxt_adapter=self.ccxt,
@@ -1342,15 +1447,19 @@ class Dispatcher:
                     account_id=account_id,
                     lookback_seconds=max(60, lookback_seconds),
                     scope=scope,
+                    symbols_hint=symbols_hint,
                     limit=max(10, int(self.settings.worker_reconcile_batch_limit)),
                 )
                 await conn.commit()
+            elapsed_ms = max(0, int(time.time() * 1000) - started_ms)
+            stats["elapsed_ms"] = elapsed_ms
+            dispatcher_logger = self.loggers.get("dispatcher")
+            if dispatcher_logger is not None:
+                dispatcher_logger.info("reconcile_now_summary %s", json.dumps(stats, separators=(",", ":")))
             return {
                 "ok": True,
                 "result": {
-                    "account_id": account_id,
-                    "scope": scope,
-                    "lookback_seconds": max(60, lookback_seconds),
+                    **stats,
                 },
             }
 
@@ -1518,7 +1627,10 @@ class Dispatcher:
         if op == "admin_create_account":
             auth = await self._auth_from_payload(msg)
             self._require_admin(auth)
-            exchange_id = self._exchange_engine_id(str(msg.get("exchange_id", "")).strip())
+            try:
+                exchange_id = self._exchange_engine_id(str(msg.get("exchange_id", "")).strip())
+            except RuntimeError:
+                return {"ok": False, "error": {"code": "unsupported_engine"}}
             label = str(msg.get("label", "")).strip()
             position_mode = str(msg.get("position_mode", "hedge")).strip()
             is_testnet = bool(msg.get("is_testnet", True))
@@ -1560,11 +1672,12 @@ class Dispatcher:
             status_raw = msg.get("status")
             extra_config_raw = msg.get("extra_config_json")
             credentials_raw = msg.get("credentials") if isinstance(msg.get("credentials"), dict) else None
-            exchange_id = (
-                None
-                if exchange_id_raw is None
-                else self._exchange_engine_id(str(exchange_id_raw).strip())
-            )
+            exchange_id = None
+            if exchange_id_raw is not None:
+                try:
+                    exchange_id = self._exchange_engine_id(str(exchange_id_raw).strip())
+                except RuntimeError:
+                    return {"ok": False, "error": {"code": "unsupported_engine"}}
             label = None if label_raw is None else str(label_raw).strip()
             position_mode = None if position_mode_raw is None else str(position_mode_raw).strip()
             if position_mode is not None and position_mode not in {"hedge", "netting", "strategy_netting"}:
@@ -1639,11 +1752,13 @@ class Dispatcher:
             api_key_plain = str(msg.get("api_key") or secrets.token_urlsafe(32))
             api_key_hash = hashlib.sha256(api_key_plain.encode("utf-8")).hexdigest()
             permissions = msg.get("permissions") if isinstance(msg.get("permissions"), list) else []
+            label = msg.get("label")
+            label = str(label).strip() if label is not None else None
             async with self.db.connection() as conn:
                 user_id = await self.repo.create_user(conn, user_name, role=role)
                 if password:
                     await self.repo.set_user_password_hash(conn, user_id, self._new_password_hash(password))
-                api_key_id = await self.repo.create_api_key(conn, user_id, api_key_hash)
+                api_key_id = await self.repo.create_api_key(conn, user_id, api_key_hash, label=label)
                 for raw in permissions:
                     if not isinstance(raw, dict):
                         continue
@@ -1708,12 +1823,14 @@ class Dispatcher:
                 return {"ok": False, "error": {"code": "validation_error", "message": "user_id is required"}}
             api_key_plain = str(msg.get("api_key") or secrets.token_urlsafe(32))
             api_key_hash = hashlib.sha256(api_key_plain.encode("utf-8")).hexdigest()
+            label = msg.get("label")
+            label = str(label).strip() if label is not None else None
             async with self.db.connection() as conn:
                 user = await self.repo.fetch_user_by_id(conn, user_id)
                 if user is None:
                     await conn.commit()
                     return {"ok": False, "error": {"code": "not_found", "message": "user not found"}}
-                api_key_id = await self.repo.create_api_key(conn, user_id, api_key_hash)
+                api_key_id = await self.repo.create_api_key(conn, user_id, api_key_hash, label=label)
                 await conn.commit()
             return {
                 "ok": True,
@@ -1953,8 +2070,10 @@ class Dispatcher:
             auth = await self._auth_from_payload(msg)
             api_key_plain = str(msg.get("api_key") or secrets.token_urlsafe(32))
             api_key_hash = hashlib.sha256(api_key_plain.encode("utf-8")).hexdigest()
+            label = msg.get("label")
+            label = str(label).strip() if label is not None else None
             async with self.db.connection() as conn:
-                api_key_id = await self.repo.create_api_key(conn, auth.user_id, api_key_hash)
+                api_key_id = await self.repo.create_api_key(conn, auth.user_id, api_key_hash, label=label)
                 await conn.commit()
             return {
                 "ok": True,
@@ -2410,18 +2529,24 @@ class Dispatcher:
                 "ok": True,
                 "result": {
                     "started_at": self.started_at,
-                    "pool_size": self.pool_size,
+                    "pool_size_by_engine": self.pool_size_by_engine,
                     "total_requests": self.total_requests,
                     "total_errors": self.total_errors,
                     "op_counts": self.op_counts,
                     "accounts_mapped": len(self.account_worker),
-                    "worker_inflight": self.worker_inflight,
+                    "worker_inflight": {
+                        engine: {str(k): v for k, v in workers.items()}
+                        for engine, workers in self.worker_inflight.items()
+                    },
                     "worker_active_accounts": {
-                        str(k): len(v) for k, v in self.worker_active_accounts.items()
+                        engine: {str(k): len(v) for k, v in workers.items()}
+                        for engine, workers in self.worker_active_accounts.items()
                     },
                     "worker_queue_depth": {
-                        str(k): self.worker_queues[k].qsize() for k in self.worker_queues
+                        engine: {str(k): queues[k].qsize() for k in queues}
+                        for engine, queues in self.worker_queues.items()
                     },
+                    "control_queue_depth": self.control_queue.qsize(),
                 },
             }
 
@@ -2477,15 +2602,10 @@ class Dispatcher:
                     writer.write(b"{\"ok\":false,\"error\":{\"code\":\"missing_account_id\"}}\n")
                     await writer.drain()
                     return
-            fut: asyncio.Future = asyncio.get_running_loop().create_future()
             if account_id > 0:
-                wid = await self._resolve_worker_for_account(account_id)
-                queue = self.worker_queues[wid]
-                await queue.put(_Job(account_id=account_id, payload=msg, future=fut))
+                out = await self._dispatch_to_account(account_id, msg)
             else:
-                # Account-less ops run on worker 0.
-                await self.worker_queues[0].put(_Job(account_id=0, payload=msg, future=fut))
-            out = await fut
+                out = await self._dispatch_to_control(msg)
             writer.write((self._json_dumps(out) + "\n").encode("utf-8"))
             await writer.drain()
         finally:

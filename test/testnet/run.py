@@ -3,8 +3,10 @@ import os
 import subprocess
 import sys
 import time
+import uuid
 from decimal import Decimal
 from pathlib import Path
+from urllib import error as urllib_error
 from urllib import request as urllib_request
 
 
@@ -40,9 +42,17 @@ def http_json(method: str, url: str, headers: dict[str, str], payload: dict | No
         body = json.dumps(payload).encode("utf-8")
         req_headers["Content-Type"] = "application/json"
     req = urllib_request.Request(url=url, data=body, headers=req_headers, method=method)
-    with urllib_request.urlopen(req, timeout=30) as resp:
-        raw = resp.read().decode("utf-8")
-        return json.loads(raw) if raw else {}
+    try:
+        with urllib_request.urlopen(req, timeout=30) as resp:
+            raw = resp.read().decode("utf-8")
+            return json.loads(raw) if raw else {}
+    except urllib_error.HTTPError as exc:
+        raw = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(
+            f"HTTP {exc.code} {exc.reason} on {method} {url}\n"
+            f"payload={json.dumps(payload or {}, ensure_ascii=True)}\n"
+            f"response={raw}"
+        ) from exc
 
 
 def wait_http_ok(url: str, timeout_s: int = 120, sleep_s: float = 2.0) -> None:
@@ -58,6 +68,29 @@ def wait_http_ok(url: str, timeout_s: int = 120, sleep_s: float = 2.0) -> None:
             last_error = str(exc)
         time.sleep(sleep_s)
     raise RuntimeError(f"timeout waiting for {url}: {last_error}")
+
+
+def create_strategy(
+    base_url: str,
+    headers: dict[str, str],
+    account_id: int,
+    name: str,
+    client_strategy_id: int | None = None,
+) -> int:
+    payload: dict[str, object] = {"name": name, "account_ids": [account_id]}
+    if client_strategy_id is not None:
+        payload["client_strategy_id"] = int(client_strategy_id)
+    out = http_json("POST", f"{base_url}/strategies", headers, payload)
+    strategy_id = int(out.get("strategy_id", 0) or 0)
+    if strategy_id <= 0:
+        raise RuntimeError(f"failed to create strategy for account_id={account_id}: {json.dumps(out)}")
+    return strategy_id
+
+
+def build_client_order_id(prefix: str = "tn") -> str:
+    millis = int(time.time() * 1000)
+    token = uuid.uuid4().hex[:8]
+    return f"{prefix}{millis}{token}"[:36]
 
 
 def main() -> int:
@@ -99,6 +132,21 @@ def main() -> int:
 
     user = run_json(compose + ["exec", "-T", "api", "python", "-m", "apps.api.cli", "create-user", "--name", user_name])
     user_id = int(user["user_id"])
+    # Testnet flow must trade; admins are intentionally read-only in dispatcher.
+    run_cmd(
+        compose
+        + [
+            "exec",
+            "-T",
+            "mysql",
+            "mysql",
+            "-uroot",
+            "-proot",
+            "ccxt_position",
+            "-e",
+            f"UPDATE users SET role='trader' WHERE id={user_id};",
+        ]
+    )
 
     run_json(
         compose
@@ -130,7 +178,7 @@ def main() -> int:
             "--user-id",
             str(user_id),
             "--exchange-id",
-            "binance",
+            "ccxt.binance",
             "--label",
             account_label,
             "--testnet",
@@ -167,10 +215,17 @@ def main() -> int:
     )
     last = Decimal(str(ticker["result"]["last"]))
     price = (last * Decimal("0.995")).quantize(Decimal("0.01"))
+    strategy_id = create_strategy(
+        "http://127.0.0.1:8000",
+        headers,
+        account_id=account_id,
+        name=f"testnet-smoke-{account_id}",
+        client_strategy_id=999,
+    )
 
     cmd = http_json(
         "POST",
-        "http://127.0.0.1:8000/position/commands",
+        "http://127.0.0.1:8000/oms/commands",
         headers,
         {
             "account_id": account_id,
@@ -181,8 +236,9 @@ def main() -> int:
                 "order_type": "limit",
                 "qty": "0.001",
                 "price": str(price),
-                "strategy_id": 999,
+                "strategy_id": strategy_id,
                 "position_id": 0,
+                "client_order_id": build_client_order_id("tnsmk"),
             },
         },
     )
@@ -191,6 +247,7 @@ def main() -> int:
         "base_url": "http://127.0.0.1:8000",
         "user_id": user_id,
         "account_id": account_id,
+        "strategy_id": strategy_id,
         "internal_api_key": internal_api_key,
         "symbol": symbol,
         "smoke_command_result": cmd,

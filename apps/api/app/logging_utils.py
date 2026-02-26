@@ -50,6 +50,7 @@ def setup_application_logging(
 
     loggers = {
         "api": _build_logger("ccxt_position.api", base / "api.log"),
+        "dispatcher": _build_logger("ccxt_position.dispatcher", base / "dispatcher.log"),
         "ccxt": _build_logger("ccxt_position.ccxt", base / "ccxt.log"),
         "position": _build_logger("ccxt_position.position", base / "position.log"),
     }

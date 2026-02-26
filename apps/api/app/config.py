@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 from typing import Any
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -33,7 +34,8 @@ class Settings(BaseSettings):
     dispatcher_host: str = "127.0.0.1"
     dispatcher_port: int = 9100
     dispatcher_request_timeout_seconds: int = 30
-    dispatcher_pool_size: int = 8
+    dispatcher_pool_size_ccxt: int = Field(ge=1)
+    dispatcher_pool_size_ccxtpro: int = Field(ge=1)
     disable_uvicorn_access_log: bool = True
     app_request_log: bool = True
     encryption_master_key: str = ""
@@ -132,8 +134,10 @@ def _flatten_sectioned_config(data: dict[str, Any]) -> dict[str, Any]:
             out["dispatcher_port"] = dispatcher["port"]
         if "request_timeout_seconds" in dispatcher:
             out["dispatcher_request_timeout_seconds"] = dispatcher["request_timeout_seconds"]
-        if "pool_size" in dispatcher:
-            out["dispatcher_pool_size"] = dispatcher["pool_size"]
+        if "pool_size_ccxt" in dispatcher:
+            out["dispatcher_pool_size_ccxt"] = dispatcher["pool_size_ccxt"]
+        if "pool_size_ccxtpro" in dispatcher:
+            out["dispatcher_pool_size_ccxtpro"] = dispatcher["pool_size_ccxtpro"]
 
     if isinstance(logging_cfg, dict):
         if "log_dir" in logging_cfg:
