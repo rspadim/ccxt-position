@@ -126,6 +126,67 @@ class _RecorderTransport:
         if path == "/ccxt/1/fetch_ticker":
             return {"ok": True, "result": {"symbol": "BTC/USDT", "last": 12345}}
 
+        if path == "/ccxt/1/fetch_order_book":
+            return {
+                "ok": True,
+                "result": {"symbol": "BTC/USDT", "bids": [[100.0, 1.0]], "asks": [[101.0, 1.2]]},
+            }
+
+        if path == "/ccxt/1/fetch_trades":
+            return {
+                "ok": True,
+                "result": [
+                    {"id": "t1", "symbol": "BTC/USDT", "price": 100.0, "amount": 0.1},
+                    {"id": "t2", "symbol": "BTC/USDT", "price": 100.1, "amount": 0.2},
+                ],
+            }
+
+        if path == "/ccxt/1/fetch_ohlcv":
+            return {
+                "ok": True,
+                "result": [
+                    [1700000000000, 100.0, 101.0, 99.0, 100.5, 123.0],
+                    [1700000060000, 100.5, 102.0, 100.2, 101.2, 80.0],
+                ],
+            }
+
+        if path == "/ccxt/1/load_markets":
+            return {
+                "ok": True,
+                "result": {
+                    "BTC/USDT": {"symbol": "BTC/USDT", "active": True},
+                    "ETH/USDT": {"symbol": "ETH/USDT", "active": True},
+                },
+            }
+
+        if path == "/ccxt/1/fetch_markets":
+            return {
+                "ok": True,
+                "result": [
+                    {"symbol": "BTC/USDT", "active": True},
+                    {"symbol": "ETH/USDT", "active": True},
+                ],
+            }
+
+        if path == "/ccxt/1/fetch_funding_rate":
+            return {
+                "ok": True,
+                "result": {"symbol": "BTC/USDT", "fundingRate": 0.0001},
+            }
+
+        if path == "/ccxt/1/describe":
+            return {
+                "ok": True,
+                "result": {
+                    "id": "binance",
+                    "has": {
+                        "fetchOHLCV": True,
+                        "fetchFundingRate": True,
+                        "createOrder": False,
+                    },
+                },
+            }
+
         return {"ok": True}
 
 
@@ -233,3 +294,57 @@ def test_fetch_balance_and_ticker_use_ccxt_endpoints() -> None:
     assert ticker["last"] == 12345
     assert any(urlparse(c["url"]).path == "/ccxt/core/1/fetch_balance" for c in rec.calls)
     assert any(urlparse(c["url"]).path == "/ccxt/1/fetch_ticker" for c in rec.calls)
+
+
+def test_generic_ccxt_fallback_supports_unknown_methods() -> None:
+    rec = _RecorderTransport()
+    ex = _make_exchange(rec)
+
+    book = ex.fetch_order_book("BTC/USDT", 5)
+    assert isinstance(book, dict)
+    assert book["symbol"] == "BTC/USDT"
+    assert any(urlparse(c["url"]).path == "/ccxt/1/fetch_order_book" for c in rec.calls)
+
+
+def test_generic_ccxt_fallback_normalizes_camel_case() -> None:
+    rec = _RecorderTransport()
+    ex = _make_exchange(rec)
+
+    rate = ex.call_ccxt("fetchFundingRate", "BTC/USDT")
+    assert isinstance(rate, dict)
+    assert rate["symbol"] == "BTC/USDT"
+    assert any(urlparse(c["url"]).path == "/ccxt/1/fetch_funding_rate" for c in rec.calls)
+
+
+def test_load_has_merges_remote_describe_with_oms_defaults() -> None:
+    rec = _RecorderTransport()
+    ex = _make_exchange(rec)
+
+    has_map = ex.load_has(refresh=True)
+    desc = ex.describe()
+
+    assert has_map["createOrder"] is True  # OMS-first override
+    assert has_map["fetchOHLCV"] is True  # remote capability preserved
+    assert has_map["fetchFundingRate"] is True
+    assert isinstance(desc, dict)
+    assert desc["has"]["fetchOHLCV"] is True
+    assert any(urlparse(c["url"]).path == "/ccxt/1/describe" for c in rec.calls)
+
+
+def test_generic_ccxt_fallback_for_market_data_suite() -> None:
+    rec = _RecorderTransport()
+    ex = _make_exchange(rec)
+
+    trades = ex.fetch_trades("BTC/USDT", 0, 10)
+    ohlcv = ex.fetch_ohlcv("BTC/USDT", "1m", 0, 2)
+    markets = ex.fetch_markets()
+    loaded = ex.load_markets()
+
+    assert isinstance(trades, list) and len(trades) == 2
+    assert isinstance(ohlcv, list) and len(ohlcv) == 2
+    assert isinstance(markets, list) and len(markets) >= 2
+    assert isinstance(loaded, dict) and "BTC/USDT" in loaded
+    assert any(urlparse(c["url"]).path == "/ccxt/1/fetch_trades" for c in rec.calls)
+    assert any(urlparse(c["url"]).path == "/ccxt/1/fetch_ohlcv" for c in rec.calls)
+    assert any(urlparse(c["url"]).path == "/ccxt/1/fetch_markets" for c in rec.calls)
+    assert any(urlparse(c["url"]).path == "/ccxt/1/load_markets" for c in rec.calls)

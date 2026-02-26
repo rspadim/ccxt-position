@@ -1,4 +1,5 @@
 import datetime as dt
+import re
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
@@ -25,6 +26,8 @@ class OmsCcxtExchange:
             api_key=self.api_key,
             timeout_seconds=timeout_seconds,
         )
+        self.has: dict[str, Any] = self._default_has()
+        self._has_loaded = False
 
     def create_order(
         self,
@@ -216,6 +219,53 @@ class OmsCcxtExchange:
             out = self.http.request("GET", "/oms/positions/open", query=q)
         return [self._map_position(row) for row in (out.get("items") or [])]
 
+    def call_ccxt(self, func: str, *args: Any, **kwargs: Any) -> Any:
+        ccxt_func = self._normalize_ccxt_func_name(func)
+        out = self.http.request(
+            "POST",
+            f"/ccxt/{self.account_id}/{ccxt_func}",
+            payload={"args": list(args), "kwargs": dict(kwargs)},
+        )
+        if isinstance(out, dict) and "result" in out:
+            return out.get("result")
+        return out
+
+    def load_has(self, refresh: bool = False) -> dict[str, Any]:
+        if self._has_loaded and not refresh:
+            return dict(self.has)
+        base = self._default_has()
+        desc = self.call_ccxt("describe")
+        remote_has = None
+        if isinstance(desc, dict):
+            remote_has = desc.get("has")
+        if isinstance(remote_has, dict):
+            merged = dict(remote_has)
+            merged.update(base)
+            self.has = merged
+        else:
+            self.has = base
+        self._has_loaded = True
+        return dict(self.has)
+
+    def describe(self) -> dict[str, Any]:
+        return {
+            "id": "oms",
+            "name": "OMS First Exchange",
+            "countries": [],
+            "has": self.load_has(),
+        }
+
+    def __getattr__(self, name: str):
+        # Generic fallback for methods not explicitly implemented in OMS-first driver.
+        # Example: fetch_order_book -> /ccxt/{account_id}/fetch_order_book
+        if name.startswith("_"):
+            raise AttributeError(name)
+
+        def _proxy(*args: Any, **kwargs: Any) -> Any:
+            return self.call_ccxt(name, *args, **kwargs)
+
+        return _proxy
+
     def _post_oms_command(self, command: str, payload: dict[str, Any]) -> dict[str, Any]:
         return self.http.request(
             "POST",
@@ -260,6 +310,33 @@ class OmsCcxtExchange:
             return format(Decimal(str(value)), "f")
         except (InvalidOperation, ValueError, TypeError):
             return str(value)
+
+    @staticmethod
+    def _normalize_ccxt_func_name(name: str) -> str:
+        raw = str(name or "").strip()
+        if not raw:
+            return raw
+        # Accept camelCase method names and normalize to snake_case endpoint style.
+        if "_" in raw:
+            return raw.lower()
+        step1 = re.sub(r"(.)([A-Z][a-z]+)", r"\1_\2", raw)
+        step2 = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", step1)
+        return step2.lower()
+
+    @staticmethod
+    def _default_has() -> dict[str, Any]:
+        return {
+            "createOrder": True,
+            "editOrder": True,
+            "cancelOrder": True,
+            "fetchOrder": True,
+            "fetchOpenOrders": True,
+            "fetchClosedOrders": True,
+            "fetchMyTrades": True,
+            "fetchBalance": True,
+            "fetchTicker": True,
+            "fetchPositions": True,
+        }
 
     @staticmethod
     def _parse_ts(value: Any) -> int | None:
