@@ -49,6 +49,10 @@ class OmsCcxtProExchange(OmsCcxtExchange):
                 "watchOrders": True,
                 "watchMyTrades": True,
                 "watchPositions": True,
+                "watchTicker": True,
+                "watchOrderBook": True,
+                "watchTrades": True,
+                "watchOHLCV": True,
                 "ws": True,
             }
         )
@@ -60,6 +64,10 @@ class OmsCcxtProExchange(OmsCcxtExchange):
                 "watchOrders": True,
                 "watchMyTrades": True,
                 "watchPositions": True,
+                "watchTicker": True,
+                "watchOrderBook": True,
+                "watchTrades": True,
+                "watchOHLCV": True,
                 "ws": True,
             }
         )
@@ -122,6 +130,73 @@ class OmsCcxtProExchange(OmsCcxtExchange):
                     rows = self._extract_ws_rows(kind=kind, msg=msg, symbol=symbol)
                     if rows:
                         return rows
+        except Exception:
+            return None
+
+    async def _watch_market_via_ws(
+        self,
+        channel: str,
+        *,
+        symbol: str,
+        timeout_s: float,
+        timeframe: str = "1m",
+        depth: int = 20,
+        limit: int = 50,
+    ) -> Any | None:
+        if websockets is None:
+            return None
+        ws_url = self._ws_url()
+        deadline = time.monotonic() + max(0.5, float(timeout_s))
+        conn_timeout = min(10.0, max(2.0, float(timeout_s) / 2.0))
+        try:
+            async with websockets.connect(
+                ws_url,
+                additional_headers={"x-api-key": self.api_key},
+                open_timeout=conn_timeout,
+            ) as ws:
+                await ws.send(
+                    json.dumps(
+                        {
+                            "id": "auth-1",
+                            "action": "auth",
+                            "payload": {"api_key": self.api_key},
+                        }
+                    )
+                )
+                await ws.send(
+                    json.dumps(
+                        {
+                            "id": f"sub-mkt-{channel}",
+                            "namespace": "ccxt",
+                            "action": "subscribe_market",
+                            "payload": {
+                                "account_id": int(self.account_id),
+                                "symbol": symbol,
+                                "channels": [channel],
+                                "timeframe": timeframe,
+                                "depth": int(depth),
+                                "limit": int(limit),
+                            },
+                        }
+                    )
+                )
+                wanted_event = f"{channel}_updated"
+                while True:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        return None
+                    raw = await asyncio.wait_for(ws.recv(), timeout=remaining)
+                    msg = json.loads(raw)
+                    if str(msg.get("namespace", "")) != "ccxt":
+                        continue
+                    if str(msg.get("event", "")) != wanted_event:
+                        continue
+                    payload = msg.get("payload") if isinstance(msg.get("payload"), dict) else {}
+                    if int(payload.get("account_id", 0) or 0) != int(self.account_id):
+                        continue
+                    if str(payload.get("symbol", "")).upper() != str(symbol).upper():
+                        continue
+                    return payload.get("data")
         except Exception:
             return None
 
@@ -250,6 +325,82 @@ class OmsCcxtProExchange(OmsCcxtExchange):
     async def close(self) -> None:
         # Polling implementation has no long-lived sockets yet.
         return None
+
+    async def watch_ticker(
+        self,
+        symbol: str,
+        params: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        p = dict(params or {})
+        timeout_s = float(p.get("watch_timeout_seconds", self.watch_timeout_seconds))
+        force_polling = bool(p.get("force_polling", False))
+        if not force_polling:
+            data = await self._watch_market_via_ws("ticker", symbol=symbol, timeout_s=timeout_s)
+            if isinstance(data, dict):
+                return data
+        return await asyncio.to_thread(self.fetch_ticker, symbol, p)
+
+    async def watch_order_book(
+        self,
+        symbol: str,
+        limit: int | None = None,
+        params: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        p = dict(params or {})
+        timeout_s = float(p.get("watch_timeout_seconds", self.watch_timeout_seconds))
+        force_polling = bool(p.get("force_polling", False))
+        depth = int(limit or p.get("depth", 20) or 20)
+        if not force_polling:
+            data = await self._watch_market_via_ws("orderbook", symbol=symbol, timeout_s=timeout_s, depth=depth)
+            if isinstance(data, dict):
+                return data
+        return await asyncio.to_thread(self.call_ccxt, "fetch_order_book", symbol, depth)
+
+    async def watch_trades(
+        self,
+        symbol: str,
+        since: Any | None = None,
+        limit: int | None = None,
+        params: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        _ = since
+        p = dict(params or {})
+        timeout_s = float(p.get("watch_timeout_seconds", self.watch_timeout_seconds))
+        force_polling = bool(p.get("force_polling", False))
+        out_limit = int(limit or p.get("limit", 50) or 50)
+        if not force_polling:
+            data = await self._watch_market_via_ws("trades", symbol=symbol, timeout_s=timeout_s, limit=out_limit)
+            if isinstance(data, list):
+                return data
+        data = await asyncio.to_thread(self.call_ccxt, "fetch_trades", symbol, None, out_limit)
+        return data if isinstance(data, list) else []
+
+    async def watch_ohlcv(
+        self,
+        symbol: str,
+        timeframe: str = "1m",
+        since: Any | None = None,
+        limit: int | None = None,
+        params: dict[str, Any] | None = None,
+    ) -> list[list[Any]]:
+        _ = since
+        p = dict(params or {})
+        timeout_s = float(p.get("watch_timeout_seconds", self.watch_timeout_seconds))
+        force_polling = bool(p.get("force_polling", False))
+        out_limit = int(limit or p.get("limit", 50) or 50)
+        tf = str(timeframe or p.get("timeframe", "1m") or "1m")
+        if not force_polling:
+            data = await self._watch_market_via_ws(
+                "ohlcv",
+                symbol=symbol,
+                timeout_s=timeout_s,
+                timeframe=tf,
+                limit=out_limit,
+            )
+            if isinstance(data, list):
+                return data
+        data = await asyncio.to_thread(self.call_ccxt, "fetch_ohlcv", symbol, tf, None, out_limit)
+        return data if isinstance(data, list) else []
 
     def _extract_ws_rows(
         self,

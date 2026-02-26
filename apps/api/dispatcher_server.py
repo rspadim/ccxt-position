@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import hmac
 import json
+import os
 import secrets
 import time
 from pathlib import Path
@@ -25,6 +26,11 @@ from .app.service import process_single_command_direct
 from .worker_position import _reconcile_account_once
 
 try:
+    import orjson  # type: ignore
+except Exception:
+    orjson = None
+
+try:
     import ccxt.pro as ccxt_pro  # type: ignore
 except Exception:
     ccxt_pro = None
@@ -33,11 +39,30 @@ except Exception:
 COMMAND_INPUT_ADAPTER = TypeAdapter(CommandInput)
 
 
+def fastjson_encode(value: Any) -> bytes:
+    if orjson is not None:
+        try:
+            return orjson.dumps(value, default=str)
+        except Exception:
+            pass
+    return json.dumps(value, separators=(",", ":"), default=str).encode("utf-8")
+
+
+def fastjson_decode(value: bytes) -> Any:
+    if orjson is not None:
+        try:
+            return orjson.loads(value)
+        except Exception:
+            pass
+    return json.loads(value.decode("utf-8"))
+
+
 @dataclass
 class _Job:
     account_id: int
     payload: dict[str, Any]
     future: asyncio.Future
+    enqueued_at: float = 0.0
 
 
 class Dispatcher:
@@ -66,7 +91,7 @@ class Dispatcher:
             engine: {} for engine in self.pool_size_by_engine
         }
         self.account_worker: dict[tuple[str, int], int] = {}
-        self.account_locks: dict[tuple[str, int], asyncio.Lock] = {}
+        self.account_locks: dict[int, asyncio.Lock] = {}
         self.worker_active_accounts: dict[str, dict[int, set[int]]] = {
             engine: {wid: set() for wid in range(size)}
             for engine, size in self.pool_size_by_engine.items()
@@ -75,6 +100,13 @@ class Dispatcher:
             engine: {wid: 0 for wid in range(size)}
             for engine, size in self.pool_size_by_engine.items()
         }
+        self.read_pool_size: int = max(
+            4,
+            min(16, int(self.pool_size_by_engine.get("ccxt", 0)) + int(self.pool_size_by_engine.get("ccxtpro", 0))),
+        )
+        self.read_worker_queues: dict[int, asyncio.Queue[_Job]] = {}
+        self.read_worker_tasks: dict[int, asyncio.Task] = {}
+        self.read_worker_inflight: dict[int, int] = {wid: 0 for wid in range(self.read_pool_size)}
         self.control_queue: asyncio.Queue[_Job] = asyncio.Queue()
         self.control_task: asyncio.Task | None = None
         self.started_at = int(time.time())
@@ -85,6 +117,26 @@ class Dispatcher:
         self._ws_events_by_account: dict[int, deque[dict[str, Any]]] = {}
         self._ws_event_seq = 0
         self._ws_event_buffer_limit = 5000
+        self._queue_wait_samples_ms: deque[float] = deque(maxlen=5000)
+        self._execute_samples_ms: deque[float] = deque(maxlen=5000)
+        self.auth_cache_ttl_seconds: int = max(
+            0, int(os.getenv("DISPATCHER_AUTH_CACHE_TTL_SECONDS", "60") or 60)
+        )
+        self._auth_cache_by_key: dict[str, tuple[float, AuthContext]] = {}
+        self._auth_cache_keys_by_api_key_id: dict[int, set[str]] = {}
+        self._auth_cache_hits = 0
+        self._auth_cache_misses = 0
+        self._auth_cache_invalidations = 0
+        self.permission_cache_ttl_seconds: int = max(
+            0, int(os.getenv("DISPATCHER_PERMISSION_CACHE_TTL_SECONDS", "300") or 300)
+        )
+        self._perm_account_cache: dict[tuple[int, int], tuple[float, dict[str, Any]]] = {}
+        self._perm_strategy_cache: dict[tuple[int, int, int, bool], tuple[float, bool]] = {}
+        self._perm_cache_account_hits = 0
+        self._perm_cache_account_misses = 0
+        self._perm_cache_strategy_hits = 0
+        self._perm_cache_strategy_misses = 0
+        self._perm_cache_invalidations = 0
 
     def _dispatcher_logger_for_hint(self, engine: str, hint_id: int) -> Any:
         hint = int(hint_id)
@@ -118,10 +170,49 @@ class Dispatcher:
         api_key = str(msg.get("x_api_key", "") or "").strip()
         if not api_key:
             raise RuntimeError("missing_api_key")
-        auth = await validate_api_key(self.db, api_key)
+        auth = self._auth_cache_get(api_key)
+        if auth is None:
+            auth = await validate_api_key(self.db, api_key)
+            if auth is not None:
+                self._auth_cache_set(api_key, auth)
         if auth is None:
             raise RuntimeError("invalid_api_key")
         return auth
+
+    def _auth_cache_get(self, raw_api_key: str) -> AuthContext | None:
+        if self.auth_cache_ttl_seconds <= 0:
+            return None
+        row = self._auth_cache_by_key.get(str(raw_api_key))
+        if row is None:
+            self._auth_cache_misses += 1
+            return None
+        expires_at, auth = row
+        if expires_at < time.monotonic():
+            self._auth_cache_by_key.pop(str(raw_api_key), None)
+            self._auth_cache_misses += 1
+            return None
+        self._auth_cache_hits += 1
+        return auth
+
+    def _auth_cache_set(self, raw_api_key: str, auth: AuthContext) -> None:
+        if self.auth_cache_ttl_seconds <= 0:
+            return
+        key = str(raw_api_key)
+        self._auth_cache_by_key[key] = (time.monotonic() + float(self.auth_cache_ttl_seconds), auth)
+        bucket = self._auth_cache_keys_by_api_key_id.setdefault(int(auth.api_key_id), set())
+        bucket.add(key)
+
+    def _auth_cache_invalidate(self, *, api_key_id: int | None = None) -> None:
+        if self.auth_cache_ttl_seconds <= 0:
+            return
+        self._auth_cache_invalidations += 1
+        if api_key_id is None:
+            self._auth_cache_by_key.clear()
+            self._auth_cache_keys_by_api_key_id.clear()
+            return
+        keys = self._auth_cache_keys_by_api_key_id.pop(int(api_key_id), set())
+        for key in keys:
+            self._auth_cache_by_key.pop(key, None)
 
     @staticmethod
     def _require_admin(auth: AuthContext) -> None:
@@ -146,7 +237,30 @@ class Dispatcher:
 
     @staticmethod
     def _json_dumps(value: Any) -> str:
-        return json.dumps(value, separators=(",", ":"), default=str)
+        return fastjson_encode(value).decode("utf-8")
+
+    @staticmethod
+    def _json_dumps_bytes(value: Any) -> bytes:
+        return fastjson_encode(value)
+
+    @staticmethod
+    def _json_loads_bytes(value: bytes) -> Any:
+        return fastjson_decode(value)
+
+    @staticmethod
+    def _percentile(values: list[float], q: float) -> float:
+        if not values:
+            return 0.0
+        if q <= 0:
+            return float(min(values))
+        if q >= 1:
+            return float(max(values))
+        ordered = sorted(values)
+        idx = (len(ordered) - 1) * q
+        lo = int(idx)
+        hi = min(lo + 1, len(ordered) - 1)
+        frac = idx - lo
+        return float(ordered[lo] * (1 - frac) + ordered[hi] * frac)
 
     @staticmethod
     def _exchange_engine_id(value: Any) -> str:
@@ -218,13 +332,9 @@ class Dispatcher:
         require_block_account: bool = False,
         for_ws: bool = False,
     ) -> dict[str, Any]:
-        async with self.db.connection() as conn:
-            account = await self.repo.fetch_account_by_id(conn, account_id)
-            if account is None or account["status"] != "active":
-                await conn.commit()
-                raise RuntimeError("account_not_found")
-            perms = await self.repo.fetch_api_key_account_permissions(conn, auth.api_key_id, account_id)
-            await conn.commit()
+        account, perms = await self._get_account_and_permissions_cached(auth.api_key_id, account_id)
+        if account is None or str(account.get("status", "")).strip().lower() != "active":
+            raise RuntimeError("account_not_found")
         if perms is None or not bool(perms.get("can_read")):
             raise RuntimeError("permission_denied")
         if require_trade and not bool(perms.get("can_trade")):
@@ -249,20 +359,114 @@ class Dispatcher:
         *,
         for_trade: bool,
     ) -> None:
-        async with self.db.connection() as conn:
-            perms = await self.repo.fetch_api_key_account_permissions(conn, auth.api_key_id, account_id)
-            if perms is None:
+        _account, perms = await self._get_account_and_permissions_cached(auth.api_key_id, account_id)
+        if perms is None:
+            raise RuntimeError("permission_denied")
+        if not bool(perms.get("restrict_to_strategies")):
+            return
+        allowed = self._perm_cache_get_strategy(auth.api_key_id, account_id, int(strategy_id), bool(for_trade))
+        if allowed is None:
+            async with self.db.connection() as conn:
+                allowed = await self.repo.api_key_strategy_allowed(
+                    conn, auth.api_key_id, account_id, int(strategy_id), for_trade=for_trade
+                )
                 await conn.commit()
-                raise RuntimeError("permission_denied")
-            if not bool(perms.get("restrict_to_strategies")):
-                await conn.commit()
-                return
-            allowed = await self.repo.api_key_strategy_allowed(
-                conn, auth.api_key_id, account_id, int(strategy_id), for_trade=for_trade
-            )
-            await conn.commit()
+            self._perm_cache_set_strategy(auth.api_key_id, account_id, int(strategy_id), bool(for_trade), bool(allowed))
         if not allowed:
             raise RuntimeError("strategy_permission_denied")
+
+    async def _get_account_and_permissions_cached(
+        self, api_key_id: int, account_id: int
+    ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+        cached = self._perm_cache_get_account(api_key_id, account_id)
+        if cached is not None:
+            return (
+                cached.get("account") if isinstance(cached.get("account"), dict) else None,
+                cached.get("perms") if isinstance(cached.get("perms"), dict) else None,
+            )
+        async with self.db.connection() as conn:
+            account = await self.repo.fetch_account_by_id(conn, account_id)
+            perms = await self.repo.fetch_api_key_account_permissions(conn, api_key_id, account_id)
+            await conn.commit()
+        self._perm_cache_set_account(
+            api_key_id,
+            account_id,
+            {
+                "account": account if isinstance(account, dict) else {},
+                "perms": perms if isinstance(perms, dict) else None,
+            },
+        )
+        return account, perms
+
+    def _perm_cache_get_account(self, api_key_id: int, account_id: int) -> dict[str, Any] | None:
+        if self.permission_cache_ttl_seconds <= 0:
+            return None
+        key = (int(api_key_id), int(account_id))
+        row = self._perm_account_cache.get(key)
+        if row is None:
+            self._perm_cache_account_misses += 1
+            return None
+        expires_at, value = row
+        if expires_at < time.monotonic():
+            self._perm_account_cache.pop(key, None)
+            self._perm_cache_account_misses += 1
+            return None
+        self._perm_cache_account_hits += 1
+        return value
+
+    def _perm_cache_set_account(self, api_key_id: int, account_id: int, value: dict[str, Any]) -> None:
+        if self.permission_cache_ttl_seconds <= 0:
+            return
+        key = (int(api_key_id), int(account_id))
+        self._perm_account_cache[key] = (time.monotonic() + float(self.permission_cache_ttl_seconds), value)
+
+    def _perm_cache_get_strategy(
+        self, api_key_id: int, account_id: int, strategy_id: int, for_trade: bool
+    ) -> bool | None:
+        if self.permission_cache_ttl_seconds <= 0:
+            return None
+        key = (int(api_key_id), int(account_id), int(strategy_id), bool(for_trade))
+        row = self._perm_strategy_cache.get(key)
+        if row is None:
+            self._perm_cache_strategy_misses += 1
+            return None
+        expires_at, value = row
+        if expires_at < time.monotonic():
+            self._perm_strategy_cache.pop(key, None)
+            self._perm_cache_strategy_misses += 1
+            return None
+        self._perm_cache_strategy_hits += 1
+        return bool(value)
+
+    def _perm_cache_set_strategy(
+        self, api_key_id: int, account_id: int, strategy_id: int, for_trade: bool, value: bool
+    ) -> None:
+        if self.permission_cache_ttl_seconds <= 0:
+            return
+        key = (int(api_key_id), int(account_id), int(strategy_id), bool(for_trade))
+        self._perm_strategy_cache[key] = (
+            time.monotonic() + float(self.permission_cache_ttl_seconds),
+            bool(value),
+        )
+
+    def _perm_cache_invalidate(self, *, api_key_id: int | None = None, account_id: int | None = None) -> None:
+        if self.permission_cache_ttl_seconds <= 0:
+            return
+        self._perm_cache_invalidations += 1
+        if api_key_id is None and account_id is None:
+            self._perm_account_cache.clear()
+            self._perm_strategy_cache.clear()
+            return
+        if api_key_id is not None:
+            for key in [k for k in self._perm_account_cache.keys() if int(k[0]) == int(api_key_id)]:
+                self._perm_account_cache.pop(key, None)
+            for key in [k for k in self._perm_strategy_cache.keys() if int(k[0]) == int(api_key_id)]:
+                self._perm_strategy_cache.pop(key, None)
+        if account_id is not None:
+            for key in [k for k in self._perm_account_cache.keys() if int(k[1]) == int(account_id)]:
+                self._perm_account_cache.pop(key, None)
+            for key in [k for k in self._perm_strategy_cache.keys() if int(k[1]) == int(account_id)]:
+                self._perm_strategy_cache.pop(key, None)
 
     async def _can_reassign_account(self, auth: AuthContext, account_id: int) -> bool:
         if auth.is_admin:
@@ -422,6 +626,38 @@ class Dispatcher:
         )
         return fn.startswith(trade_prefixes)
 
+    def _op_requires_account_lock(self, payload: dict[str, Any]) -> bool:
+        op = str(payload.get("op", "")).strip().lower()
+        if op in {
+            "status",
+            "authorize_account",
+            "oms_query",
+            "oms_query_multi",
+            "ccxt_raw_query",
+            "reconcile_status_account",
+            "ws_pull_events",
+            "ws_tail_id",
+        }:
+            return False
+        if op == "ccxt_call":
+            func = str(payload.get("func", "")).strip()
+            return self._ccxt_requires_trade(func)
+        # Safe default: lock unknown ops.
+        return True
+
+    @staticmethod
+    def _op_is_read_dispatch(payload: dict[str, Any]) -> bool:
+        op = str(payload.get("op", "")).strip().lower()
+        return op in {
+            "authorize_account",
+            "oms_query",
+            "oms_query_multi",
+            "ccxt_raw_query",
+            "reconcile_status_account",
+            "ws_pull_events",
+            "ws_tail_id",
+        }
+
     @staticmethod
     def _reconcile_status_of(updated_at: Any, stale_after_seconds: int) -> tuple[str, int | None]:
         if updated_at is None:
@@ -447,6 +683,10 @@ class Dispatcher:
                 self.worker_tasks[engine][wid] = asyncio.create_task(
                     self._worker_loop(engine, wid, q)
                 )
+        for wid in range(self.read_pool_size):
+            q: asyncio.Queue[_Job] = asyncio.Queue()
+            self.read_worker_queues[wid] = q
+            self.read_worker_tasks[wid] = asyncio.create_task(self._worker_loop_read(wid, q))
         self.control_task = asyncio.create_task(self._worker_loop_control())
         self._server = await asyncio.start_server(
             self._handle_client,
@@ -463,6 +703,9 @@ class Dispatcher:
         for workers in self.worker_tasks.values():
             for task in workers.values():
                 task.cancel()
+        for task in self.read_worker_tasks.values():
+            task.cancel()
+        await self.ccxt.close_all_sessions()
         await self.db.disconnect()
 
     async def _resolve_worker_for_account(self, account_id: int) -> tuple[str, int]:
@@ -518,14 +761,33 @@ class Dispatcher:
         )
         return engine, wid
 
+    def _select_least_loaded_worker(self, engine: str) -> int:
+        engine_pool_size = int(self.pool_size_by_engine.get(engine, 0) or 0)
+        if engine_pool_size <= 0:
+            raise RuntimeError("unsupported_engine")
+        return min(
+            range(engine_pool_size),
+            key=lambda w: (
+                self.worker_inflight[engine][w],
+                self.worker_queues[engine][w].qsize() if w in self.worker_queues[engine] else 0,
+                len(self.worker_active_accounts[engine][w]),
+                w,
+            ),
+        )
+
     async def _worker_loop(self, engine: str, worker_id: int, queue: asyncio.Queue[_Job]) -> None:
         while True:
             job = await queue.get()
             started_at = time.perf_counter()
+            queue_wait_ms = max(0.0, (started_at - float(job.enqueued_at or started_at)) * 1000.0)
             try:
                 self.worker_inflight[engine][worker_id] += 1
-                lock = self.account_locks.setdefault((engine, int(job.account_id)), asyncio.Lock())
-                async with lock:
+                needs_lock = self._op_requires_account_lock(job.payload)
+                if needs_lock:
+                    lock = self.account_locks.setdefault(int(job.account_id), asyncio.Lock())
+                    async with lock:
+                        out = await self._execute(job.payload)
+                else:
                     out = await self._execute(job.payload)
                 if not job.future.done():
                     job.future.set_result(out)
@@ -536,14 +798,17 @@ class Dispatcher:
                         {"ok": False, "error": {"code": "dispatcher_error", "message": str(exc)}}
                     )
             finally:
-                elapsed_ms = round((time.perf_counter() - started_at) * 1000, 2)
+                execute_ms = (time.perf_counter() - started_at) * 1000.0
+                self._queue_wait_samples_ms.append(float(queue_wait_ms))
+                self._execute_samples_ms.append(float(execute_ms))
                 self._dispatcher_logger_for_hint(engine, worker_id).info(
-                    "worker_done engine=%s worker_id=%s account_id=%s op=%s elapsed_ms=%s inflight=%s queue_depth=%s",
+                    "worker_done engine=%s worker_id=%s account_id=%s op=%s queue_wait_ms=%s execute_ms=%s inflight=%s queue_depth=%s",
                     str(engine),
                     int(worker_id),
                     int(job.account_id),
                     str(job.payload.get("op", "")),
-                    elapsed_ms,
+                    round(queue_wait_ms, 2),
+                    round(execute_ms, 2),
                     int(self.worker_inflight[engine][worker_id]),
                     int(queue.qsize()),
                 )
@@ -568,10 +833,48 @@ class Dispatcher:
             finally:
                 self.control_queue.task_done()
 
+    async def _worker_loop_read(self, worker_id: int, queue: asyncio.Queue[_Job]) -> None:
+        while True:
+            job = await queue.get()
+            started_at = time.perf_counter()
+            queue_wait_ms = max(0.0, (started_at - float(job.enqueued_at or started_at)) * 1000.0)
+            try:
+                self.read_worker_inflight[worker_id] += 1
+                out = await self._execute(job.payload)
+                if not job.future.done():
+                    job.future.set_result(out)
+            except Exception as exc:
+                self.total_errors += 1
+                if not job.future.done():
+                    job.future.set_result(
+                        {"ok": False, "error": {"code": "dispatcher_error", "message": str(exc)}}
+                    )
+            finally:
+                execute_ms = (time.perf_counter() - started_at) * 1000.0
+                self._queue_wait_samples_ms.append(float(queue_wait_ms))
+                self._execute_samples_ms.append(float(execute_ms))
+                self.loggers.get("dispatcher").info(
+                    "read_worker_done worker_id=%s account_id=%s op=%s queue_wait_ms=%s execute_ms=%s inflight=%s queue_depth=%s",
+                    int(worker_id),
+                    int(job.account_id),
+                    str(job.payload.get("op", "")),
+                    round(queue_wait_ms, 2),
+                    round(execute_ms, 2),
+                    int(self.read_worker_inflight[worker_id]),
+                    int(queue.qsize()),
+                )
+                self.read_worker_inflight[worker_id] = max(0, self.read_worker_inflight[worker_id] - 1)
+                queue.task_done()
+
     async def _dispatch_to_account(self, account_id: int, payload: dict[str, Any]) -> dict[str, Any]:
         fut: asyncio.Future = asyncio.get_running_loop().create_future()
         try:
-            engine, wid = await self._resolve_worker_for_account(account_id)
+            needs_lock = self._op_requires_account_lock(payload)
+            if needs_lock:
+                engine, wid = await self._resolve_worker_for_account(account_id)
+            else:
+                engine = await self._engine_for_account(account_id)
+                wid = self._select_least_loaded_worker(engine)
         except RuntimeError as exc:
             code = str(exc)
             if code not in {"unsupported_engine", "account_not_found"}:
@@ -589,7 +892,7 @@ class Dispatcher:
             int(self.worker_queues[engine][wid].qsize()),
         )
         await self.worker_queues[engine][wid].put(
-            _Job(account_id=account_id, payload=payload, future=fut)
+            _Job(account_id=account_id, payload=payload, future=fut, enqueued_at=time.perf_counter())
         )
         out = await fut
         logger.info(
@@ -609,6 +912,42 @@ class Dispatcher:
         fut: asyncio.Future = asyncio.get_running_loop().create_future()
         await self.control_queue.put(_Job(account_id=0, payload=payload, future=fut))
         out = await fut
+        if isinstance(out, dict):
+            return out
+        return {"ok": False, "error": {"code": "dispatcher_error", "message": "invalid_worker_response"}}
+
+    async def _dispatch_to_read(self, payload: dict[str, Any]) -> dict[str, Any]:
+        fut: asyncio.Future = asyncio.get_running_loop().create_future()
+        account_id = int(payload.get("account_id", 0) or 0)
+        wid = min(
+            range(self.read_pool_size),
+            key=lambda w: (
+                self.read_worker_inflight[w],
+                self.read_worker_queues[w].qsize() if w in self.read_worker_queues else 0,
+                w,
+            ),
+        )
+        enqueued_at = time.perf_counter()
+        self.loggers.get("dispatcher").info(
+            "read_enqueue worker_id=%s account_id=%s op=%s inflight=%s queue_depth_before=%s",
+            int(wid),
+            int(account_id),
+            str(payload.get("op", "")),
+            int(self.read_worker_inflight[wid]),
+            int(self.read_worker_queues[wid].qsize()),
+        )
+        await self.read_worker_queues[wid].put(
+            _Job(account_id=account_id, payload=payload, future=fut, enqueued_at=time.perf_counter())
+        )
+        out = await fut
+        self.loggers.get("dispatcher").info(
+            "read_result worker_id=%s account_id=%s op=%s elapsed_ms=%s ok=%s",
+            int(wid),
+            int(account_id),
+            str(payload.get("op", "")),
+            round((time.perf_counter() - enqueued_at) * 1000, 2),
+            bool(isinstance(out, dict) and out.get("ok")),
+        )
         if isinstance(out, dict):
             return out
         return {"ok": False, "error": {"code": "dispatcher_error", "message": "invalid_worker_response"}}
@@ -860,6 +1199,7 @@ class Dispatcher:
                 args=args,
                 kwargs=kwargs,
                 logger=self._ccxt_logger_for_hint(engine, int(hint_id)),
+                session_key=f"account:{int(account_id)}",
             )
             return {"ok": True, "result": result}
 
@@ -924,6 +1264,121 @@ class Dispatcher:
                 elif query == "positions_history":
                     rows = await self.repo.list_positions(
                         conn, account_id, open_only=False, strategy_id=strategy_id, date_from=date_from, date_to=date_to
+                    )
+                else:
+                    await conn.commit()
+                    return {"ok": False, "error": {"code": "unsupported_query"}}
+                await conn.commit()
+            return {"ok": True, "result": rows}
+
+        if op == "oms_query_multi":
+            auth = await self._auth_from_payload(msg)
+            query = str(msg.get("query", "")).strip()
+            raw_account_ids = msg.get("account_ids")
+            strategy_id_raw = msg.get("strategy_id")
+            date_from_raw = msg.get("date_from")
+            date_to_raw = msg.get("date_to")
+            open_limit_raw = msg.get("open_limit")
+            date_from = None if date_from_raw in {None, ""} else str(date_from_raw).strip()
+            date_to = None if date_to_raw in {None, ""} else str(date_to_raw).strip()
+            if (date_from and not date_to) or (date_to and not date_from):
+                return {
+                    "ok": False,
+                    "error": {"code": "validation_error", "message": "date_from and date_to must be provided together"},
+                }
+            try:
+                strategy_id = None if strategy_id_raw in {None, ""} else int(strategy_id_raw)
+            except Exception:
+                return {"ok": False, "error": {"code": "validation_error", "message": "strategy_id must be integer"}}
+            try:
+                open_limit = int(open_limit_raw or 500)
+            except Exception:
+                return {"ok": False, "error": {"code": "validation_error", "message": "open_limit must be integer"}}
+            account_ids: list[int] = []
+            seen_ids: set[int] = set()
+            if isinstance(raw_account_ids, list):
+                for raw in raw_account_ids:
+                    try:
+                        aid = int(raw or 0)
+                    except Exception:
+                        aid = 0
+                    if aid <= 0 or aid in seen_ids:
+                        continue
+                    seen_ids.add(aid)
+                    account_ids.append(aid)
+            elif isinstance(raw_account_ids, str):
+                for part in raw_account_ids.split(","):
+                    raw = part.strip()
+                    if not raw.isdigit():
+                        continue
+                    aid = int(raw)
+                    if aid <= 0 or aid in seen_ids:
+                        continue
+                    seen_ids.add(aid)
+                    account_ids.append(aid)
+            if not account_ids:
+                return {"ok": False, "error": {"code": "validation_error", "message": "account_ids is required"}}
+            async with self.db.connection() as conn:
+                perms_by_account = await self.repo.fetch_api_key_account_permissions_multi(
+                    conn, auth.api_key_id, account_ids
+                )
+                for aid in account_ids:
+                    perms = perms_by_account.get(int(aid))
+                    if perms is None or str(perms.get("account_status", "")).strip().lower() != "active":
+                        await conn.commit()
+                        return {"ok": False, "error": {"code": "account_not_found", "message": f"account_id={aid}"}}
+                    if not bool(perms.get("can_read")):
+                        await conn.commit()
+                        return {"ok": False, "error": {"code": "permission_denied", "message": f"account_id={aid}"}}
+                    if bool(perms.get("restrict_to_strategies")):
+                        if strategy_id is None:
+                            await conn.commit()
+                            return {
+                                "ok": False,
+                                "error": {
+                                    "code": "strategy_required",
+                                    "message": f"strategy_id is required for account_id={aid}",
+                                },
+                            }
+                        allowed = await self.repo.api_key_strategy_allowed(
+                            conn, auth.api_key_id, aid, strategy_id, for_trade=False
+                        )
+                        if not allowed:
+                            await conn.commit()
+                            return {"ok": False, "error": {"code": "strategy_permission_denied"}}
+                if query == "orders_open":
+                    rows = await self.repo.list_orders_multi(
+                        conn, account_ids=account_ids, open_only=True, strategy_id=strategy_id, open_limit=open_limit
+                    )
+                elif query == "orders_history":
+                    rows = await self.repo.list_orders_multi(
+                        conn,
+                        account_ids=account_ids,
+                        open_only=False,
+                        strategy_id=strategy_id,
+                        date_from=date_from,
+                        date_to=date_to,
+                    )
+                elif query == "deals":
+                    rows = await self.repo.list_deals_multi(
+                        conn, account_ids=account_ids, strategy_id=strategy_id, date_from=date_from, date_to=date_to
+                    )
+                elif query == "positions_open":
+                    rows = await self.repo.list_positions_multi(
+                        conn,
+                        account_ids=account_ids,
+                        open_only=True,
+                        strategy_id=strategy_id,
+                        open_limit=open_limit,
+                    )
+                elif query == "positions_history":
+                    rows = await self.repo.list_positions_multi(
+                        conn,
+                        account_ids=account_ids,
+                        open_only=False,
+                        strategy_id=strategy_id,
+                        date_from=date_from,
+                        date_to=date_to,
                     )
                 else:
                     await conn.commit()
@@ -1729,6 +2184,7 @@ class Dispatcher:
                         passphrase_enc=passphrase_enc,
                     )
                 await conn.commit()
+            self._perm_cache_invalidate(account_id=account_id)
             return {"ok": True, "result": {"account_id": account_id, "rows": rows}}
 
         if op == "admin_create_user_api_key":
@@ -1899,6 +2355,7 @@ class Dispatcher:
                         can_trade=can_trade,
                     )
                 await conn.commit()
+            self._perm_cache_invalidate(api_key_id=api_key_id, account_id=account_id)
             return {"ok": True, "result": {"api_key_id": api_key_id, "account_id": account_id, "rows": rows}}
 
         if op == "admin_update_api_key":
@@ -1913,6 +2370,8 @@ class Dispatcher:
             async with self.db.connection() as conn:
                 rows = await self.repo.set_api_key_status(conn, api_key_id, status)
                 await conn.commit()
+            self._auth_cache_invalidate(api_key_id=api_key_id)
+            self._perm_cache_invalidate(api_key_id=api_key_id)
             return {"ok": True, "result": {"api_key_id": api_key_id, "rows": rows}}
 
         if op == "auth_login_password":
@@ -2102,6 +2561,8 @@ class Dispatcher:
                     return {"ok": False, "error": {"code": "permission_denied"}}
                 rows = await self.repo.set_api_key_status(conn, api_key_id, status)
                 await conn.commit()
+            self._auth_cache_invalidate(api_key_id=api_key_id)
+            self._perm_cache_invalidate(api_key_id=api_key_id)
             return {"ok": True, "result": {"api_key_id": api_key_id, "rows": int(rows)}}
 
         if op == "admin_list_users":
@@ -2525,6 +2986,9 @@ class Dispatcher:
             return {"ok": True, "result": {"tail_id": tail_id}}
 
         if op == "status":
+            ccxt_sessions = self.ccxt.get_session_status()
+            queue_wait = list(self._queue_wait_samples_ms)
+            execute = list(self._execute_samples_ms)
             return {
                 "ok": True,
                 "result": {
@@ -2546,7 +3010,39 @@ class Dispatcher:
                         engine: {str(k): queues[k].qsize() for k in queues}
                         for engine, queues in self.worker_queues.items()
                     },
+                    "read_pool_size": int(self.read_pool_size),
+                    "read_worker_inflight": {str(k): int(v) for k, v in self.read_worker_inflight.items()},
+                    "read_worker_queue_depth": {str(k): self.read_worker_queues[k].qsize() for k in self.read_worker_queues},
                     "control_queue_depth": self.control_queue.qsize(),
+                    "ccxt_session_count_total": ccxt_sessions.get("session_count_total", 0),
+                    "ccxt_session_count_by_engine": ccxt_sessions.get("session_count_by_engine", {}),
+                    "ccxt_session_account_ids": ccxt_sessions.get("session_account_ids", []),
+                    "ccxt_session_ttl_seconds": ccxt_sessions.get("session_ttl_seconds", 0),
+                    "ccxt_session_oldest_age_seconds": ccxt_sessions.get("session_oldest_age_seconds", 0),
+                    "auth_cache_ttl_seconds": int(self.auth_cache_ttl_seconds),
+                    "auth_cache_size": len(self._auth_cache_by_key),
+                    "auth_cache_hits": int(self._auth_cache_hits),
+                    "auth_cache_misses": int(self._auth_cache_misses),
+                    "auth_cache_invalidations": int(self._auth_cache_invalidations),
+                    "permission_cache_ttl_seconds": int(self.permission_cache_ttl_seconds),
+                    "permission_cache_account_size": len(self._perm_account_cache),
+                    "permission_cache_strategy_size": len(self._perm_strategy_cache),
+                    "permission_cache_account_hits": int(self._perm_cache_account_hits),
+                    "permission_cache_account_misses": int(self._perm_cache_account_misses),
+                    "permission_cache_strategy_hits": int(self._perm_cache_strategy_hits),
+                    "permission_cache_strategy_misses": int(self._perm_cache_strategy_misses),
+                    "permission_cache_invalidations": int(self._perm_cache_invalidations),
+                    "timing_samples_count": len(queue_wait),
+                    "queue_wait_ms": {
+                        "p50": round(self._percentile(queue_wait, 0.50), 2),
+                        "p95": round(self._percentile(queue_wait, 0.95), 2),
+                        "p99": round(self._percentile(queue_wait, 0.99), 2),
+                    },
+                    "execute_ms": {
+                        "p50": round(self._percentile(execute, 0.50), 2),
+                        "p95": round(self._percentile(execute, 0.95), 2),
+                        "p99": round(self._percentile(execute, 0.99), 2),
+                    },
                 },
             }
 
@@ -2560,54 +3056,58 @@ class Dispatcher:
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     ) -> None:
         try:
-            line = await reader.readline()
-            if not line:
-                return
-            try:
-                msg = json.loads(line.decode("utf-8"))
-            except Exception:
-                writer.write(b"{\"ok\":false,\"error\":{\"code\":\"invalid_json\"}}\n")
-                await writer.drain()
-                return
-            self.total_requests += 1
-            op = str(msg.get("op", "")).strip()
-            if op == "status":
-                out = await self._execute(msg)
-                writer.write((self._json_dumps(out) + "\n").encode("utf-8"))
-                await writer.drain()
-                return
-            if op == "oms_commands_batch":
-                out = await self._execute_oms_commands_batch(msg)
-                writer.write((self._json_dumps(out) + "\n").encode("utf-8"))
-                await writer.drain()
-                return
-            if op == "ccxt_batch":
-                out = await self._execute_ccxt_batch(msg)
-                writer.write((self._json_dumps(out) + "\n").encode("utf-8"))
-                await writer.drain()
-                return
-            account_id = int(msg.get("account_id", 0) or 0)
-            if op in {
-                "authorize_account",
-                "ccxt_call",
-                "reconcile_now",
-                "oms_query",
-                "ws_pull_events",
-                "ws_tail_id",
-                "risk_set_allow_new_positions",
-                "risk_set_strategy_allow_new_positions",
-                "risk_set_account_status",
-            }:
-                if account_id <= 0:
-                    writer.write(b"{\"ok\":false,\"error\":{\"code\":\"missing_account_id\"}}\n")
-                    await writer.drain()
+            while True:
+                line = await reader.readline()
+                if not line:
                     return
-            if account_id > 0:
-                out = await self._dispatch_to_account(account_id, msg)
-            else:
-                out = await self._dispatch_to_control(msg)
-            writer.write((self._json_dumps(out) + "\n").encode("utf-8"))
-            await writer.drain()
+                try:
+                    msg = self._json_loads_bytes(line)
+                except Exception:
+                    writer.write(b"{\"ok\":false,\"error\":{\"code\":\"invalid_json\"}}\n")
+                    await writer.drain()
+                    continue
+                self.total_requests += 1
+                op = str(msg.get("op", "")).strip()
+                if op == "status":
+                    out = await self._execute(msg)
+                    writer.write(self._json_dumps_bytes(out) + b"\n")
+                    await writer.drain()
+                    continue
+                if op == "oms_commands_batch":
+                    out = await self._execute_oms_commands_batch(msg)
+                    writer.write(self._json_dumps_bytes(out) + b"\n")
+                    await writer.drain()
+                    continue
+                if op == "ccxt_batch":
+                    out = await self._execute_ccxt_batch(msg)
+                    writer.write(self._json_dumps_bytes(out) + b"\n")
+                    await writer.drain()
+                    continue
+                account_id = int(msg.get("account_id", 0) or 0)
+                if op in {
+                    "authorize_account",
+                    "ccxt_call",
+                    "reconcile_now",
+                    "oms_query",
+                    "ws_pull_events",
+                    "ws_tail_id",
+                    "risk_set_allow_new_positions",
+                    "risk_set_strategy_allow_new_positions",
+                    "risk_set_account_status",
+                }:
+                    if account_id <= 0:
+                        writer.write(b"{\"ok\":false,\"error\":{\"code\":\"missing_account_id\"}}\n")
+                        await writer.drain()
+                        continue
+                if account_id > 0:
+                    if self._op_is_read_dispatch(msg):
+                        out = await self._dispatch_to_read(msg)
+                    else:
+                        out = await self._dispatch_to_account(account_id, msg)
+                else:
+                    out = await self._dispatch_to_control(msg)
+                writer.write(self._json_dumps_bytes(out) + b"\n")
+                await writer.drain()
         finally:
             writer.close()
             await writer.wait_closed()

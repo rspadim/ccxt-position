@@ -32,7 +32,7 @@ class _FakeRepo:
         if account_id == 2:
             return {"id": 2, "status": "active", "exchange_id": "ccxtpro.binance"}
         if account_id == 3:
-            return {"id": 3, "status": "active", "exchange_id": "binance"}
+            return {"id": 3, "status": "active", "exchange_id": "binance.spot"}
         return None
 
     async def fetch_account_dispatcher_worker_hint(self, _conn, account_id: int):
@@ -42,9 +42,13 @@ class _FakeRepo:
         self.hints[int(account_id)] = int(worker_hint)
 
 
-def test_exchange_engine_id_requires_prefix() -> None:
+def test_exchange_engine_id_legacy_bare_id_defaults_to_ccxt() -> None:
+    assert Dispatcher._exchange_engine_id("binance") == "ccxt.binance"
+
+
+def test_exchange_engine_id_rejects_non_prefixed_dot_id() -> None:
     try:
-        Dispatcher._exchange_engine_id("binance")
+        Dispatcher._exchange_engine_id("binance.spot")
         assert False, "expected RuntimeError"
     except RuntimeError as exc:
         assert str(exc) == "unsupported_engine"
@@ -86,7 +90,7 @@ def test_dispatch_to_account_returns_unsupported_engine_for_invalid_prefix() -> 
     asyncio.run(_run())
 
 
-def test_worker_locks_are_engine_scoped() -> None:
+def test_worker_locks_are_account_scoped() -> None:
     d = Dispatcher()
 
     async def _execute_stub(self, msg):
@@ -109,8 +113,8 @@ def test_worker_locks_are_engine_scoped() -> None:
         await asyncio.wait_for(f1, timeout=1)
         await asyncio.wait_for(f2, timeout=1)
 
-        assert ("ccxt", 7) in d.account_locks
-        assert ("ccxtpro", 7) in d.account_locks
+        assert 7 in d.account_locks
+        assert len(d.account_locks) == 1
 
         t_ccxt.cancel()
         t_pro.cancel()

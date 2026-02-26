@@ -1,0 +1,81 @@
+{
+  "generated_at": "2026-02-26T21:27:48.303274+00:00",
+  "config": {
+    "base_url": "http://127.0.0.1:8000",
+    "duration_seconds": 30,
+    "concurrency": 24,
+    "request_timeout_seconds": 20.0,
+    "max_requests": 0,
+    "symbol": "BTC/USDT",
+    "account_ids": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10
+    ],
+    "cases": [
+      {
+        "name": "oms_orders_open",
+        "weight": 5,
+        "path": "/oms/orders/open?account_ids=1,2,3,4,5,6,7,8,9,10&page=1&page_size=100",
+        "method": "GET"
+      },
+      {
+        "name": "oms_positions_open",
+        "weight": 5,
+        "path": "/oms/positions/open?account_ids=1,2,3,4,5,6,7,8,9,10&page=1&page_size=100",
+        "method": "GET"
+      },
+      {
+        "name": "oms_deals",
+        "weight": 5,
+        "path": "/oms/deals?account_ids=1,2,3,4,5,6,7,8,9,10&start_date=2026-02-25&end_date=2026-02-26&page=1&page_size=100",
+        "method": "GET"
+      }
+    ]
+  },
+  "summary": {
+    "total_requests": 1541,
+    "success_requests": 1541,
+    "error_requests": 0,
+    "error_rate_pct": 0.0,
+    "throughput_rps": 50.6334099945893,
+    "latency_p50_ms": 471.8812999781221,
+    "latency_p95_ms": 583.8635999825783,
+    "latency_p99_ms": 643.3892999892123,
+    "elapsed_seconds": 30.434450300002936
+  },
+  "per_endpoint": {
+    "oms_orders_open": {
+      "requests": 506,
+      "errors": 0,
+      "error_rate_pct": 0.0,
+      "p50_ms": 457.31754999724217,
+      "p95_ms": 561.024174981867,
+      "p99_ms": 633.9987849729368
+    },
+    "oms_positions_open": {
+      "requests": 516,
+      "errors": 0,
+      "error_rate_pct": 0.0,
+      "p50_ms": 488.13364998204634,
+      "p95_ms": 594.0989749797154,
+      "p99_ms": 634.4530050380855
+    },
+    "oms_deals": {
+      "requests": 519,
+      "errors": 0,
+      "error_rate_pct": 0.0,
+      "p50_ms": 469.564100028947,
+      "p95_ms": 586.0639000020456,
+      "p99_ms": 666.3069739995996
+    }
+  },
+  "top_errors": []
+}

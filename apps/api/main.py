@@ -134,6 +134,11 @@ def _map_command_error_code_to_http_status(code: str, message: str = "") -> int:
     return 400
 
 
+def _is_dispatcher_infra_error_code(code: str) -> bool:
+    normalized = str(code or "").strip().lower()
+    return normalized in {"dispatcher_unavailable", "dispatcher_timeout", "dispatcher_empty_response"}
+
+
 def custom_openapi() -> dict[str, Any]:
     if app.openapi_schema:
         return app.openapi_schema
@@ -341,42 +346,29 @@ async def _oms_query_multi_account(
     targets = _normalize_account_targets(account_ids=account_ids)
     if not targets:
         raise HTTPException(status_code=422, detail={"code": "validation_error", "message": "account_ids is required"})
-
-    requests = [
-        dispatch_request(
-            host=settings.dispatcher_host,
-            port=settings.dispatcher_port,
-            timeout_seconds=settings.dispatcher_request_timeout_seconds,
-            payload={
-                "op": "oms_query",
-                "x_api_key": x_api_key,
-                "account_id": aid,
-                "query": query,
-                "strategy_id": strategy_id,
-                "date_from": date_from,
-                "date_to": date_to,
-                "open_limit": open_limit,
-            },
-        )
-        for aid in targets
-    ]
-    outputs = await asyncio.gather(*requests)
-    merged: list[dict[str, Any]] = []
-    for aid, out in zip(targets, outputs):
-        if not out.get("ok"):
-            raise HTTPException(
-                status_code=400,
-                detail={
-                    "code": "dispatcher_error",
-                    "account_id": aid,
-                    "detail": out.get("error") or {"code": "dispatcher_error"},
-                },
-            )
-        rows = out.get("result", [])
-        if isinstance(rows, list):
-            merged.extend(rows)
-    merged.sort(key=lambda row: int(row.get("id", 0) or 0))
-    return merged
+    dispatched = await dispatch_request(
+        host=settings.dispatcher_host,
+        port=settings.dispatcher_port,
+        timeout_seconds=settings.dispatcher_request_timeout_seconds,
+        payload={
+            "op": "oms_query_multi",
+            "x_api_key": x_api_key,
+            "account_id": int(targets[0]),
+            "account_ids": targets,
+            "query": query,
+            "strategy_id": strategy_id,
+            "date_from": date_from,
+            "date_to": date_to,
+            "open_limit": open_limit,
+        },
+    )
+    if not dispatched.get("ok"):
+        raise HTTPException(status_code=400, detail=dispatched.get("error") or {"code": "dispatcher_error"})
+    rows = dispatched.get("result", [])
+    if not isinstance(rows, list):
+        return []
+    rows.sort(key=lambda row: int(row.get("id", 0) or 0))
+    return rows
 
 
 async def _ccxt_raw_query_multi_account(
@@ -1892,12 +1884,48 @@ async def ws_endpoint(websocket: WebSocket) -> None:
     subscriptions = {"position", "ccxt"}
     subscribed_accounts: set[int] = set()
     last_event_id_by_account: dict[int, int] = {}
-    if api_key:
-        auth_check = await dispatch_request(
+    market_subscriptions: dict[str, dict[str, Any]] = {}
+
+    async def _ws_dispatch_or_close(
+        payload: dict[str, Any],
+        *,
+        req_id: Any = None,
+        namespace: str = "system",
+        action: str = "dispatch",
+    ) -> dict[str, Any]:
+        out = await dispatch_request(
             host=settings.dispatcher_host,
             port=settings.dispatcher_port,
             timeout_seconds=settings.dispatcher_request_timeout_seconds,
-            payload={"op": "auth_check", "x_api_key": api_key},
+            payload=payload,
+        )
+        if out.get("ok"):
+            return out
+        err = out.get("error") or {"code": "dispatcher_error"}
+        code = str(err.get("code") or "").strip().lower()
+        if _is_dispatcher_infra_error_code(code):
+            with contextlib.suppress(Exception):
+                await websocket.send_json(
+                    {
+                        "id": req_id,
+                        "ok": False,
+                        "type": "ws_response",
+                        "namespace": namespace,
+                        "action": action,
+                        "event": "error",
+                        "payload": err,
+                    }
+                )
+            with contextlib.suppress(Exception):
+                await websocket.close(code=1011)
+            raise RuntimeError("ws_dispatcher_unavailable")
+        return out
+
+    if api_key:
+        auth_check = await _ws_dispatch_or_close(
+            {"op": "auth_check", "x_api_key": api_key},
+            namespace="system",
+            action="auth_check",
         )
         if not auth_check.get("ok"):
             await websocket.close(code=1008)
@@ -1937,11 +1965,11 @@ async def ws_endpoint(websocket: WebSocket) -> None:
                             }
                         )
                         continue
-                    auth_check = await dispatch_request(
-                        host=settings.dispatcher_host,
-                        port=settings.dispatcher_port,
-                        timeout_seconds=settings.dispatcher_request_timeout_seconds,
-                        payload={"op": "auth_check", "x_api_key": candidate},
+                    auth_check = await _ws_dispatch_or_close(
+                        {"op": "auth_check", "x_api_key": candidate},
+                        req_id=req_id,
+                        namespace="system",
+                        action=action,
                     )
                     if not auth_check.get("ok"):
                         await websocket.send_json(
@@ -2019,17 +2047,17 @@ async def ws_endpoint(websocket: WebSocket) -> None:
                         continue
                     authorized: list[int] = []
                     for account_id in account_ids:
-                        chk = await dispatch_request(
-                            host=settings.dispatcher_host,
-                            port=settings.dispatcher_port,
-                            timeout_seconds=settings.dispatcher_request_timeout_seconds,
-                            payload={
+                        chk = await _ws_dispatch_or_close(
+                            {
                                 "op": "authorize_account",
                                 "x_api_key": api_key,
                                 "account_id": account_id,
                                 "require_trade": False,
                                 "for_ws": True,
                             },
+                            req_id=req_id,
+                            namespace="system",
+                            action=action,
                         )
                         if chk.get("ok"):
                             authorized.append(account_id)
@@ -2048,15 +2076,15 @@ async def ws_endpoint(websocket: WebSocket) -> None:
                         continue
                     subscribed_accounts = set(authorized)
                     for account_id in subscribed_accounts:
-                        tail = await dispatch_request(
-                            host=settings.dispatcher_host,
-                            port=settings.dispatcher_port,
-                            timeout_seconds=settings.dispatcher_request_timeout_seconds,
-                            payload={
+                        tail = await _ws_dispatch_or_close(
+                            {
                                 "op": "ws_tail_id",
                                 "x_api_key": api_key,
                                 "account_id": account_id,
                             },
+                            req_id=req_id,
+                            namespace="system",
+                            action=action,
                         )
                         last_event_id_by_account[account_id] = (
                             int(((tail.get("result") or {}).get("tail_id")) or 0) if tail.get("ok") else 0
@@ -2079,16 +2107,16 @@ async def ws_endpoint(websocket: WebSocket) -> None:
                     if with_snapshot and "position" in subscriptions:
                         snapshot_meta: list[dict[str, int]] = []
                         for account_id in sorted(subscribed_accounts):
-                            open_orders = await dispatch_request(
-                                host=settings.dispatcher_host,
-                                port=settings.dispatcher_port,
-                                timeout_seconds=settings.dispatcher_request_timeout_seconds,
-                                payload={
+                            open_orders = await _ws_dispatch_or_close(
+                                {
                                     "op": "oms_query",
                                     "x_api_key": api_key,
                                     "account_id": account_id,
                                     "query": "orders_open",
                                 },
+                                req_id=req_id,
+                                namespace="position",
+                                action="snapshot_open_orders",
                             )
                             orders_items = open_orders.get("result", []) if open_orders.get("ok") else []
                             if not isinstance(orders_items, list):
@@ -2115,16 +2143,16 @@ async def ws_endpoint(websocket: WebSocket) -> None:
                                         },
                                     }
                                 )
-                            open_positions = await dispatch_request(
-                                host=settings.dispatcher_host,
-                                port=settings.dispatcher_port,
-                                timeout_seconds=settings.dispatcher_request_timeout_seconds,
-                                payload={
+                            open_positions = await _ws_dispatch_or_close(
+                                {
                                     "op": "oms_query",
                                     "x_api_key": api_key,
                                     "account_id": account_id,
                                     "query": "positions_open",
                                 },
+                                req_id=req_id,
+                                namespace="position",
+                                action="snapshot_open_positions",
                             )
                             positions_items = open_positions.get("result", []) if open_positions.get("ok") else []
                             if not isinstance(positions_items, list):
@@ -2178,17 +2206,17 @@ async def ws_endpoint(websocket: WebSocket) -> None:
                         )
                         continue
                     item = COMMAND_INPUT_ADAPTER.validate_python(command_payload)
-                    dispatched = await dispatch_request(
-                        host=settings.dispatcher_host,
-                        port=settings.dispatcher_port,
-                        timeout_seconds=settings.dispatcher_request_timeout_seconds,
-                        payload={
+                    dispatched = await _ws_dispatch_or_close(
+                        {
                             "op": "oms_command",
                             "x_api_key": api_key,
                             "account_id": account_id,
                             "index": 0,
                             "item": item.model_dump(by_alias=True, mode="json"),
                         },
+                        req_id=req_id,
+                        namespace="position",
+                        action=action,
                     )
                     result = dispatched.get("result", {}) if dispatched.get("ok") else {
                         "index": 0,
@@ -2228,11 +2256,8 @@ async def ws_endpoint(websocket: WebSocket) -> None:
                     method = str(payload.get("func", "")).strip()
                     args = payload.get("args") if isinstance(payload.get("args"), list) else []
                     kwargs = payload.get("kwargs") if isinstance(payload.get("kwargs"), dict) else {}
-                    dispatched = await dispatch_request(
-                        host=settings.dispatcher_host,
-                        port=settings.dispatcher_port,
-                        timeout_seconds=settings.dispatcher_request_timeout_seconds,
-                        payload={
+                    dispatched = await _ws_dispatch_or_close(
+                        {
                             "op": "ccxt_call",
                             "x_api_key": api_key,
                             "account_id": account_id,
@@ -2240,6 +2265,9 @@ async def ws_endpoint(websocket: WebSocket) -> None:
                             "args": args,
                             "kwargs": kwargs,
                         },
+                        req_id=req_id,
+                        namespace="ccxt",
+                        action=action,
                     )
                     await websocket.send_json(
                         {
@@ -2254,6 +2282,118 @@ async def ws_endpoint(websocket: WebSocket) -> None:
                                 if dispatched.get("ok")
                                 else {"code": "ccxt_error", "detail": dispatched.get("error")}
                             ),
+                        }
+                    )
+                    continue
+
+                if namespace == "ccxt" and action == "subscribe_market":
+                    account_id = int(payload.get("account_id", 0) or 0)
+                    symbol = str(payload.get("symbol", "") or "").strip()
+                    channels_raw = payload.get("channels")
+                    channels = channels_raw if isinstance(channels_raw, list) else ["ticker"]
+                    allowed_channels = {"ticker", "orderbook", "trades", "ohlcv"}
+                    channels = [str(ch).strip().lower() for ch in channels if str(ch).strip().lower() in allowed_channels]
+                    if account_id <= 0 or not symbol or not channels:
+                        await websocket.send_json(
+                            {
+                                "id": req_id,
+                                "ok": False,
+                                "type": "ws_response",
+                                "namespace": "ccxt",
+                                "action": action,
+                                "event": "error",
+                                "payload": {"code": "validation_error", "message": "account_id, symbol, channels are required"},
+                            }
+                        )
+                        continue
+                    chk = await _ws_dispatch_or_close(
+                        {
+                            "op": "authorize_account",
+                            "x_api_key": api_key,
+                            "account_id": account_id,
+                            "require_trade": False,
+                            "for_ws": True,
+                        },
+                        req_id=req_id,
+                        namespace="ccxt",
+                        action=action,
+                    )
+                    if not chk.get("ok"):
+                        await websocket.send_json(
+                            {
+                                "id": req_id,
+                                "ok": False,
+                                "type": "ws_response",
+                                "namespace": "ccxt",
+                                "action": action,
+                                "event": "error",
+                                "payload": {"code": "permission_denied"},
+                            }
+                        )
+                        continue
+                    timeframe = str(payload.get("timeframe", "1m") or "1m").strip()
+                    depth = int(payload.get("depth", 20) or 20)
+                    limit = int(payload.get("limit", 50) or 50)
+                    poll_interval_ms = int(payload.get("poll_interval_ms", 1200) or 1200)
+                    poll_interval_ms = max(250, min(10_000, poll_interval_ms))
+                    loop_now = asyncio.get_running_loop().time()
+                    for ch in channels:
+                        key = f"{account_id}|{symbol}|{ch}|{timeframe}|{depth}|{limit}"
+                        market_subscriptions[key] = {
+                            "account_id": account_id,
+                            "symbol": symbol,
+                            "channel": ch,
+                            "timeframe": timeframe,
+                            "depth": depth,
+                            "limit": limit,
+                            "poll_interval_ms": poll_interval_ms,
+                            "next_poll_at": loop_now,
+                            "last_fingerprint": None,
+                        }
+                    await websocket.send_json(
+                        {
+                            "id": req_id,
+                            "ok": True,
+                            "type": "ws_response",
+                            "namespace": "ccxt",
+                            "action": action,
+                            "event": "subscribed_market",
+                            "payload": {
+                                "account_id": account_id,
+                                "symbol": symbol,
+                                "channels": channels,
+                                "poll_interval_ms": poll_interval_ms,
+                            },
+                        }
+                    )
+                    continue
+
+                if namespace == "ccxt" and action == "unsubscribe_market":
+                    account_id = int(payload.get("account_id", 0) or 0)
+                    symbol = str(payload.get("symbol", "") or "").strip()
+                    channels_raw = payload.get("channels")
+                    channels = channels_raw if isinstance(channels_raw, list) else []
+                    channels = [str(ch).strip().lower() for ch in channels if str(ch).strip()]
+                    kept: dict[str, dict[str, Any]] = {}
+                    removed = 0
+                    for k, sub in market_subscriptions.items():
+                        match_account = account_id <= 0 or int(sub.get("account_id", 0)) == account_id
+                        match_symbol = not symbol or str(sub.get("symbol", "")) == symbol
+                        match_channel = not channels or str(sub.get("channel", "")).lower() in channels
+                        if match_account and match_symbol and match_channel:
+                            removed += 1
+                        else:
+                            kept[k] = sub
+                    market_subscriptions = kept
+                    await websocket.send_json(
+                        {
+                            "id": req_id,
+                            "ok": True,
+                            "type": "ws_response",
+                            "namespace": "ccxt",
+                            "action": action,
+                            "event": "unsubscribed_market",
+                            "payload": {"removed": removed},
                         }
                     )
                     continue
@@ -2275,17 +2415,16 @@ async def ws_endpoint(websocket: WebSocket) -> None:
             if api_key and subscribed_accounts:
                 for account_id in sorted(subscribed_accounts):
                     from_id = int(last_event_id_by_account.get(account_id, 0))
-                    pulled = await dispatch_request(
-                        host=settings.dispatcher_host,
-                        port=settings.dispatcher_port,
-                        timeout_seconds=settings.dispatcher_request_timeout_seconds,
-                        payload={
+                    pulled = await _ws_dispatch_or_close(
+                        {
                             "op": "ws_pull_events",
                             "x_api_key": api_key,
                             "account_id": account_id,
                             "from_event_id": from_id,
                             "limit": 100,
                         },
+                        namespace="position",
+                        action="ws_pull_events",
                     )
                     events = pulled.get("result", []) if pulled.get("ok") else []
                     for ev in events:
@@ -2313,6 +2452,74 @@ async def ws_endpoint(websocket: WebSocket) -> None:
                                 "payload": event_payload,
                             }
                         )
+
+            if api_key and market_subscriptions:
+                loop_now = asyncio.get_running_loop().time()
+                for sub in list(market_subscriptions.values()):
+                    if loop_now < float(sub.get("next_poll_at", 0.0)):
+                        continue
+                    sub["next_poll_at"] = loop_now + (int(sub.get("poll_interval_ms", 1200)) / 1000.0)
+                    account_id = int(sub.get("account_id", 0) or 0)
+                    symbol = str(sub.get("symbol", "") or "").strip()
+                    channel = str(sub.get("channel", "") or "").strip()
+                    timeframe = str(sub.get("timeframe", "1m") or "1m").strip()
+                    depth = int(sub.get("depth", 20) or 20)
+                    limit = int(sub.get("limit", 50) or 50)
+                    func = ""
+                    args: list[Any] = []
+                    if channel == "ticker":
+                        func = "fetch_ticker"
+                        args = [symbol]
+                    elif channel == "orderbook":
+                        func = "fetch_order_book"
+                        args = [symbol, depth]
+                    elif channel == "trades":
+                        func = "fetch_trades"
+                        args = [symbol, None, limit]
+                    elif channel == "ohlcv":
+                        func = "fetch_ohlcv"
+                        args = [symbol, timeframe, None, limit]
+                    if not func:
+                        continue
+                    dispatched = await _ws_dispatch_or_close(
+                        {
+                            "op": "ccxt_call",
+                            "x_api_key": api_key,
+                            "account_id": account_id,
+                            "func": func,
+                            "args": args,
+                            "kwargs": {},
+                        },
+                        namespace="ccxt",
+                        action=f"poll_{channel}",
+                    )
+                    if not dispatched.get("ok"):
+                        continue
+                    data = dispatched.get("result")
+                    try:
+                        fingerprint = json.dumps(data, sort_keys=True, default=str)
+                    except Exception:
+                        fingerprint = str(data)
+                    if fingerprint == sub.get("last_fingerprint"):
+                        continue
+                    sub["last_fingerprint"] = fingerprint
+                    await websocket.send_json(
+                        {
+                            "id": None,
+                            "ok": True,
+                            "type": "ws_event",
+                            "namespace": "ccxt",
+                            "action": "event",
+                            "event": f"{channel}_updated",
+                            "payload": {
+                                "account_id": account_id,
+                                "symbol": symbol,
+                                "channel": channel,
+                                "data": data,
+                                "ts_ms": int(datetime.utcnow().timestamp() * 1000),
+                            },
+                        }
+                    )
         except WebSocketDisconnect:
             if api_logger is not None:
                 api_logger.info(
@@ -2320,6 +2527,23 @@ async def ws_endpoint(websocket: WebSocket) -> None:
                     json.dumps({"account_ids": sorted(subscribed_accounts)}, separators=(",", ":")),
                 )
             return
+        except RuntimeError as exc:
+            if str(exc) == "ws_dispatcher_unavailable":
+                if api_logger is not None:
+                    api_logger.warning(
+                        "ws_closed_dispatcher_unavailable %s",
+                        json.dumps({"account_ids": sorted(subscribed_accounts)}, separators=(",", ":")),
+                    )
+                return
+            with contextlib.suppress(Exception):
+                await websocket.send_json(
+                    {"id": None, "ok": False, "type": "ws_response", "event": "error", "payload": {"code": "internal_error"}}
+                )
+            if api_logger is not None:
+                api_logger.exception(
+                    "ws_error %s",
+                    json.dumps({"account_ids": sorted(subscribed_accounts)}, separators=(",", ":")),
+                )
         except Exception:
             with contextlib.suppress(Exception):
                 await websocket.send_json(

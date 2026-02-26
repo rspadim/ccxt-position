@@ -1,0 +1,90 @@
+{
+  "generated_at": "2026-02-26T22:19:56.815843+00:00",
+  "config": {
+    "base_url": "http://127.0.0.1:8000",
+    "duration_seconds": 30,
+    "concurrency": 24,
+    "request_timeout_seconds": 20.0,
+    "max_requests": 0,
+    "symbol": "BTC/USDT",
+    "account_ids": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10
+    ],
+    "cases": [
+      {
+        "name": "oms_orders_open",
+        "weight": 5,
+        "path": "/oms/orders/open?account_ids=1,2,3,4,5,6,7,8,9,10&page=1&page_size=100",
+        "method": "GET"
+      },
+      {
+        "name": "oms_positions_open",
+        "weight": 5,
+        "path": "/oms/positions/open?account_ids=1,2,3,4,5,6,7,8,9,10&page=1&page_size=100",
+        "method": "GET"
+      },
+      {
+        "name": "oms_deals",
+        "weight": 5,
+        "path": "/oms/deals?account_ids=1,2,3,4,5,6,7,8,9,10&start_date=2026-02-25&end_date=2026-02-26&page=1&page_size=100",
+        "method": "GET"
+      }
+    ]
+  },
+  "summary": {
+    "total_requests": 2822,
+    "success_requests": 1423,
+    "error_requests": 1399,
+    "error_rate_pct": 49.57476966690291,
+    "throughput_rps": 93.14785037118375,
+    "latency_p50_ms": 289.2457499692682,
+    "latency_p95_ms": 604.2228850070387,
+    "latency_p99_ms": 661.9364799850155,
+    "elapsed_seconds": 30.295921900018584
+  },
+  "per_endpoint": {
+    "oms_orders_open": {
+      "requests": 938,
+      "errors": 466,
+      "error_rate_pct": 49.68017057569296,
+      "p50_ms": 258.5176500142552,
+      "p95_ms": 580.6165600166423,
+      "p99_ms": 662.4756230285857
+    },
+    "oms_positions_open": {
+      "requests": 937,
+      "errors": 452,
+      "error_rate_pct": 48.23906083244397,
+      "p50_ms": 357.8570999670774,
+      "p95_ms": 622.8699199971743,
+      "p99_ms": 667.0385760022325
+    },
+    "oms_deals": {
+      "requests": 947,
+      "errors": 481,
+      "error_rate_pct": 50.79197465681098,
+      "p50_ms": 105.29029997996986,
+      "p95_ms": 588.5866800090297,
+      "p99_ms": 657.9173920152241
+    }
+  },
+  "top_errors": [
+    {
+      "error": "http_400:{\"detail\":{\"code\":\"dispatcher_empty_response\"}}",
+      "count": 1345
+    },
+    {
+      "error": "http_400:{\"detail\":{\"code\":\"dispatcher_unavailable\",\"message\":\"[Errno 104] Connection reset by peer\"}}",
+      "count": 54
+    }
+  ]
+}

@@ -1,0 +1,81 @@
+{
+  "generated_at": "2026-02-26T22:40:17.700494+00:00",
+  "config": {
+    "base_url": "http://127.0.0.1:8000",
+    "duration_seconds": 20,
+    "concurrency": 24,
+    "request_timeout_seconds": 20.0,
+    "max_requests": 0,
+    "symbol": "BTC/USDT",
+    "account_ids": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10
+    ],
+    "cases": [
+      {
+        "name": "oms_orders_open",
+        "weight": 5,
+        "path": "/oms/orders/open?account_ids=1,2,3,4,5,6,7,8,9,10&page=1&page_size=100",
+        "method": "GET"
+      },
+      {
+        "name": "oms_positions_open",
+        "weight": 5,
+        "path": "/oms/positions/open?account_ids=1,2,3,4,5,6,7,8,9,10&page=1&page_size=100",
+        "method": "GET"
+      },
+      {
+        "name": "oms_deals",
+        "weight": 5,
+        "path": "/oms/deals?account_ids=1,2,3,4,5,6,7,8,9,10&start_date=2026-02-25&end_date=2026-02-26&page=1&page_size=100",
+        "method": "GET"
+      }
+    ]
+  },
+  "summary": {
+    "total_requests": 1856,
+    "success_requests": 1856,
+    "error_requests": 0,
+    "error_rate_pct": 0.0,
+    "throughput_rps": 91.88384046870291,
+    "latency_p50_ms": 257.14594998862594,
+    "latency_p95_ms": 319.62630001362413,
+    "latency_p99_ms": 367.61074998939915,
+    "elapsed_seconds": 20.199416899995413
+  },
+  "per_endpoint": {
+    "oms_orders_open": {
+      "requests": 605,
+      "errors": 0,
+      "error_rate_pct": 0.0,
+      "p50_ms": 245.60560000827536,
+      "p95_ms": 303.83480000309646,
+      "p99_ms": 337.88486801087856
+    },
+    "oms_positions_open": {
+      "requests": 621,
+      "errors": 0,
+      "error_rate_pct": 0.0,
+      "p50_ms": 267.87889999104664,
+      "p95_ms": 335.57629998540506,
+      "p99_ms": 446.329880005214
+    },
+    "oms_deals": {
+      "requests": 630,
+      "errors": 0,
+      "error_rate_pct": 0.0,
+      "p50_ms": 255.13629999477416,
+      "p95_ms": 312.34816498763394,
+      "p99_ms": 369.67716602142934
+    }
+  },
+  "top_errors": []
+}

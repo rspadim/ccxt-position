@@ -128,3 +128,13 @@ asyncio.run(main())
 Notes:
 - `watch*` currently tries OMS WebSocket (`/ws`) first.
 - If WS is unavailable, it falls back to async polling.
+
+Market data watch methods are also available in `OmsCcxtProExchange`:
+
+- `watch_ticker(symbol)`
+- `watch_order_book(symbol, limit=...)`
+- `watch_trades(symbol, limit=...)`
+- `watch_ohlcv(symbol, timeframe="1m", limit=...)`
+
+These methods use OMS WebSocket action `ccxt/subscribe_market` (MVP) and
+fallback to REST-based polling when WS is unavailable.

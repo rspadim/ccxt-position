@@ -3456,6 +3456,11 @@ function renderAdminSystemStatusDetails(health, dispatcher, healthErr = "", disp
   if (!kpis || !details) return;
   const startedAt = Number(dispatcher?.started_at || 0);
   const startedAtIso = startedAt > 0 ? new Date(startedAt * 1000).toISOString() : "-";
+  const sessionCountTotal = Number(dispatcher?.ccxt_session_count_total ?? 0);
+  const sessionCountByEngine = dispatcher?.ccxt_session_count_by_engine || {};
+  const sessionAccounts = Array.isArray(dispatcher?.ccxt_session_account_ids) ? dispatcher.ccxt_session_account_ids : [];
+  const sessionOldestAge = Number(dispatcher?.ccxt_session_oldest_age_seconds ?? 0);
+  const sessionTtl = Number(dispatcher?.ccxt_session_ttl_seconds ?? 0);
   kpis.innerHTML = [
     `<div class="system-kpi"><span>${escapeHtml(t("admin.api_status", "API"))}</span><strong class="${health ? "ok" : "error"}">${escapeHtml(health ? String(health.status || "ok") : "error")}</strong></div>`,
     `<div class="system-kpi"><span>${escapeHtml(t("admin.dispatcher_status", "Dispatcher"))}</span><strong class="${dispatcher ? "ok" : "error"}">${escapeHtml(dispatcher ? "ok" : "error")}</strong></div>`,
@@ -3465,6 +3470,11 @@ function renderAdminSystemStatusDetails(health, dispatcher, healthErr = "", disp
     `<div class="system-kpi"><span>total_requests</span><strong>${escapeHtml(String(dispatcher?.total_requests ?? "-"))}</strong></div>`,
     `<div class="system-kpi"><span>total_errors</span><strong>${escapeHtml(String(dispatcher?.total_errors ?? "-"))}</strong></div>`,
     `<div class="system-kpi"><span>control_queue_depth</span><strong>${escapeHtml(String(dispatcher?.control_queue_depth ?? "-"))}</strong></div>`,
+    `<div class="system-kpi"><span>ccxt_session_count_total</span><strong>${escapeHtml(String(sessionCountTotal))}</strong></div>`,
+    `<div class="system-kpi"><span>ccxt_session_count_by_engine</span><strong>${escapeHtml(`${Number(sessionCountByEngine.ccxt || 0)}/${Number(sessionCountByEngine.ccxtpro || 0)}`)}</strong></div>`,
+    `<div class="system-kpi"><span>ccxt_session_accounts</span><strong>${escapeHtml(String(sessionAccounts.length))}</strong></div>`,
+    `<div class="system-kpi"><span>ccxt_session_oldest_age_s</span><strong>${escapeHtml(String(sessionOldestAge))}</strong></div>`,
+    `<div class="system-kpi"><span>ccxt_session_ttl_s</span><strong>${escapeHtml(String(sessionTtl))}</strong></div>`,
     `<div class="system-kpi"><span>started_at</span><strong>${escapeHtml(startedAtIso)}</strong></div>`,
   ].join("");
 

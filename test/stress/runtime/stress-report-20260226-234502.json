@@ -1,0 +1,81 @@
+{
+  "generated_at": "2026-02-26T23:44:42.106802+00:00",
+  "config": {
+    "base_url": "http://127.0.0.1:8000",
+    "duration_seconds": 20,
+    "concurrency": 48,
+    "request_timeout_seconds": 20.0,
+    "max_requests": 0,
+    "symbol": "BTC/USDT",
+    "account_ids": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10
+    ],
+    "cases": [
+      {
+        "name": "oms_orders_open",
+        "weight": 5,
+        "path": "/oms/orders/open?account_ids=1,2,3,4,5,6,7,8,9,10&page=1&page_size=100",
+        "method": "GET"
+      },
+      {
+        "name": "oms_positions_open",
+        "weight": 5,
+        "path": "/oms/positions/open?account_ids=1,2,3,4,5,6,7,8,9,10&page=1&page_size=100",
+        "method": "GET"
+      },
+      {
+        "name": "oms_deals",
+        "weight": 5,
+        "path": "/oms/deals?account_ids=1,2,3,4,5,6,7,8,9,10&start_date=2026-02-25&end_date=2026-02-26&page=1&page_size=100",
+        "method": "GET"
+      }
+    ]
+  },
+  "summary": {
+    "total_requests": 1278,
+    "success_requests": 1278,
+    "error_requests": 0,
+    "error_rate_pct": 0.0,
+    "throughput_rps": 62.17818713490592,
+    "latency_p50_ms": 950.6657000165433,
+    "latency_p95_ms": 1293.7926999700721,
+    "latency_p99_ms": 1416.8411450181156,
+    "elapsed_seconds": 20.553831800003536
+  },
+  "per_endpoint": {
+    "oms_orders_open": {
+      "requests": 428,
+      "errors": 0,
+      "error_rate_pct": 0.0,
+      "p50_ms": 934.5678499958012,
+      "p95_ms": 1246.6284849884685,
+      "p99_ms": 1417.3810569872153
+    },
+    "oms_positions_open": {
+      "requests": 425,
+      "errors": 0,
+      "error_rate_pct": 0.0,
+      "p50_ms": 946.174599986989,
+      "p95_ms": 1356.546539987903,
+      "p99_ms": 1417.106940005906
+    },
+    "oms_deals": {
+      "requests": 425,
+      "errors": 0,
+      "error_rate_pct": 0.0,
+      "p50_ms": 958.078000054229,
+      "p95_ms": 1272.8191999951373,
+      "p99_ms": 1387.3624640377236
+    }
+  },
+  "top_errors": []
+}

@@ -1,0 +1,137 @@
+{
+  "generated_at": "2026-02-26T21:28:26.185887+00:00",
+  "config": {
+    "base_url": "http://127.0.0.1:8000",
+    "duration_seconds": 30,
+    "concurrency": 24,
+    "request_timeout_seconds": 20.0,
+    "max_requests": 0,
+    "symbol": "BTC/USDT",
+    "account_ids": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10
+    ],
+    "cases": [
+      {
+        "name": "healthz",
+        "weight": 2,
+        "path": "/healthz",
+        "method": "GET"
+      },
+      {
+        "name": "dispatcher_status",
+        "weight": 2,
+        "path": "/dispatcher/status",
+        "method": "GET"
+      },
+      {
+        "name": "user_profile",
+        "weight": 2,
+        "path": "/user/profile",
+        "method": "GET"
+      },
+      {
+        "name": "oms_orders_open",
+        "weight": 4,
+        "path": "/oms/orders/open?account_ids=1,2,3,4,5,6,7,8,9,10&page=1&page_size=100",
+        "method": "GET"
+      },
+      {
+        "name": "oms_positions_open",
+        "weight": 4,
+        "path": "/oms/positions/open?account_ids=1,2,3,4,5,6,7,8,9,10&page=1&page_size=100",
+        "method": "GET"
+      },
+      {
+        "name": "oms_deals",
+        "weight": 3,
+        "path": "/oms/deals?account_ids=1,2,3,4,5,6,7,8,9,10&start_date=2026-02-25&end_date=2026-02-26&page=1&page_size=100",
+        "method": "GET"
+      },
+      {
+        "name": "ccxt_fetch_ticker",
+        "weight": 3,
+        "path": "/ccxt/1/fetch_ticker",
+        "method": "POST"
+      }
+    ]
+  },
+  "summary": {
+    "total_requests": 342,
+    "success_requests": 342,
+    "error_requests": 0,
+    "error_rate_pct": 0.0,
+    "throughput_rps": 9.67986397243934,
+    "latency_p50_ms": 680.6761499901768,
+    "latency_p95_ms": 7783.235865028109,
+    "latency_p99_ms": 9850.390302004495,
+    "elapsed_seconds": 35.3310749999946
+  },
+  "per_endpoint": {
+    "healthz": {
+      "requests": 35,
+      "errors": 0,
+      "error_rate_pct": 0.0,
+      "p50_ms": 8.230799983721226,
+      "p95_ms": 48.285609978483976,
+      "p99_ms": 161.53742396971154
+    },
+    "dispatcher_status": {
+      "requests": 28,
+      "errors": 0,
+      "error_rate_pct": 0.0,
+      "p50_ms": 36.79299997747876,
+      "p95_ms": 456.90990996954486,
+      "p99_ms": 1063.4694760176358
+    },
+    "user_profile": {
+      "requests": 53,
+      "errors": 0,
+      "error_rate_pct": 0.0,
+      "p50_ms": 41.86150000896305,
+      "p95_ms": 545.6595600000576,
+      "p99_ms": 950.4182240087534
+    },
+    "oms_orders_open": {
+      "requests": 51,
+      "errors": 0,
+      "error_rate_pct": 0.0,
+      "p50_ms": 1334.8026999738067,
+      "p95_ms": 7163.400349993026,
+      "p99_ms": 7942.229449981824
+    },
+    "oms_positions_open": {
+      "requests": 65,
+      "errors": 0,
+      "error_rate_pct": 0.0,
+      "p50_ms": 1245.3148000058718,
+      "p95_ms": 6808.293359982781,
+      "p99_ms": 7966.463035985362
+    },
+    "oms_deals": {
+      "requests": 46,
+      "errors": 0,
+      "error_rate_pct": 0.0,
+      "p50_ms": 1259.8540500039235,
+      "p95_ms": 6091.3385749736335,
+      "p99_ms": 8362.721335008971
+    },
+    "ccxt_fetch_ticker": {
+      "requests": 64,
+      "errors": 0,
+      "error_rate_pct": 0.0,
+      "p50_ms": 5403.965050034458,
+      "p95_ms": 10177.659530000521,
+      "p99_ms": 10955.187259978846
+    }
+  },
+  "top_errors": []
+}

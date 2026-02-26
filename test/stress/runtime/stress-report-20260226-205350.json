@@ -1,0 +1,74 @@
+{
+  "generated_at": "2026-02-26T20:52:50.444800+00:00",
+  "config": {
+    "base_url": "http://127.0.0.1:8000",
+    "duration_seconds": 60,
+    "concurrency": 16,
+    "request_timeout_seconds": 20.0,
+    "max_requests": 0,
+    "symbol": "BTC/USDT",
+    "account_ids": [
+      86,
+      87,
+      88
+    ],
+    "cases": [
+      {
+        "name": "oms_orders_open",
+        "weight": 5,
+        "path": "/oms/orders/open?account_ids=86,87,88&page=1&page_size=100",
+        "method": "GET"
+      },
+      {
+        "name": "oms_positions_open",
+        "weight": 5,
+        "path": "/oms/positions/open?account_ids=86,87,88&page=1&page_size=100",
+        "method": "GET"
+      },
+      {
+        "name": "oms_deals",
+        "weight": 5,
+        "path": "/oms/deals?account_ids=86,87,88&start_date=2026-02-25&end_date=2026-02-26&page=1&page_size=100",
+        "method": "GET"
+      }
+    ]
+  },
+  "summary": {
+    "total_requests": 1803,
+    "success_requests": 1803,
+    "error_requests": 0,
+    "error_rate_pct": 0.0,
+    "throughput_rps": 29.862861145478195,
+    "latency_p50_ms": 527.1254000253975,
+    "latency_p95_ms": 680.9756400238255,
+    "latency_p99_ms": 767.6622039754875,
+    "elapsed_seconds": 60.37599650002085
+  },
+  "per_endpoint": {
+    "oms_orders_open": {
+      "requests": 590,
+      "errors": 0,
+      "error_rate_pct": 0.0,
+      "p50_ms": 509.7140499856323,
+      "p95_ms": 661.4572450431294,
+      "p99_ms": 760.5700490006712
+    },
+    "oms_positions_open": {
+      "requests": 606,
+      "errors": 0,
+      "error_rate_pct": 0.0,
+      "p50_ms": 541.2699000153225,
+      "p95_ms": 688.2699250272708,
+      "p99_ms": 746.205229999032
+    },
+    "oms_deals": {
+      "requests": 607,
+      "errors": 0,
+      "error_rate_pct": 0.0,
+      "p50_ms": 533.6694999714382,
+      "p95_ms": 689.8902199871372,
+      "p99_ms": 775.3178100101647
+    }
+  },
+  "top_errors": []
+}

@@ -560,6 +560,51 @@ class MySQLCommandRepository:
             "restrict_to_strategies": bool(row[6]),
         }
 
+    async def fetch_api_key_account_permissions_multi(
+        self, conn: Any, api_key_id: int, account_ids: list[int]
+    ) -> dict[int, dict[str, Any]]:
+        normalized_ids = sorted({int(aid) for aid in account_ids if int(aid) > 0})
+        if not normalized_ids:
+            return {}
+        placeholders = ",".join(["%s"] * len(normalized_ids))
+        params: list[Any] = [int(api_key_id)]
+        params.extend(normalized_ids)
+        sql = f"""
+            SELECT a.id,
+                   a.status,
+                   p.can_read,
+                   p.can_trade,
+                   p.can_close_position,
+                   p.can_risk_manage,
+                   p.can_block_new_positions,
+                   p.can_block_account,
+                   p.restrict_to_strategies
+            FROM accounts a
+            LEFT JOIN api_key_account_permissions p
+              ON p.account_id = a.id
+             AND p.api_key_id = %s
+             AND p.status = 'active'
+            WHERE a.id IN ({placeholders})
+        """
+        out: dict[int, dict[str, Any]] = {}
+        async with conn.cursor() as cur:
+            await cur.execute(sql, tuple(params))
+            rows = await cur.fetchall()
+        for row in rows or []:
+            aid = int(row[0])
+            account_status = str(row[1] or "")
+            out[aid] = {
+                "account_status": account_status,
+                "can_read": bool(row[2]) if row[2] is not None else False,
+                "can_trade": bool(row[3]) if row[3] is not None else False,
+                "can_close_position": bool(row[4]) if row[4] is not None else False,
+                "can_risk_manage": bool(row[5]) if row[5] is not None else False,
+                "can_block_new_positions": bool(row[6]) if row[6] is not None else False,
+                "can_block_account": bool(row[7]) if row[7] is not None else False,
+                "restrict_to_strategies": bool(row[8]) if row[8] is not None else False,
+            }
+        return out
+
     async def api_key_strategy_allowed(
         self, conn: Any, api_key_id: int, account_id: int, strategy_id: int, for_trade: bool
     ) -> bool:
@@ -2770,6 +2815,85 @@ class MySQLCommandRepository:
             )
         return out
 
+    async def list_orders_multi(
+        self,
+        conn: Any,
+        account_ids: list[int],
+        open_only: bool,
+        strategy_id: int | None = None,
+        date_from: str | None = None,
+        date_to: str | None = None,
+        open_limit: int = 500,
+    ) -> list[dict[str, Any]]:
+        normalized_ids = sorted({int(x) for x in account_ids if int(x) > 0})
+        if not normalized_ids:
+            return []
+        placeholders = ",".join(["%s"] * len(normalized_ids))
+        status_filter = "AND status IN ('PENDING_SUBMIT','SUBMITTED','PARTIALLY_FILLED')" if open_only else ""
+        strategy_filter = "AND strategy_id = %s" if strategy_id is not None else ""
+        limit_clause = "LIMIT %s" if open_only else ""
+        date_filter = ""
+        params_list: list[Any] = [*normalized_ids]
+        if strategy_id is not None:
+            params_list.append(int(strategy_id))
+        if (not open_only) and date_from and date_to:
+            date_filter = "AND updated_at >= %s AND updated_at < DATE_ADD(%s, INTERVAL 1 DAY)"
+            params_list.append(str(date_from))
+            params_list.append(str(date_to))
+        if open_only:
+            per_account_limit = max(1, min(5000, int(open_limit or 500)))
+            params_list.append(per_account_limit * len(normalized_ids))
+        async with conn.cursor() as cur:
+            await cur.execute(
+                f"""
+                SELECT id, account_id, symbol, side, order_type, status, strategy_id, position_id, reason,
+                       comment, client_order_id, exchange_order_id, qty, price, stop_loss, stop_gain, filled_qty, avg_fill_price,
+                       created_at, updated_at, closed_at, command_id,
+                       previous_position_id, edit_replace_state, edit_replace_at,
+                       edit_replace_orphan_order_id, edit_replace_origin_order_id
+                FROM oms_orders
+                WHERE account_id IN ({placeholders}) {status_filter} {strategy_filter} {date_filter}
+                ORDER BY id ASC
+                {limit_clause}
+                """,
+                tuple(params_list),
+            )
+            rows = await cur.fetchall()
+        out: list[dict[str, Any]] = []
+        for r in rows:
+            out.append(
+                {
+                    "id": int(r[0]),
+                    "account_id": int(r[1]),
+                    "symbol": r[2],
+                    "side": r[3],
+                    "order_type": r[4],
+                    "status": r[5],
+                    "strategy_id": int(r[6]),
+                    "position_id": int(r[7]),
+                    "reason": r[8],
+                    "comment": r[9],
+                    "client_order_id": r[10],
+                    "exchange_order_id": r[11],
+                    "qty": str(r[12]),
+                    "price": None if r[13] is None else str(r[13]),
+                    "stop_loss": None if r[14] is None else str(r[14]),
+                    "stop_gain": None if r[15] is None else str(r[15]),
+                    "filled_qty": str(r[16]),
+                    "avg_fill_price": None if r[17] is None else str(r[17]),
+                    "created_at": str(r[18]),
+                    "updated_at": str(r[19]),
+                    "closed_at": None if r[20] is None else str(r[20]),
+                    "command_id": None if r[21] is None else int(r[21]),
+                    "previous_position_id": None if r[22] is None else int(r[22]),
+                    "edit_replace_state": None if r[23] is None else str(r[23]),
+                    "edit_replace_at": None if r[24] is None else str(r[24]),
+                    "edit_replace_orphan_order_id": None if r[25] is None else int(r[25]),
+                    "edit_replace_origin_order_id": None if r[26] is None else int(r[26]),
+                }
+            )
+        return out
+
     async def list_deals(
         self,
         conn: Any,
@@ -2824,6 +2948,67 @@ class MySQLCommandRepository:
                     "created_at": str(r[15]),
                     "executed_at": str(r[16]),
                     "previous_position_id": None if r[17] is None else int(r[17]),
+                }
+            )
+        return out
+
+    async def list_deals_multi(
+        self,
+        conn: Any,
+        account_ids: list[int],
+        strategy_id: int | None = None,
+        date_from: str | None = None,
+        date_to: str | None = None,
+    ) -> list[dict[str, Any]]:
+        normalized_ids = sorted({int(x) for x in account_ids if int(x) > 0})
+        if not normalized_ids:
+            return []
+        placeholders = ",".join(["%s"] * len(normalized_ids))
+        strategy_filter = "AND strategy_id = %s" if strategy_id is not None else ""
+        date_filter = ""
+        params_list: list[Any] = [*normalized_ids]
+        if strategy_id is not None:
+            params_list.append(int(strategy_id))
+        if date_from and date_to:
+            date_filter = "AND executed_at >= %s AND executed_at < DATE_ADD(%s, INTERVAL 1 DAY)"
+            params_list.append(str(date_from))
+            params_list.append(str(date_to))
+        async with conn.cursor() as cur:
+            await cur.execute(
+                f"""
+                SELECT id, account_id, order_id, position_id, symbol, side, qty, price, fee, fee_currency,
+                       pnl, strategy_id, reason, comment, reconciled, exchange_trade_id, created_at, executed_at,
+                       previous_position_id
+                FROM oms_deals
+                WHERE account_id IN ({placeholders}) {strategy_filter} {date_filter}
+                ORDER BY id ASC
+                """,
+                tuple(params_list),
+            )
+            rows = await cur.fetchall()
+        out: list[dict[str, Any]] = []
+        for r in rows:
+            out.append(
+                {
+                    "id": int(r[0]),
+                    "account_id": int(r[1]),
+                    "order_id": None if r[2] is None else int(r[2]),
+                    "position_id": int(r[3]),
+                    "symbol": r[4],
+                    "side": r[5],
+                    "qty": str(r[6]),
+                    "price": str(r[7]),
+                    "fee": None if r[8] is None else str(r[8]),
+                    "fee_currency": r[9],
+                    "pnl": None if r[10] is None else str(r[10]),
+                    "strategy_id": int(r[11]),
+                    "reason": r[12],
+                    "comment": r[13],
+                    "reconciled": bool(r[14]),
+                    "exchange_trade_id": r[15],
+                    "created_at": str(r[16]),
+                    "executed_at": str(r[17]),
+                    "previous_position_id": None if r[18] is None else int(r[18]),
                 }
             )
         return out
@@ -2883,6 +3068,69 @@ class MySQLCommandRepository:
                     "opened_at": str(r[11]),
                     "updated_at": str(r[12]),
                     "closed_at": None if r[13] is None else str(r[13]),
+                }
+            )
+        return out
+
+    async def list_positions_multi(
+        self,
+        conn: Any,
+        account_ids: list[int],
+        open_only: bool,
+        strategy_id: int | None = None,
+        date_from: str | None = None,
+        date_to: str | None = None,
+        open_limit: int = 500,
+    ) -> list[dict[str, Any]]:
+        normalized_ids = sorted({int(x) for x in account_ids if int(x) > 0})
+        if not normalized_ids:
+            return []
+        placeholders = ",".join(["%s"] * len(normalized_ids))
+        state_filter = "AND state IN ('open', 'close_requested')" if open_only else ""
+        strategy_filter = "AND strategy_id = %s" if strategy_id is not None else ""
+        limit_clause = "LIMIT %s" if open_only else ""
+        date_filter = ""
+        params_list: list[Any] = [*normalized_ids]
+        if strategy_id is not None:
+            params_list.append(int(strategy_id))
+        if (not open_only) and date_from and date_to:
+            date_filter = "AND updated_at >= %s AND updated_at < DATE_ADD(%s, INTERVAL 1 DAY)"
+            params_list.append(str(date_from))
+            params_list.append(str(date_to))
+        if open_only:
+            per_account_limit = max(1, min(5000, int(open_limit or 500)))
+            params_list.append(per_account_limit * len(normalized_ids))
+        async with conn.cursor() as cur:
+            await cur.execute(
+                f"""
+                SELECT id, account_id, symbol, strategy_id, side, qty, avg_price, stop_loss, stop_gain, state, reason, comment, opened_at, updated_at, closed_at
+                FROM oms_positions
+                WHERE account_id IN ({placeholders}) {state_filter} {strategy_filter} {date_filter}
+                ORDER BY id ASC
+                {limit_clause}
+                """,
+                tuple(params_list),
+            )
+            rows = await cur.fetchall()
+        out: list[dict[str, Any]] = []
+        for r in rows:
+            out.append(
+                {
+                    "id": int(r[0]),
+                    "account_id": int(r[1]),
+                    "symbol": r[2],
+                    "strategy_id": int(r[3]),
+                    "side": r[4],
+                    "qty": str(r[5]),
+                    "avg_price": str(r[6]),
+                    "stop_loss": None if r[7] is None else str(r[7]),
+                    "stop_gain": None if r[8] is None else str(r[8]),
+                    "state": r[9],
+                    "reason": r[10],
+                    "comment": r[11],
+                    "opened_at": str(r[12]),
+                    "updated_at": str(r[13]),
+                    "closed_at": None if r[14] is None else str(r[14]),
                 }
             )
         return out

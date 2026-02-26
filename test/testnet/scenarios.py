@@ -129,8 +129,9 @@ def create_account_for_mode(
     api_key: str,
     secret_key: str,
     logger: Logger,
+    exchange_id: str = "ccxt.binance",
 ) -> int:
-    logger.info(f"creating account mode={mode} label={label}")
+    logger.info(f"creating account mode={mode} exchange_id={exchange_id} label={label}")
     created = run_json_cmd(
         compose
         + [
@@ -144,7 +145,7 @@ def create_account_for_mode(
             "--user-id",
             str(user_id),
             "--exchange-id",
-            "ccxt.binance",
+            str(exchange_id),
             "--label",
             label,
             "--position-mode",
@@ -455,6 +456,7 @@ def main() -> int:
         api_key=api_key,
         secret_key=secret_key,
         logger=logger,
+        exchange_id="ccxtpro.binance",
     )
     hedge_buy_strategy = create_strategy(
         base_url, headers, hedge_account, build_strategy_name(symbol, "hedge-buy", hedge_account), 101, logger

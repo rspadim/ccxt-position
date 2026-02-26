@@ -226,3 +226,35 @@ def test_extract_ws_rows_positions_snapshot() -> None:
     rows = ex._extract_ws_rows(kind="positions", msg=msg, symbol="BTC/USDT")
     assert len(rows) == 1
     assert rows[0]["id"] == "9201"
+
+
+def test_watch_ticker_uses_ws_payload_when_available() -> None:
+    rec = _RecorderTransport()
+    ex = _make_exchange(rec)
+
+    async def _fake_ws(*args, **kwargs):
+        _ = args, kwargs
+        return {"symbol": "BTC/USDT", "last": 123.45}
+
+    ex._watch_market_via_ws = _fake_ws  # type: ignore[attr-defined]
+    out = asyncio.run(ex.watch_ticker("BTC/USDT"))
+    assert isinstance(out, dict)
+    assert out["last"] == 123.45
+
+
+def test_watch_marketdata_falls_back_to_ccxt_call_when_ws_unavailable() -> None:
+    rec = _RecorderTransport()
+    ex = _make_exchange(rec)
+
+    async def _none_ws(*args, **kwargs):
+        _ = args, kwargs
+        return None
+
+    ex._watch_market_via_ws = _none_ws  # type: ignore[attr-defined]
+    out_book = asyncio.run(ex.watch_order_book("BTC/USDT", limit=10))
+    out_trades = asyncio.run(ex.watch_trades("BTC/USDT", limit=10))
+    out_ohlcv = asyncio.run(ex.watch_ohlcv("BTC/USDT", timeframe="1m", limit=2))
+
+    assert isinstance(out_book, dict)
+    assert isinstance(out_trades, list)
+    assert isinstance(out_ohlcv, list)
