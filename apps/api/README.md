@@ -228,10 +228,11 @@ python -m apps.api.cli --help
 Security commands:
 
 ```bash
-python -m apps.api.cli install --with-account --exchange-id binance --label binance-testnet --testnet
+python -m apps.api.cli install --with-account --exchange-id ccxt.binance --label binance-testnet --testnet
 python -m apps.api.cli create-user --name trader-bot
 python -m apps.api.cli create-api-key --user-id 1
-python -m apps.api.cli add-account --user-id 1 --exchange-id binance --label main --testnet
+python -m apps.api.cli add-account --user-id 1 --exchange-id ccxt.binance --label main --testnet
+python -m apps.api.cli add-account --user-id 1 --exchange-id ccxt.binance --label strat-net --position-mode strategy_netting --testnet
 python -m apps.api.cli generate-master-key
 python -m apps.api.cli encrypt --value "my-secret"
 python -m apps.api.cli upsert-account-credentials --account-id 1 --api-key "..." --secret "..." --encrypt-input
@@ -247,5 +248,30 @@ python -m apps.api.cli cancel-order --api-key "$KEY" --account-id 1 --order-id 1
 python -m apps.api.cli close-position --api-key "$KEY" --account-id 1 --position-id 77
 python -m apps.api.cli close-by --api-key "$KEY" --account-id 1 --position-id-a 77 --position-id-b 88
 python -m apps.api.cli reassign-position --api-key "$KEY" --account-id 1 --deal-ids 1 2 3 --target-strategy-id 42 --target-position-id 77
+```
+
+Operational/query commands:
+
+```bash
+# health and dispatcher
+python -m apps.api.cli healthz
+python -m apps.api.cli dispatcher-status --api-key "$KEY"
+
+# accounts/strategies
+python -m apps.api.cli list-accounts --api-key "$KEY"
+python -m apps.api.cli list-strategies --api-key "$KEY"
+python -m apps.api.cli create-strategy --api-key "$KEY" --name "btc-main" --account-ids 1 --client-strategy-id 1001
+
+# reconciliation
+python -m apps.api.cli reconcile --api-key "$KEY" --account-id 1 --scope long --symbols-hint BTC/USDT
+python -m apps.api.cli reconcile-status --api-key "$KEY" --account-id 1
+python -m apps.api.cli reconcile-status --api-key "$KEY" --status stale
+
+# OMS read queries
+python -m apps.api.cli orders-open --api-key "$KEY" --account-ids 1
+python -m apps.api.cli orders-history --api-key "$KEY" --account-ids 1 --days-back 2
+python -m apps.api.cli deals --api-key "$KEY" --account-ids 1 --days-back 2
+python -m apps.api.cli positions-open --api-key "$KEY" --account-ids 1
+python -m apps.api.cli positions-history --api-key "$KEY" --account-ids 1 --days-back 2
 ```
 

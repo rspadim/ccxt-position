@@ -42,12 +42,17 @@ What it does:
 - starts docker stack
 - creates user + internal API key + account
 - stores encrypted Binance testnet credentials
-- runs a smoke `send_order` via `/position/commands`
+- runs a smoke `send_order` via `/oms/commands`
 - saves runtime context in `test/testnet/runtime/context.json`
 
 ## Multi-Scenario Validation
 
-Run hedge/netting live scenarios with multiple `strategy_id`, position reduce/reverse, and mirrored-account reconciliation (same exchange credentials in two account IDs):
+Run live scenarios covering:
+
+- `hedge` account validation
+- `netting` reduce/reverse flow
+- `strategy_netting` staircase (increment, decrement-to-close, reverse/close attempt, per-strategy split)
+- mirrored-account reconciliation (same exchange credentials in two account IDs)
 
 ```bash
 python test/testnet/scenarios.py
