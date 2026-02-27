@@ -61,6 +61,7 @@ services:
     environment:
       CONFIG_JSON_PATH: /app/apps/api/config.docker.json
       DISPATCHER_HOST: 0.0.0.0
+      DISPATCHER_READ_POOL_SIZE: "12"
     volumes:
       - ../..:/app
       - ../../logs:/app/logs
