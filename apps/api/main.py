@@ -84,6 +84,7 @@ from .app.schemas import (
     ReassignResponse,
     ReassignInput,
     RiskActionResponse,
+    RiskStrategyStateResponse,
     RiskSetAccountStatusInput,
     RiskSetAllowNewPositionsInput,
     RiskSetStrategyAllowNewPositionsInput,
@@ -1163,6 +1164,26 @@ async def get_position_accounts(
     if not out.get("ok"):
         raise HTTPException(status_code=400, detail=out.get("error") or {"code": "dispatcher_error"})
     return AccountsResponse(items=out.get("result", []))
+
+
+@app.get("/oms/risk/{account_id}/strategies", response_model=RiskStrategyStateResponse)
+async def get_risk_strategy_state(
+    account_id: int,
+    x_api_key: str = Header(default=""),
+) -> RiskStrategyStateResponse:
+    out = await dispatch_request(
+        host=settings.dispatcher_host,
+        port=settings.dispatcher_port,
+        timeout_seconds=settings.dispatcher_request_timeout_seconds,
+        payload={
+            "op": "risk_list_strategy_allow_new_positions",
+            "x_api_key": x_api_key,
+            "account_id": int(account_id),
+        },
+    )
+    if not out.get("ok"):
+        raise HTTPException(status_code=400, detail=out.get("error") or {"code": "dispatcher_error"})
+    return RiskStrategyStateResponse(items=out.get("result", []))
 
 
 @app.post("/oms/risk/{account_id}/allow_new_positions", response_model=RiskActionResponse)

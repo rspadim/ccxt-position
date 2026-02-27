@@ -819,16 +819,16 @@ Error generating stack: `+n.message+`
 
         <div id="adminApiKeysSection" class="is-hidden">
           <form id="adminCreateApiKeyForm">
-            <h3>Adicionar API Key</h3>
+            <h3 data-i18n="admin.add_api_key">Add API Key</h3>
             <label><span data-i18n="admin.user_id">User ID</span>
               <div class="inline-input">
                 <input id="adminApiKeyUserId" name="user_id" type="number" min="1" placeholder="1" list="adminUserOptions" />
                 <datalist id="adminUserOptions"></datalist>
               </div>
             </label>
-            <label><span data-i18n="admin.api_key_label">Label</span><input id="adminApiKeyLabel" name="label" placeholder="Opcional" /></label>
-            <label><span data-i18n="admin.api_key_value">API Key (opcional)</span><input id="adminApiKeyValue" name="api_key" placeholder="vazio = gerar automaticamente" /></label>
-            <wa-button id="adminCreateApiKeyBtn" type="submit" variant="brand">Criar API Key</wa-button>
+            <label><span data-i18n="admin.api_key_label">Label</span><input id="adminApiKeyLabel" name="label" data-i18n-placeholder="common.optional" placeholder="optional" /></label>
+            <label><span data-i18n="admin.api_key_value">API Key (optional)</span><input id="adminApiKeyValue" name="api_key" data-i18n-placeholder="admin.api_key_auto_generate_placeholder" placeholder="empty = auto-generate" /></label>
+            <wa-button id="adminCreateApiKeyBtn" type="submit" variant="brand" data-i18n="admin.create_api_key">Create API Key</wa-button>
           </form>
           <div id="adminCreatedApiKeyBox" class="notice notice-info is-hidden"></div>
           <div class="card">
@@ -914,7 +914,7 @@ Error generating stack: `+n.message+`
             <form id="riskAccountForm">
               <h3 data-i18n="risk.account_controls">Account Risk Controls</h3>
               <label><span data-i18n="common.account_id">Account ID</span><input id="riskAccountId" list="accountHistory" /></label>
-              <label><span data-i18n="cmd.field.comment">Comment</span><input id="riskAccountComment" placeholder="motivo obrigatorio" /></label>
+              <label><span data-i18n="cmd.field.comment">Comment</span><input id="riskAccountComment" data-i18n-placeholder="risk.comment_required_short" placeholder="required reason" /></label>
               <div class="actions">
                 <wa-button id="riskAllowNewPositionsBtn" type="button" data-i18n="risk.allow_new_positions">Allow New Positions</wa-button>
                 <wa-button id="riskBlockNewPositionsBtn" type="button" variant="neutral" data-i18n="risk.block_new_positions">Block New Positions</wa-button>
@@ -929,12 +929,21 @@ Error generating stack: `+n.message+`
               <h3 data-i18n="risk.strategy_controls">Strategy Risk Controls</h3>
               <label><span data-i18n="common.account_id">Account ID</span><input id="riskStrategyAccountId" list="accountHistory" /></label>
               <label><span data-i18n="oms.col_strategy_id">Strategy ID</span><input id="riskStrategyId" type="number" min="0" value="0" /></label>
-              <label><span data-i18n="cmd.field.comment">Comment</span><input id="riskStrategyComment" placeholder="motivo obrigatorio" /></label>
+              <label><span data-i18n="cmd.field.comment">Comment</span><input id="riskStrategyComment" data-i18n-placeholder="risk.comment_required_short" placeholder="required reason" /></label>
               <div class="actions">
                 <wa-button id="riskAllowStrategyBtn" type="button" data-i18n="risk.allow_strategy_opens">Allow Strategy Opens</wa-button>
                 <wa-button id="riskBlockStrategyBtn" type="button" variant="neutral" data-i18n="risk.block_strategy_opens">Block Strategy Opens</wa-button>
               </div>
             </form>
+          </div>
+          <div class="card">
+            <div class="actions">
+              <wa-button id="riskRefreshStatesBtn" type="button" variant="neutral" data-i18n="common.refresh">Refresh</wa-button>
+            </div>
+            <h3 data-i18n="risk.account_state_rows">Account Risk State</h3>
+            <div id="riskAccountStateTable"></div>
+            <h3 data-i18n="risk.strategy_state_rows">Strategy Risk State</h3>
+            <div id="riskStrategyStateTable"></div>
           </div>
         </div>
 
@@ -966,4 +975,4 @@ Error generating stack: `+n.message+`
       </section>
       </main>\r
       </div>\r
-`;function dv(){return ss.jsx("div",{id:"app",dangerouslySetInnerHTML:{__html:fv}})}const Er=document.getElementById("root");if(!Er)throw new Error("Missing #root element");ov.createRoot(Er).render(ss.jsx(lv.StrictMode,{children:ss.jsx(dv,{})}));Fm(()=>import("./main-8ZK9EgX3.js"),[]);
+`;function dv(){return ss.jsx("div",{id:"app",dangerouslySetInnerHTML:{__html:fv}})}const Er=document.getElementById("root");if(!Er)throw new Error("Missing #root element");ov.createRoot(Er).render(ss.jsx(lv.StrictMode,{children:ss.jsx(dv,{})}));Fm(()=>import("./main-d4dTylSK.js"),[]);

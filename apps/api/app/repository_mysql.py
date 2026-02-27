@@ -2338,11 +2338,14 @@ class MySQLCommandRepository:
             await cur.execute(
                 """
                 SELECT a.id, a.label, a.exchange_id, a.position_mode, a.is_testnet, a.status,
-                       uap.can_read, uap.can_trade, uap.can_risk_manage
+                       uap.can_read, uap.can_trade, uap.can_risk_manage,
+                       COALESCE(ars.allow_new_positions, TRUE) AS allow_new_positions
                 FROM accounts a
                 JOIN user_account_permissions uap
                   ON uap.account_id = a.id
                  AND uap.user_id = %s
+                LEFT JOIN account_risk_state ars
+                  ON ars.account_id = a.id
                 WHERE a.status = 'active' AND uap.can_read = TRUE
                 ORDER BY a.id ASC
                 """,
@@ -2362,6 +2365,7 @@ class MySQLCommandRepository:
                     "can_read": bool(row[6]),
                     "can_trade": bool(row[7]),
                     "can_risk_manage": bool(row[8]),
+                    "allow_new_positions": bool(row[9]),
                 }
             )
         return out
@@ -2371,12 +2375,15 @@ class MySQLCommandRepository:
             await cur.execute(
                 """
                 SELECT a.id, a.label, a.exchange_id, a.position_mode, a.is_testnet, a.status,
-                       akap.can_read, akap.can_trade, akap.can_risk_manage
+                       akap.can_read, akap.can_trade, akap.can_risk_manage,
+                       COALESCE(ars.allow_new_positions, TRUE) AS allow_new_positions
                 FROM accounts a
                 JOIN api_key_account_permissions akap
                   ON akap.account_id = a.id
                  AND akap.api_key_id = %s
                  AND akap.status = 'active'
+                LEFT JOIN account_risk_state ars
+                  ON ars.account_id = a.id
                 WHERE a.status = 'active' AND akap.can_read = TRUE
                 ORDER BY a.id ASC
                 """,
@@ -2396,6 +2403,57 @@ class MySQLCommandRepository:
                     "can_read": bool(row[6]),
                     "can_trade": bool(row[7]),
                     "can_risk_manage": bool(row[8]),
+                    "allow_new_positions": bool(row[9]),
+                }
+            )
+        return out
+
+    async def list_strategy_risk_state_for_api_key(
+        self, conn: Any, api_key_id: int, account_id: int
+    ) -> list[dict[str, Any]]:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT
+                  sa.account_id,
+                  s.id AS strategy_id,
+                  s.name,
+                  s.status,
+                  COALESCE(asrs.allow_new_positions, TRUE) AS allow_new_positions
+                FROM strategies s
+                JOIN strategy_accounts sa
+                  ON sa.strategy_id = s.id
+                 AND sa.status = 'active'
+                JOIN api_key_account_permissions akap
+                  ON akap.account_id = sa.account_id
+                 AND akap.api_key_id = %s
+                 AND akap.status = 'active'
+                 AND akap.can_read = TRUE
+                LEFT JOIN api_key_strategy_permissions asp
+                  ON asp.api_key_id = akap.api_key_id
+                 AND asp.account_id = sa.account_id
+                 AND asp.strategy_id = s.id
+                 AND asp.status = 'active'
+                 AND asp.can_read = TRUE
+                LEFT JOIN account_strategy_risk_state asrs
+                  ON asrs.account_id = sa.account_id
+                 AND asrs.strategy_id = s.id
+                WHERE sa.account_id = %s
+                  AND (akap.restrict_to_strategies = FALSE OR asp.strategy_id IS NOT NULL)
+                ORDER BY s.id ASC
+                """,
+                (api_key_id, account_id),
+            )
+            rows = await cur.fetchall()
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            out.append(
+                {
+                    "account_id": int(row[0]),
+                    "strategy_id": int(row[1]),
+                    "name": str(row[2]),
+                    "status": str(row[3]),
+                    "allow_new_positions": bool(row[4]),
                 }
             )
         return out

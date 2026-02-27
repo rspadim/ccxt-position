@@ -538,6 +538,7 @@ class AccountSummaryItem(BaseModel):
     position_mode: str
     is_testnet: bool
     status: str
+    allow_new_positions: bool | None = None
     can_read: bool
     can_trade: bool
     can_risk_manage: bool
@@ -545,6 +546,18 @@ class AccountSummaryItem(BaseModel):
 
 class AccountsResponse(BaseModel):
     items: list[AccountSummaryItem]
+
+
+class RiskStrategyStateItem(BaseModel):
+    account_id: int
+    strategy_id: int
+    name: str
+    status: str
+    allow_new_positions: bool
+
+
+class RiskStrategyStateResponse(BaseModel):
+    items: list[RiskStrategyStateItem]
 
 
 class RiskSetAllowNewPositionsInput(BaseModel):

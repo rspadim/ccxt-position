@@ -41,6 +41,41 @@ Specification-first bootstrap with first implementation slice available in `apps
 - `POST /ccxt/commands`: batch CCXT commands
 - `WS /ws`: unified websocket envelope (`position_*` and `ccxt_*`)
 
+## Front-end Gallery
+
+Screenshots (generated from local UI):
+
+![Login Language Options](docs/media/screenshots/01-login-language-options.png)
+![OMS Commands](docs/media/screenshots/02-oms-commands.png)
+![OMS Positions](docs/media/screenshots/03-oms-positions.png)
+![OMS Symbol List](docs/media/screenshots/04-oms-symbol-list.png)
+![System CCXT Orders](docs/media/screenshots/05-system-ccxt-orders.png)
+![System CCXT Trades](docs/media/screenshots/06-system-ccxt-trades.png)
+![Admin Accounts](docs/media/screenshots/07-admin-accounts.png)
+![Admin API Keys](docs/media/screenshots/08-admin-api-keys.png)
+![Admin System Status](docs/media/screenshots/09-admin-system-status.png)
+![Risk Accounts](docs/media/screenshots/10-risk-accounts.png)
+
+Generate or refresh screenshots:
+
+```bash
+# install front-end deps
+npm --prefix apps/front-end install
+
+# one-time (python screenshot script)
+py -3.13 -m pip install playwright
+py -3.13 -m playwright install chromium
+
+# run front-end (example)
+npm --prefix apps/front-end run dev
+
+# in another shell, generate screenshots
+py -3.13 scripts/capture_front_screenshots.py \
+  --front-url http://127.0.0.1:5173 \
+  --api-url http://127.0.0.1:8000 \
+  --api-key <YOUR_API_KEY>
+```
+
 ## Documentation Index
 
 - Architecture: `docs/architecture/overview.md`

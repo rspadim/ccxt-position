@@ -2194,6 +2194,17 @@ class Dispatcher:
                 await conn.commit()
             return {"ok": True, "result": self._decorate_exchange_ids(rows)}
 
+        if op == "risk_list_strategy_allow_new_positions":
+            auth = await self._auth_from_payload(msg)
+            account_id = int(msg.get("account_id", 0) or 0)
+            await self._require_account_permission(auth, account_id)
+            async with self.db.connection() as conn:
+                rows = await self.repo.list_strategy_risk_state_for_api_key(
+                    conn, auth.api_key_id, account_id
+                )
+                await conn.commit()
+            return {"ok": True, "result": rows}
+
         if op == "risk_set_allow_new_positions":
             auth = await self._auth_from_payload(msg)
             account_id = int(msg.get("account_id", 0) or 0)

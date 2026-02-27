@@ -373,7 +373,7 @@ function renderSendStrategyOptions(items) {
   node.innerHTML = "";
   const defaultOpt = document.createElement("option");
   defaultOpt.value = "0";
-  defaultOpt.textContent = "0 - sem strategy";
+  defaultOpt.textContent = t("trade.no_strategy_option", "0 - no strategy");
   node.appendChild(defaultOpt);
   for (const item of items || []) {
     const sid = Number(item.strategy_id);
@@ -841,6 +841,88 @@ function t(key, fallback = "") {
   return String(dict[key] || fallback || key);
 }
 
+const COLUMN_I18N_BY_FIELD = {
+  id: "oms.col_id",
+  account_id: "oms.col_account_id",
+  strategy_id: "oms.col_strategy_id",
+  position_id: "oms.col_position_id",
+  previous_position_id: "oms.col_previous_position_id",
+  order_id: "oms.col_order_id",
+  symbol: "oms.col_symbol",
+  side: "oms.col_side",
+  qty: "oms.col_qty",
+  avg_price: "oms.col_avg_price",
+  stop_loss: "oms.col_stop_loss",
+  stop_gain: "oms.col_stop_gain",
+  state: "oms.col_state",
+  reason: "oms.col_reason",
+  comment: "oms.col_comment",
+  opened_at: "oms.col_opened_at",
+  updated_at: "oms.col_updated_at",
+  closed_at: "oms.col_closed_at",
+  command_id: "oms.col_command_id",
+  order_type: "oms.col_order_type",
+  status: "oms.col_status",
+  price: "oms.col_price",
+  filled_qty: "oms.col_filled_qty",
+  avg_fill_price: "oms.col_avg_fill_price",
+  client_order_id: "oms.col_client_order_id",
+  exchange_order_id: "oms.col_exchange_order_id",
+  exchange_trade_id: "oms.col_exchange_trade_id",
+  created_at: "oms.col_created_at",
+  executed_at: "oms.col_executed_at",
+  fee: "oms.col_fee",
+  fee_currency: "oms.col_fee_currency",
+  pnl: "oms.col_pnl",
+  reconciled: "oms.col_reconciled",
+  market_id: "oms.col_market_id",
+  base: "oms.col_base",
+  quote: "oms.col_quote",
+  type: "oms.col_market_type",
+  active: "oms.col_market_active",
+  price_decimals: "oms.col_price_decimals",
+  qty_decimals: "oms.col_qty_decimals",
+  price_min: "oms.col_price_min",
+  price_max: "oms.col_price_max",
+  qty_min: "oms.col_qty_min",
+  qty_max: "oms.col_qty_max",
+  cost_min: "oms.col_cost_min",
+  cost_max: "oms.col_cost_max",
+  tick_size: "oms.col_tick_size",
+  step_size: "oms.col_step_size",
+  seq: "system.col_seq",
+  at: "system.col_at",
+  kind: "system.col_kind",
+  payload: "system.col_payload",
+  level: "system.col_level",
+  message: "system.col_message",
+  exchange_id: "system.col_exchange_id",
+  observed_at: "system.col_observed_at",
+  raw_json: "system.col_raw",
+  target_strategy_id: "post_trading.col_target_strategy_id",
+  edit_replace_state: "post_trading.col_edit_replace_state",
+  edit_replace_at: "post_trading.col_edit_replace_at",
+  edit_replace_origin_order_id: "post_trading.col_replace_origin_order_id",
+  edit_replace_orphan_order_id: "post_trading.col_replace_orphan_order_id",
+};
+
+function localizeTableColumnTitles(table) {
+  if (!table || typeof table.getColumns !== "function") return;
+  for (const column of table.getColumns()) {
+    if (!column || typeof column.getDefinition !== "function" || typeof column.updateDefinition !== "function") continue;
+    const def = column.getDefinition() || {};
+    const field = String(def.field || "").trim();
+    if (!field) continue;
+    const key = COLUMN_I18N_BY_FIELD[field];
+    if (!key) continue;
+    const currentTitle = String(def.title || "");
+    const nextTitle = t(key, currentTitle || field);
+    if (nextTitle && nextTitle !== currentTitle) {
+      column.updateDefinition({ title: nextTitle });
+    }
+  }
+}
+
 function setOmsMessage(kind, text) {
   const node = document.getElementById("omsMessage");
   if (!node) return;
@@ -1051,6 +1133,39 @@ function applyLanguageTexts() {
   if (state.tables.riskPermissions) {
     setTableColumnsWhenReady(state.tables.riskPermissions, buildRiskPermissionsColumns());
   }
+  if (state.tables.riskAccountState) {
+    setTableColumnsWhenReady(state.tables.riskAccountState, buildRiskAccountStateColumns());
+  }
+  if (state.tables.riskStrategyState) {
+    setTableColumnsWhenReady(state.tables.riskStrategyState, buildRiskStrategyStateColumns());
+  }
+  if (state.tables.ccxtTrades) {
+    setTableColumnsWhenReady(state.tables.ccxtTrades, [
+      { title: t("oms.col_id", "ID"), field: "id", width: 84 },
+      { title: t("oms.col_account_id", "Account ID"), field: "account_id", width: 96 },
+      { title: t("system.col_exchange_id", "Exchange ID"), field: "exchange_id", width: 140 },
+      { title: t("oms.col_exchange_trade_id", "Exchange Trade ID"), field: "exchange_trade_id", width: 150 },
+      { title: t("oms.col_exchange_order_id", "Exchange Order ID"), field: "exchange_order_id", width: 150 },
+      { title: t("oms.col_symbol", "Symbol"), field: "symbol", width: 120 },
+      { title: t("system.col_raw", "Raw"), field: "raw_json", widthGrow: 1, formatter: jsonCellFormatter },
+      { title: t("system.col_observed_at", "Observed At"), field: "observed_at", width: 170 },
+    ]);
+  }
+  if (state.tables.ccxtOrders) {
+    setTableColumnsWhenReady(state.tables.ccxtOrders, [
+      { title: t("oms.col_id", "ID"), field: "id", width: 84 },
+      { title: t("oms.col_account_id", "Account ID"), field: "account_id", width: 96 },
+      { title: t("system.col_exchange_id", "Exchange ID"), field: "exchange_id", width: 140 },
+      { title: t("oms.col_exchange_order_id", "Exchange Order ID"), field: "exchange_order_id", width: 150 },
+      { title: t("oms.col_client_order_id", "Client Order ID"), field: "client_order_id", width: 150 },
+      { title: t("oms.col_symbol", "Symbol"), field: "symbol", width: 120 },
+      { title: t("system.col_raw", "Raw"), field: "raw_json", widthGrow: 1, formatter: jsonCellFormatter },
+      { title: t("system.col_observed_at", "Observed At"), field: "observed_at", width: 170 },
+    ]);
+  }
+  Object.values(state.tables).forEach((table) => {
+    localizeTableColumnTitles(table);
+  });
   applyDensityMode(state.densityMode, false);
   updateApiKeyToggleLabel();
   updateLoginPasswordToggleLabel();
@@ -1310,7 +1425,7 @@ function makeTable(id, columns, options = {}) {
     data: [],
     layout: "fitDataStretch",
     height: initialHeight,
-    placeholder: "sem dados",
+    placeholder: () => t("common.no_data", "no data"),
     columns: normalizeTabulatorColumns(columns),
     ...mergedOptions,
   });
@@ -2721,7 +2836,7 @@ function adminOmsColumnsForView(view) {
       { title: t("oms.col_status", "Status"), field: "status", width: 120, editor: "input" },
       { title: t("oms.col_strategy_id", "Strategy ID"), field: "strategy_id", width: 100, editor: "input" },
       { title: t("oms.col_position_id", "Position ID"), field: "position_id", width: 100, editor: "input" },
-      { title: "Prev Position ID", field: "previous_position_id", width: 130, editor: "input" },
+      { title: t("oms.col_previous_position_id", "Previous Position ID"), field: "previous_position_id", width: 130, editor: "input" },
       { title: t("oms.col_qty", "Qty"), field: "qty", width: 100, editor: "input" },
       { title: t("oms.col_price", "Price"), field: "price", width: 110, editor: "input" },
       { title: t("oms.col_stop_loss", "Stop Loss"), field: "stop_loss", width: 120, editor: "input" },
@@ -2732,10 +2847,10 @@ function adminOmsColumnsForView(view) {
       { title: t("oms.col_comment", "Comment"), field: "comment", width: 180, editor: "input" },
       { title: t("oms.col_client_order_id", "Client Order ID"), field: "client_order_id", width: 140, editor: "input" },
       { title: t("oms.col_exchange_order_id", "Exchange Order ID"), field: "exchange_order_id", width: 150, editor: "input" },
-      { title: "Edit Replace State", field: "edit_replace_state", width: 150, editor: "input" },
-      { title: "Edit Replace At", field: "edit_replace_at", width: 170, editor: "input" },
-      { title: "Replace Orphan Order", field: "edit_replace_orphan_order_id", width: 170, editor: "input" },
-      { title: "Replace Origin Order", field: "edit_replace_origin_order_id", width: 170, editor: "input" },
+      { title: t("post_trading.col_edit_replace_state", "Edit Replace State"), field: "edit_replace_state", width: 150, editor: "input" },
+      { title: t("post_trading.col_edit_replace_at", "Edit Replace At"), field: "edit_replace_at", width: 170, editor: "input" },
+      { title: t("post_trading.col_replace_orphan_order_id", "Replace Orphan Order"), field: "edit_replace_orphan_order_id", width: 170, editor: "input" },
+      { title: t("post_trading.col_replace_origin_order_id", "Replace Origin Order"), field: "edit_replace_origin_order_id", width: 170, editor: "input" },
       { title: t("oms.col_created_at", "Created At"), field: "created_at", width: 170, editor: "input" },
       { title: t("oms.col_updated_at", "Updated At"), field: "updated_at", width: 170, editor: "input" },
       { title: t("oms.col_closed_at", "Closed At"), field: "closed_at", width: 170, editor: "input" },
@@ -2763,7 +2878,7 @@ function adminOmsColumnsForView(view) {
     ...shared,
     { title: t("oms.col_order_id", "Order ID"), field: "order_id", width: 90, editor: "input" },
     { title: t("oms.col_position_id", "Position ID"), field: "position_id", width: 100, editor: "input" },
-    { title: "Prev Position ID", field: "previous_position_id", width: 130, editor: "input" },
+    { title: t("oms.col_previous_position_id", "Previous Position ID"), field: "previous_position_id", width: 130, editor: "input" },
     { title: t("oms.col_symbol", "Symbol"), field: "symbol", width: 120, editor: "input" },
     { title: t("oms.col_side", "Side"), field: "side", width: 90, editor: "input", formatter: (cell) => sideBadge(cell.getValue()) },
     { title: t("oms.col_qty", "Qty"), field: "qty", width: 100, editor: "input" },
@@ -2954,6 +3069,26 @@ function buildRiskPermissionsColumns() {
       },
     },
     { title: t("user.status", "Status"), field: "status", width: 95 },
+  ];
+}
+
+function buildRiskAccountStateColumns() {
+  return [
+    { title: t("common.account_id", "Account ID"), field: "account_id", width: 110, hozAlign: "right", headerHozAlign: "right" },
+    { title: t("admin.col_label", "Label"), field: "label", width: 180 },
+    { title: t("admin.col_exchange_id", "Exchange ID"), field: "exchange_id", width: 150 },
+    { title: t("admin.col_status", "Status"), field: "status", width: 120 },
+    { title: t("risk.allow_new_positions", "Allow New Positions"), field: "allow_new_positions", width: 170, formatter: "tickCross" },
+  ];
+}
+
+function buildRiskStrategyStateColumns() {
+  return [
+    { title: t("common.account_id", "Account ID"), field: "account_id", width: 110, hozAlign: "right", headerHozAlign: "right" },
+    { title: t("oms.col_strategy_id", "Strategy ID"), field: "strategy_id", width: 120, hozAlign: "right", headerHozAlign: "right" },
+    { title: t("trade.col_name", "Name"), field: "name", width: 220 },
+    { title: t("trade.col_status", "Status"), field: "status", width: 120 },
+    { title: t("risk.allow_new_positions", "Allow New Positions"), field: "allow_new_positions", width: 170, formatter: "tickCross" },
   ];
 }
 
@@ -3286,11 +3421,11 @@ function setupTables() {
     { title: t("oms.col_avg_fill_price", "Avg Fill Price"), field: "avg_fill_price", width: 130, hozAlign: "right", headerHozAlign: "right" },
     { title: t("oms.col_status", "Status"), field: "status", width: 120 },
     { title: t("oms.col_reconciled", "Reconciled"), field: "reconciled", width: 110 },
-    { title: "Edit Replace State", field: "edit_replace_state", width: 150 },
-    { title: "Edit Replace At", field: "edit_replace_at", width: 170 },
-    { title: "Replace Origin Order", field: "edit_replace_origin_order_id", width: 160 },
-    { title: "Replace Orphan Order", field: "edit_replace_orphan_order_id", width: 160 },
-    { title: "Prev Position ID", field: "previous_position_id", width: 130 },
+    { title: t("post_trading.col_edit_replace_state", "Edit Replace State"), field: "edit_replace_state", width: 150 },
+    { title: t("post_trading.col_edit_replace_at", "Edit Replace At"), field: "edit_replace_at", width: 170 },
+    { title: t("post_trading.col_replace_origin_order_id", "Replace Origin Order"), field: "edit_replace_origin_order_id", width: 160 },
+    { title: t("post_trading.col_replace_orphan_order_id", "Replace Orphan Order"), field: "edit_replace_orphan_order_id", width: 160 },
+    { title: t("oms.col_previous_position_id", "Previous Position ID"), field: "previous_position_id", width: 130 },
     { title: t("post_trading.col_target_strategy_id", "Target Strategy ID"), field: "target_strategy_id", width: 140, editor: "input", hozAlign: "right", headerHozAlign: "right" },
     { title: t("oms.col_strategy_id", "Current Strategy ID"), field: "strategy_id", width: 140, hozAlign: "right", headerHozAlign: "right" },
     { title: t("oms.col_created_at", "Created At"), field: "created_at", width: 170 },
@@ -3335,6 +3470,8 @@ function setupTables() {
   state.tables.userApiKeys = makeTable("userApiKeysTable", buildUserApiKeysColumns());
   state.tables.userApiKeyPermissions = makeTable("userApiKeyPermissionsTable", buildUserApiKeyPermissionsColumns());
   state.tables.riskPermissions = makeTable("riskPermissionsTable", buildRiskPermissionsColumns());
+  state.tables.riskAccountState = makeTable("riskAccountStateTable", buildRiskAccountStateColumns());
+  state.tables.riskStrategyState = makeTable("riskStrategyStateTable", buildRiskStrategyStateColumns());
 }
 
 async function loadAdminAccounts(cfgOverride = null) {
@@ -3641,6 +3778,38 @@ async function loadRiskPermissions(cfgOverride = null) {
   eventLog("risk_load_permissions", { api_key_id: apiKeyId, rows: (res.items || []).length });
 }
 
+async function loadRiskStates(cfgOverride = null) {
+  const cfg = cfgOverride || requireConfig();
+  const accountsRes = await apiRequest("/oms/accounts", {}, cfg);
+  const accountRows = (accountsRes.items || []).map((item) => ({
+    account_id: Number(item.account_id || 0),
+    label: String(item.label || "").trim(),
+    exchange_id: String(item.exchange_id || "").trim(),
+    status: String(item.status || "").trim(),
+    allow_new_positions: Boolean(item.allow_new_positions),
+  })).filter((x) => Number.isFinite(x.account_id) && x.account_id > 0);
+  state.tables.riskAccountState.setData(accountRows);
+
+  let targetAccountId = Number($("riskStrategyAccountId").value || 0);
+  if (!Number.isFinite(targetAccountId) || targetAccountId <= 0) {
+    targetAccountId = Number($("riskAccountId").value || 0);
+  }
+  if ((!Number.isFinite(targetAccountId) || targetAccountId <= 0) && accountRows.length > 0) {
+    targetAccountId = Number(accountRows[0].account_id);
+  }
+  if (!Number.isFinite(targetAccountId) || targetAccountId <= 0) {
+    state.tables.riskStrategyState.setData([]);
+    return;
+  }
+  const strategiesRes = await apiRequest(`/oms/risk/${targetAccountId}/strategies`, {}, cfg);
+  state.tables.riskStrategyState.setData(strategiesRes.items || []);
+  eventLog("risk_load_states", {
+    account_rows: accountRows.length,
+    strategy_rows: Number((strategiesRes.items || []).length),
+    account_id: targetAccountId,
+  });
+}
+
 async function loadCcxtExchanges(cfgOverride = null) {
   const cfg = cfgOverride || requireConfig();
   const res = await apiRequest("/meta/exchanges", {}, cfg);
@@ -3709,6 +3878,7 @@ async function loadAccountsByApiKey(cfgOverride = null) {
     if (!$("riskStrategyAccountId").value) $("riskStrategyAccountId").value = String(ids[0]);
     if (!$("riskPermAccountId").value) $("riskPermAccountId").value = String(ids[0]);
   }
+  await loadRiskStates(cfg);
   eventLog("accounts_loaded", { ids, labels: Object.fromEntries(state.accountLabels.entries()) });
 }
 
@@ -4886,12 +5056,13 @@ function bindForms() {
       const cfg = requireConfig();
       const accountId = requireAccountId("riskAccountId", "risk");
       const comment = String($("riskAccountComment").value || "").trim();
-      if (!comment) throw new Error("risk comment is required");
+      if (!comment) throw new Error(t("risk.comment_required", "risk comment is required"));
       const out = await apiRequest(`/oms/risk/${accountId}/allow_new_positions`, {
         method: "POST",
         body: { allow_new_positions: true, comment },
       }, cfg);
       eventLog("risk_allow_new_positions", out);
+      await loadRiskStates(cfg);
     } catch (err) {
       eventLog("risk_allow_new_positions_error", { error: String(err) });
     }
@@ -4901,12 +5072,13 @@ function bindForms() {
       const cfg = requireConfig();
       const accountId = requireAccountId("riskAccountId", "risk");
       const comment = String($("riskAccountComment").value || "").trim();
-      if (!comment) throw new Error("risk comment is required");
+      if (!comment) throw new Error(t("risk.comment_required", "risk comment is required"));
       const out = await apiRequest(`/oms/risk/${accountId}/allow_new_positions`, {
         method: "POST",
         body: { allow_new_positions: false, comment },
       }, cfg);
       eventLog("risk_block_new_positions", out);
+      await loadRiskStates(cfg);
     } catch (err) {
       eventLog("risk_block_new_positions_error", { error: String(err) });
     }
@@ -4916,12 +5088,13 @@ function bindForms() {
       const cfg = requireConfig();
       const accountId = requireAccountId("riskAccountId", "risk");
       const comment = String($("riskAccountComment").value || "").trim();
-      if (!comment) throw new Error("risk comment is required");
+      if (!comment) throw new Error(t("risk.comment_required", "risk comment is required"));
       const out = await apiRequest(`/oms/risk/${accountId}/status`, {
         method: "POST",
         body: { status: "active", comment },
       }, cfg);
       eventLog("risk_set_account_active", out);
+      await loadRiskStates(cfg);
     } catch (err) {
       eventLog("risk_set_account_active_error", { error: String(err) });
     }
@@ -4931,12 +5104,13 @@ function bindForms() {
       const cfg = requireConfig();
       const accountId = requireAccountId("riskAccountId", "risk");
       const comment = String($("riskAccountComment").value || "").trim();
-      if (!comment) throw new Error("risk comment is required");
+      if (!comment) throw new Error(t("risk.comment_required", "risk comment is required"));
       const out = await apiRequest(`/oms/risk/${accountId}/status`, {
         method: "POST",
         body: { status: "blocked", comment },
       }, cfg);
       eventLog("risk_set_account_blocked", out);
+      await loadRiskStates(cfg);
     } catch (err) {
       eventLog("risk_set_account_blocked_error", { error: String(err) });
     }
@@ -4947,13 +5121,16 @@ function bindForms() {
       const accountId = requireAccountId("riskStrategyAccountId", "risk_strategy");
       const strategyId = Number($("riskStrategyId").value || 0);
       const comment = String($("riskStrategyComment").value || "").trim();
-      if (!Number.isFinite(strategyId) || strategyId < 0) throw new Error("strategy_id inválido");
-      if (!comment) throw new Error("risk comment is required");
+      if (!Number.isFinite(strategyId) || strategyId < 0) {
+        throw new Error(t("risk.strategy_id_invalid", "strategy_id invalid"));
+      }
+      if (!comment) throw new Error(t("risk.comment_required", "risk comment is required"));
       const out = await apiRequest(`/oms/risk/${accountId}/strategies/allow_new_positions`, {
         method: "POST",
         body: { strategy_id: strategyId, allow_new_positions: true, comment },
       }, cfg);
       eventLog("risk_allow_strategy", out);
+      await loadRiskStates(cfg);
     } catch (err) {
       eventLog("risk_allow_strategy_error", { error: String(err) });
     }
@@ -4964,17 +5141,30 @@ function bindForms() {
       const accountId = requireAccountId("riskStrategyAccountId", "risk_strategy");
       const strategyId = Number($("riskStrategyId").value || 0);
       const comment = String($("riskStrategyComment").value || "").trim();
-      if (!Number.isFinite(strategyId) || strategyId < 0) throw new Error("strategy_id inválido");
-      if (!comment) throw new Error("risk comment is required");
+      if (!Number.isFinite(strategyId) || strategyId < 0) {
+        throw new Error(t("risk.strategy_id_invalid", "strategy_id invalid"));
+      }
+      if (!comment) throw new Error(t("risk.comment_required", "risk comment is required"));
       const out = await apiRequest(`/oms/risk/${accountId}/strategies/allow_new_positions`, {
         method: "POST",
         body: { strategy_id: strategyId, allow_new_positions: false, comment },
       }, cfg);
       eventLog("risk_block_strategy", out);
+      await loadRiskStates(cfg);
     } catch (err) {
       eventLog("risk_block_strategy_error", { error: String(err) });
     }
   });
+  const riskRefreshStatesBtn = document.getElementById("riskRefreshStatesBtn");
+  if (riskRefreshStatesBtn) {
+    riskRefreshStatesBtn.addEventListener("click", async () => {
+      try {
+        await loadRiskStates();
+      } catch (err) {
+        eventLog("risk_load_states_error", { error: String(err) });
+      }
+    });
+  }
   $("riskLoadPermissionsBtn").addEventListener("click", async () => {
     try {
       await loadRiskPermissions();
