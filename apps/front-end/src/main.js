@@ -3521,6 +3521,22 @@ async function loadAdminSystemStatus(cfgOverride = null) {
   setAdminSystemStatus(txt, "error");
 }
 
+async function clearOmsCache(cfgOverride = null) {
+  const cfg = cfgOverride || requireConfig();
+  const out = await apiRequest("/oms/cache/clear", { method: "POST" }, cfg);
+  const result = out?.result || {};
+  const scope = String(result.scope || "unknown");
+  const count = Number(result.cleared_before || 0);
+  setAdminSystemStatus(
+    t("admin.clear_oms_cache_ok", "Cache OMS limpo ({scope}, antes={count}).")
+      .replace("{scope}", scope)
+      .replace("{count}", String(count)),
+    "success",
+  );
+  await loadAdminSystemStatus(cfg);
+  return out;
+}
+
 async function loadUserProfile(cfgOverride = null) {
   const cfg = cfgOverride || requireConfig();
   const res = await apiRequest("/user/profile", {}, cfg);
@@ -4731,6 +4747,21 @@ function bindForms() {
       setAdminSystemStatus(`${t("admin.status_error", "Erro ao consultar estado")}: ${String(err)}`, "error");
     }
   });
+  const clearOmsCacheBtn = document.getElementById("adminClearOmsCacheBtn");
+  if (clearOmsCacheBtn) {
+    clearOmsCacheBtn.addEventListener("click", async () => {
+      try {
+        const out = await clearOmsCache();
+        eventLog("admin_oms_cache_clear_ok", out?.result || {});
+      } catch (err) {
+        eventLog("admin_oms_cache_clear_error", { error: String(err) });
+        setAdminSystemStatus(
+          `${t("admin.clear_oms_cache_error", "Erro ao limpar cache OMS")}: ${String(err)}`,
+          "error",
+        );
+      }
+    });
+  }
   const expandTreeBtn = document.getElementById("adminExpandSystemTreeBtn");
   if (expandTreeBtn) {
     expandTreeBtn.addEventListener("click", () => setSystemTreeExpanded(true));

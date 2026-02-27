@@ -240,6 +240,27 @@ async def get_dispatcher_status(
     raise HTTPException(status_code=503, detail=out.get("error") or {"code": "dispatcher_unavailable"})
 
 
+@app.post("/oms/cache/clear")
+async def post_oms_cache_clear(
+    x_api_key: str = Header(default=""),
+) -> dict[str, Any]:
+    out = await dispatch_request(
+        host=settings.dispatcher_host,
+        port=settings.dispatcher_port,
+        timeout_seconds=settings.dispatcher_request_timeout_seconds,
+        payload={"op": "oms_query_cache_clear", "x_api_key": x_api_key},
+    )
+    if not out.get("ok"):
+        err = out.get("error") or {"code": "dispatcher_error"}
+        code = str(err.get("code", "")).strip().lower()
+        if code in {"invalid_api_key", "missing_api_key"}:
+            raise HTTPException(status_code=401, detail=err)
+        if code in {"permission_denied"}:
+            raise HTTPException(status_code=403, detail=err)
+        raise HTTPException(status_code=400, detail=err)
+    return {"ok": True, "result": out.get("result", {})}
+
+
 @app.post("/oms/commands", response_model=CommandsResponse)
 async def post_oms_commands(
     commands: CommandInput | list[CommandInput],
@@ -344,6 +365,7 @@ async def _oms_query_multi_account(
     open_limit: int | None = None,
     page: int | None = None,
     page_size: int | None = None,
+    cache: bool = True,
 ) -> Any:
     targets = _normalize_account_targets(account_ids=account_ids)
     if not targets:
@@ -364,6 +386,7 @@ async def _oms_query_multi_account(
             "open_limit": open_limit,
             "page": page,
             "page_size": page_size,
+            "cache": bool(cache),
         },
     )
     if not dispatched.get("ok"):
@@ -748,6 +771,7 @@ async def get_position_orders_open(
     account_ids: str,
     strategy_id: int | None = None,
     limit: int = 500,
+    cache: bool = True,
     x_api_key: str = Header(default=""),
 ) -> PositionOrdersResponse:
     result = await _oms_query_multi_account(
@@ -756,6 +780,7 @@ async def get_position_orders_open(
         account_ids=account_ids,
         strategy_id=strategy_id,
         open_limit=max(1, min(5000, int(limit or 500))),
+        cache=cache,
     )
     rows = result if isinstance(result, list) else []
     return PositionOrdersResponse(items=rows)
@@ -769,6 +794,7 @@ async def get_position_orders_history(
     end_date: str | None = None,
     page: int = 1,
     page_size: int = 100,
+    cache: bool = True,
     x_api_key: str = Header(default=""),
 ) -> PositionOrdersResponse:
     if not start_date or not end_date:
@@ -792,6 +818,7 @@ async def get_position_orders_history(
         date_to=date_to,
         page=page,
         page_size=page_size,
+        cache=cache,
     )
     if isinstance(result, dict):
         items = result.get("items", [])
@@ -817,6 +844,7 @@ async def get_position_deals(
     end_date: str | None = None,
     page: int = 1,
     page_size: int = 100,
+    cache: bool = True,
     x_api_key: str = Header(default=""),
 ) -> PositionDealsResponse:
     if not start_date or not end_date:
@@ -840,6 +868,7 @@ async def get_position_deals(
         date_to=date_to,
         page=page,
         page_size=page_size,
+        cache=cache,
     )
     if isinstance(result, dict):
         items = result.get("items", [])
@@ -862,6 +891,7 @@ async def get_position_positions_open(
     account_ids: str,
     strategy_id: int | None = None,
     limit: int = 500,
+    cache: bool = True,
     x_api_key: str = Header(default=""),
 ) -> PositionsResponse:
     result = await _oms_query_multi_account(
@@ -870,6 +900,7 @@ async def get_position_positions_open(
         account_ids=account_ids,
         strategy_id=strategy_id,
         open_limit=max(1, min(5000, int(limit or 500))),
+        cache=cache,
     )
     rows = result if isinstance(result, list) else []
     return PositionsResponse(items=rows)
@@ -883,6 +914,7 @@ async def get_position_positions_history(
     end_date: str | None = None,
     page: int = 1,
     page_size: int = 100,
+    cache: bool = True,
     x_api_key: str = Header(default=""),
 ) -> PositionsResponse:
     if not start_date or not end_date:
@@ -906,6 +938,7 @@ async def get_position_positions_history(
         date_to=date_to,
         page=page,
         page_size=page_size,
+        cache=cache,
     )
     if isinstance(result, dict):
         items = result.get("items", [])

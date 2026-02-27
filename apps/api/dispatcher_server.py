@@ -119,6 +119,18 @@ class Dispatcher:
         self._ws_event_buffer_limit = 5000
         self._queue_wait_samples_ms: deque[float] = deque(maxlen=5000)
         self._execute_samples_ms: deque[float] = deque(maxlen=5000)
+        self._op_timing_total_ms: dict[str, float] = {}
+        self._op_timing_count: dict[str, int] = {}
+        self._op_timing_max_ms: dict[str, float] = {}
+        self._op_timing_samples_ms: dict[str, deque[float]] = {}
+        self.oms_query_cache_ttl_seconds: int = max(
+            0, int(os.getenv("DISPATCHER_OMS_QUERY_CACHE_TTL_SECONDS", "5") or 5)
+        )
+        self._oms_query_cache: dict[str, tuple[float, Any]] = {}
+        self._oms_query_cache_keys_by_account: dict[int, set[str]] = {}
+        self._oms_query_cache_hits = 0
+        self._oms_query_cache_misses = 0
+        self._oms_query_cache_invalidations = 0
         self.auth_cache_ttl_seconds: int = max(
             0, int(os.getenv("DISPATCHER_AUTH_CACHE_TTL_SECONDS", "60") or 60)
         )
@@ -261,6 +273,147 @@ class Dispatcher:
         hi = min(lo + 1, len(ordered) - 1)
         frac = idx - lo
         return float(ordered[lo] * (1 - frac) + ordered[hi] * frac)
+
+    @staticmethod
+    def _op_timing_key(payload: dict[str, Any]) -> str:
+        op = str(payload.get("op", "") or "").strip()
+        if op == "oms_query_multi":
+            query = str(payload.get("query", "") or "").strip()
+            if query:
+                return f"{op}:{query}"
+        return op or "unknown"
+
+    def _record_op_timing(self, payload: dict[str, Any], execute_ms: float) -> None:
+        key = self._op_timing_key(payload)
+        self._op_timing_count[key] = int(self._op_timing_count.get(key, 0)) + 1
+        self._op_timing_total_ms[key] = float(self._op_timing_total_ms.get(key, 0.0)) + float(execute_ms)
+        self._op_timing_max_ms[key] = max(float(self._op_timing_max_ms.get(key, 0.0)), float(execute_ms))
+        samples = self._op_timing_samples_ms.get(key)
+        if samples is None:
+            samples = deque(maxlen=2000)
+            self._op_timing_samples_ms[key] = samples
+        samples.append(float(execute_ms))
+
+    def _maybe_invalidate_oms_query_cache(self, payload: dict[str, Any], out: Any) -> None:
+        if self.oms_query_cache_ttl_seconds <= 0:
+            return
+        if not isinstance(out, dict) or not bool(out.get("ok")):
+            return
+        op = str(payload.get("op", "") or "").strip().lower()
+        if op in {
+            "status",
+            "authorize_account",
+            "oms_query",
+            "oms_query_multi",
+            "ccxt_raw_query",
+            "ccxt_raw_query_multi",
+            "reconcile_status_account",
+            "reconcile_status_list",
+            "accounts_list",
+            "ws_pull_events",
+            "ws_tail_id",
+            "auth_check",
+            "meta_ccxt_exchanges",
+            "user_profile_get",
+            "user_api_keys_list",
+            "user_api_key_permissions_list",
+            "admin_list_accounts",
+            "admin_list_users",
+            "admin_list_users_api_keys",
+            "admin_list_api_key_permissions",
+            "admin_list_strategies",
+            "strategy_list",
+            "admin_oms_query",
+        }:
+            return
+        if op == "ccxt_call":
+            func = str(payload.get("func", "") or "").strip()
+            if not self._ccxt_requires_trade(func):
+                return
+        account_ids: list[int] = []
+        account_id = int(payload.get("account_id", 0) or 0)
+        if account_id > 0:
+            account_ids.append(account_id)
+        if op in {"oms_commands_batch", "ccxt_batch"}:
+            raw_items = payload.get("items")
+            if isinstance(raw_items, list):
+                for raw in raw_items:
+                    if not isinstance(raw, dict):
+                        continue
+                    aid = int(raw.get("account_id", 0) or 0)
+                    if aid > 0:
+                        account_ids.append(aid)
+        if account_ids:
+            self._oms_query_cache_invalidate_accounts(account_ids)
+        else:
+            self._oms_query_cache_invalidate_all()
+
+    def _oms_query_cache_get(self, key: str) -> Any | None:
+        if self.oms_query_cache_ttl_seconds <= 0:
+            return None
+        row = self._oms_query_cache.get(key)
+        if row is None:
+            self._oms_query_cache_misses += 1
+            return None
+        expires_at, value = row
+        if expires_at < time.monotonic():
+            self._oms_query_cache.pop(key, None)
+            self._oms_query_cache_misses += 1
+            return None
+        self._oms_query_cache_hits += 1
+        return value
+
+    def _oms_query_cache_set(self, key: str, value: Any, account_ids: list[int]) -> None:
+        if self.oms_query_cache_ttl_seconds <= 0:
+            return
+        self._oms_query_cache[key] = (time.monotonic() + float(self.oms_query_cache_ttl_seconds), value)
+        for aid in sorted({int(x) for x in account_ids if int(x) > 0}):
+            self._oms_query_cache_keys_by_account.setdefault(aid, set()).add(key)
+
+    def _oms_query_cache_invalidate_accounts(self, account_ids: list[int]) -> None:
+        if self.oms_query_cache_ttl_seconds <= 0:
+            return
+        ids = sorted({int(x) for x in account_ids if int(x) > 0})
+        if not ids:
+            return
+        self._oms_query_cache_invalidations += 1
+        for aid in ids:
+            keys = self._oms_query_cache_keys_by_account.pop(aid, set())
+            for key in keys:
+                self._oms_query_cache.pop(key, None)
+
+    def _oms_query_cache_invalidate_all(self) -> None:
+        if self.oms_query_cache_ttl_seconds <= 0:
+            return
+        self._oms_query_cache_invalidations += 1
+        self._oms_query_cache.clear()
+        self._oms_query_cache_keys_by_account.clear()
+
+    @staticmethod
+    def _make_oms_query_cache_key(
+        *,
+        api_key_id: int,
+        query: str,
+        account_ids: list[int],
+        strategy_id: int | None,
+        date_from: str | None,
+        date_to: str | None,
+        open_limit: int | None,
+        page: int | None,
+        page_size: int | None,
+    ) -> str:
+        payload = {
+            "api_key_id": int(api_key_id),
+            "query": str(query),
+            "account_ids": [int(x) for x in account_ids if int(x) > 0],
+            "strategy_id": None if strategy_id is None else int(strategy_id),
+            "date_from": date_from,
+            "date_to": date_to,
+            "open_limit": None if open_limit is None else int(open_limit),
+            "page": None if page is None else int(page),
+            "page_size": None if page_size is None else int(page_size),
+        }
+        return fastjson_encode(payload).decode("utf-8")
 
     @staticmethod
     def _exchange_engine_id(value: Any) -> str:
@@ -789,6 +942,7 @@ class Dispatcher:
                         out = await self._execute(job.payload)
                 else:
                     out = await self._execute(job.payload)
+                self._maybe_invalidate_oms_query_cache(job.payload, out)
                 if not job.future.done():
                     job.future.set_result(out)
             except Exception as exc:
@@ -801,6 +955,7 @@ class Dispatcher:
                 execute_ms = (time.perf_counter() - started_at) * 1000.0
                 self._queue_wait_samples_ms.append(float(queue_wait_ms))
                 self._execute_samples_ms.append(float(execute_ms))
+                self._record_op_timing(job.payload, execute_ms)
                 self._dispatcher_logger_for_hint(engine, worker_id).info(
                     "worker_done engine=%s worker_id=%s account_id=%s op=%s queue_wait_ms=%s execute_ms=%s inflight=%s queue_depth=%s",
                     str(engine),
@@ -820,8 +975,10 @@ class Dispatcher:
     async def _worker_loop_control(self) -> None:
         while True:
             job = await self.control_queue.get()
+            started_at = time.perf_counter()
             try:
                 out = await self._execute(job.payload)
+                self._maybe_invalidate_oms_query_cache(job.payload, out)
                 if not job.future.done():
                     job.future.set_result(out)
             except Exception as exc:
@@ -831,6 +988,9 @@ class Dispatcher:
                         {"ok": False, "error": {"code": "dispatcher_error", "message": str(exc)}}
                     )
             finally:
+                execute_ms = (time.perf_counter() - started_at) * 1000.0
+                self._execute_samples_ms.append(float(execute_ms))
+                self._record_op_timing(job.payload, execute_ms)
                 self.control_queue.task_done()
 
     async def _worker_loop_read(self, worker_id: int, queue: asyncio.Queue[_Job]) -> None:
@@ -841,6 +1001,7 @@ class Dispatcher:
             try:
                 self.read_worker_inflight[worker_id] += 1
                 out = await self._execute(job.payload)
+                self._maybe_invalidate_oms_query_cache(job.payload, out)
                 if not job.future.done():
                     job.future.set_result(out)
             except Exception as exc:
@@ -853,6 +1014,7 @@ class Dispatcher:
                 execute_ms = (time.perf_counter() - started_at) * 1000.0
                 self._queue_wait_samples_ms.append(float(queue_wait_ms))
                 self._execute_samples_ms.append(float(execute_ms))
+                self._record_op_timing(job.payload, execute_ms)
                 self.loggers.get("dispatcher").info(
                     "read_worker_done worker_id=%s account_id=%s op=%s queue_wait_ms=%s execute_ms=%s inflight=%s queue_depth=%s",
                     int(worker_id),
@@ -1128,6 +1290,8 @@ class Dispatcher:
                 item=item,
                 index=index,
             )
+            if bool(getattr(result, "ok", False)):
+                self._oms_query_cache_invalidate_accounts([int(resolved_account_id)])
             return {"ok": True, "result": result.model_dump()}
 
         if op == "authorize_account":
@@ -1207,6 +1371,7 @@ class Dispatcher:
             auth = await self._auth_from_payload(msg)
             query = str(msg.get("query", "")).strip()
             account_id = int(msg.get("account_id", 0) or 0)
+            use_cache = bool(msg.get("cache", True))
             strategy_id_raw = msg.get("strategy_id")
             date_from_raw = msg.get("date_from")
             date_to_raw = msg.get("date_to")
@@ -1227,6 +1392,21 @@ class Dispatcher:
                     "error": {"code": "validation_error", "message": "date_from and date_to must be provided together"},
                 }
             await self._require_account_permission(auth, account_id, require_trade=False)
+            cache_key = self._make_oms_query_cache_key(
+                api_key_id=auth.api_key_id,
+                query=query,
+                account_ids=[account_id],
+                strategy_id=strategy_id,
+                date_from=date_from,
+                date_to=date_to,
+                open_limit=open_limit,
+                page=None,
+                page_size=None,
+            )
+            if use_cache:
+                cached = self._oms_query_cache_get(cache_key)
+                if cached is not None:
+                    return {"ok": True, "result": cached}
             async with self.db.connection() as conn:
                 perms = await self.repo.fetch_api_key_account_permissions(conn, auth.api_key_id, account_id)
                 if perms is None or not bool(perms.get("can_read")):
@@ -1269,11 +1449,14 @@ class Dispatcher:
                     await conn.commit()
                     return {"ok": False, "error": {"code": "unsupported_query"}}
                 await conn.commit()
+            if use_cache:
+                self._oms_query_cache_set(cache_key, rows, [account_id])
             return {"ok": True, "result": rows}
 
         if op == "oms_query_multi":
             auth = await self._auth_from_payload(msg)
             query = str(msg.get("query", "")).strip()
+            use_cache = bool(msg.get("cache", True))
             raw_account_ids = msg.get("account_ids")
             strategy_id_raw = msg.get("strategy_id")
             date_from_raw = msg.get("date_from")
@@ -1325,6 +1508,21 @@ class Dispatcher:
                     account_ids.append(aid)
             if not account_ids:
                 return {"ok": False, "error": {"code": "validation_error", "message": "account_ids is required"}}
+            cache_key = self._make_oms_query_cache_key(
+                api_key_id=auth.api_key_id,
+                query=query,
+                account_ids=account_ids,
+                strategy_id=strategy_id,
+                date_from=date_from,
+                date_to=date_to,
+                open_limit=open_limit,
+                page=page,
+                page_size=page_size,
+            )
+            if use_cache:
+                cached = self._oms_query_cache_get(cache_key)
+                if cached is not None:
+                    return {"ok": True, "result": cached}
             async with self.db.connection() as conn:
                 perms_by_account = await self.repo.fetch_api_key_account_permissions_multi(
                     conn, auth.api_key_id, account_ids
@@ -1404,6 +1602,8 @@ class Dispatcher:
                     await conn.commit()
                     return {"ok": False, "error": {"code": "unsupported_query"}}
                 await conn.commit()
+            if use_cache:
+                self._oms_query_cache_set(cache_key, result, account_ids)
             return {"ok": True, "result": result}
 
         if op == "ccxt_raw_query":
@@ -1880,6 +2080,7 @@ class Dispatcher:
                     },
                 )
                 await conn.commit()
+            self._oms_query_cache_invalidate_accounts(account_ids)
             return {
                 "ok": True,
                 "result": {
@@ -1931,6 +2132,7 @@ class Dispatcher:
             dispatcher_logger = self.loggers.get("dispatcher")
             if dispatcher_logger is not None:
                 dispatcher_logger.info("reconcile_now_summary %s", json.dumps(stats, separators=(",", ":")))
+            self._oms_query_cache_invalidate_accounts([account_id])
             return {
                 "ok": True,
                 "result": {
@@ -2097,6 +2299,7 @@ class Dispatcher:
                     },
                 )
                 await conn.commit()
+            self._oms_query_cache_invalidate_accounts([account_id])
             return {"ok": True, "result": {"account_id": account_id, "status": status, "rows": changed}}
 
         if op == "admin_create_account":
@@ -2205,6 +2408,7 @@ class Dispatcher:
                     )
                 await conn.commit()
             self._perm_cache_invalidate(account_id=account_id)
+            self._oms_query_cache_invalidate_accounts([account_id])
             return {"ok": True, "result": {"account_id": account_id, "rows": rows}}
 
         if op == "admin_create_user_api_key":
@@ -2376,6 +2580,7 @@ class Dispatcher:
                     )
                 await conn.commit()
             self._perm_cache_invalidate(api_key_id=api_key_id, account_id=account_id)
+            self._oms_query_cache_invalidate_all()
             return {"ok": True, "result": {"api_key_id": api_key_id, "account_id": account_id, "rows": rows}}
 
         if op == "admin_update_api_key":
@@ -2392,6 +2597,7 @@ class Dispatcher:
                 await conn.commit()
             self._auth_cache_invalidate(api_key_id=api_key_id)
             self._perm_cache_invalidate(api_key_id=api_key_id)
+            self._oms_query_cache_invalidate_all()
             return {"ok": True, "result": {"api_key_id": api_key_id, "rows": rows}}
 
         if op == "auth_login_password":
@@ -2583,6 +2789,7 @@ class Dispatcher:
                 await conn.commit()
             self._auth_cache_invalidate(api_key_id=api_key_id)
             self._perm_cache_invalidate(api_key_id=api_key_id)
+            self._oms_query_cache_invalidate_all()
             return {"ok": True, "result": {"api_key_id": api_key_id, "rows": int(rows)}}
 
         if op == "admin_list_users":
@@ -2987,6 +3194,8 @@ class Dispatcher:
                         event_type="snapshot_open_positions",
                         payload={"items": open_positions},
                     )
+            if affected_accounts:
+                self._oms_query_cache_invalidate_accounts([int(a) for a in affected_accounts])
             return {"ok": True, "result": {"entity": entity, "results": results}}
 
         if op == "ws_pull_events":
@@ -3009,6 +3218,21 @@ class Dispatcher:
             ccxt_sessions = self.ccxt.get_session_status()
             queue_wait = list(self._queue_wait_samples_ms)
             execute = list(self._execute_samples_ms)
+            op_timing: dict[str, Any] = {}
+            for key in sorted(self._op_timing_count.keys()):
+                count = int(self._op_timing_count.get(key, 0))
+                total_ms = float(self._op_timing_total_ms.get(key, 0.0))
+                max_ms = float(self._op_timing_max_ms.get(key, 0.0))
+                samples = list(self._op_timing_samples_ms.get(key, []))
+                avg_ms = (total_ms / count) if count > 0 else 0.0
+                op_timing[key] = {
+                    "count": count,
+                    "total_ms": round(total_ms, 2),
+                    "avg_ms": round(avg_ms, 2),
+                    "max_ms": round(max_ms, 2),
+                    "p95_ms": round(self._percentile(samples, 0.95), 2),
+                    "p99_ms": round(self._percentile(samples, 0.99), 2),
+                }
             return {
                 "ok": True,
                 "result": {
@@ -3052,6 +3276,11 @@ class Dispatcher:
                     "permission_cache_strategy_hits": int(self._perm_cache_strategy_hits),
                     "permission_cache_strategy_misses": int(self._perm_cache_strategy_misses),
                     "permission_cache_invalidations": int(self._perm_cache_invalidations),
+                    "oms_query_cache_ttl_seconds": int(self.oms_query_cache_ttl_seconds),
+                    "oms_query_cache_size": len(self._oms_query_cache),
+                    "oms_query_cache_hits": int(self._oms_query_cache_hits),
+                    "oms_query_cache_misses": int(self._oms_query_cache_misses),
+                    "oms_query_cache_invalidations": int(self._oms_query_cache_invalidations),
                     "timing_samples_count": len(queue_wait),
                     "queue_wait_ms": {
                         "p50": round(self._percentile(queue_wait, 0.50), 2),
@@ -3063,6 +3292,40 @@ class Dispatcher:
                         "p95": round(self._percentile(execute, 0.95), 2),
                         "p99": round(self._percentile(execute, 0.99), 2),
                     },
+                    "op_timing_ms": op_timing,
+                },
+            }
+
+        if op == "oms_query_cache_clear":
+            auth = await self._auth_from_payload(msg)
+            if bool(auth.is_admin):
+                cleared_before = len(self._oms_query_cache)
+                self._oms_query_cache_invalidate_all()
+                return {
+                    "ok": True,
+                    "result": {
+                        "scope": "all",
+                        "cleared_before": int(cleared_before),
+                    },
+                }
+            async with self.db.connection() as conn:
+                rows = await self.repo.list_accounts_for_api_key(conn, auth.api_key_id)
+                await conn.commit()
+            account_ids = sorted(
+                {
+                    int(r.get("account_id", 0) or 0)
+                    for r in (rows or [])
+                    if int(r.get("account_id", 0) or 0) > 0
+                }
+            )
+            cleared_before = len(self._oms_query_cache)
+            self._oms_query_cache_invalidate_accounts(account_ids)
+            return {
+                "ok": True,
+                "result": {
+                    "scope": "visible_accounts",
+                    "account_count": int(len(account_ids)),
+                    "cleared_before": int(cleared_before),
                 },
             }
 
