@@ -226,6 +226,19 @@ More details and runnable examples:
 - `ccxt_driver/examples/order_flow_oms_first.py`
 - `ccxt_driver/examples/marketdata_fallback.py`
 
+Auto patch for bots that import `ccxt` directly (no code change in bot):
+
+```bash
+py -3.13 -m ccxt_driver.autopatch install --scope user --mode safe
+py -3.13 -m ccxt_driver.autopatch status --scope user
+```
+
+Aggressive mode (override specific exchange constructors):
+
+```bash
+py -3.13 -m ccxt_driver.autopatch install --scope user --mode aggressive --override binance,bybit
+```
+
 ## OMS Examples (Recommended)
 
 Use `/oms` for trading flows tied to OMS orders/deals/positions.

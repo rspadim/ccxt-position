@@ -26,6 +26,39 @@ ticker = exchange.fetch_ticker("BTC/USDT")
 print(ticker)
 ```
 
+## Auto Patch (no code change in client bot)
+
+If a third-party bot imports `ccxt` directly and you want OMS integration automatically, install an auto patch into `sitecustomize.py`:
+
+```bash
+py -3.13 -m ccxt_driver.autopatch install --scope user --mode safe
+```
+
+Check status:
+
+```bash
+py -3.13 -m ccxt_driver.autopatch status --scope user
+```
+
+Remove:
+
+```bash
+py -3.13 -m ccxt_driver.autopatch uninstall --scope user
+```
+
+Environment variables used at runtime:
+
+- `CCXT_OMS_AUTOPATCH=1`
+- `CCXT_OMS_AUTOPATCH_MODE=safe|aggressive`
+- `CCXT_OMS_OVERRIDE_EXCHANGES=binance,bybit` (aggressive mode)
+- `CCXT_OMS_API_KEY=...`
+- `CCXT_OMS_ACCOUNT_ID=...`
+- `CCXT_OMS_STRATEGY_ID=...`
+- `CCXT_OMS_BASE_URL=http://127.0.0.1:8000`
+
+`safe` mode adds `ccxt.oms_exchange(...)` factory without overriding existing exchanges.
+`aggressive` mode can override selected exchange constructors listed in `CCXT_OMS_OVERRIDE_EXCHANGES`.
+
 ## OMS-first methods
 
 These methods use `\/oms/*` by default:
