@@ -47,3 +47,4 @@ Default local URL is usually `http://127.0.0.1:5173`.
 
 - The UI depends on the API stack running at `apps/api`.
 - For multi-account table refresh, the UI sends `account_ids` (CSV) to position query endpoints.
+- Screenshot workflow: `docs/ops/front-end-screenshots.md`.

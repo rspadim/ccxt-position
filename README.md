@@ -43,38 +43,30 @@ Specification-first bootstrap with first implementation slice available in `apps
 
 ## Front-end Gallery
 
-Screenshots (generated from local UI):
+<table>
+  <tr>
+    <td><img src="docs/media/screenshots/01-login-language-options.png" alt="Login Language Options" width="420" /></td>
+    <td><img src="docs/media/screenshots/02-oms-commands.png" alt="OMS Commands" width="420" /></td>
+  </tr>
+  <tr>
+    <td><img src="docs/media/screenshots/03-oms-positions.png" alt="OMS Positions" width="420" /></td>
+    <td><img src="docs/media/screenshots/04-oms-symbol-list.png" alt="OMS Symbol List" width="420" /></td>
+  </tr>
+  <tr>
+    <td><img src="docs/media/screenshots/05-system-ccxt-orders.png" alt="System CCXT Orders" width="420" /></td>
+    <td><img src="docs/media/screenshots/06-system-ccxt-trades.png" alt="System CCXT Trades" width="420" /></td>
+  </tr>
+  <tr>
+    <td><img src="docs/media/screenshots/07-admin-accounts.png" alt="Admin Accounts" width="420" /></td>
+    <td><img src="docs/media/screenshots/08-admin-api-keys.png" alt="Admin API Keys" width="420" /></td>
+  </tr>
+  <tr>
+    <td><img src="docs/media/screenshots/09-admin-system-status.png" alt="Admin System Status" width="420" /></td>
+    <td><img src="docs/media/screenshots/10-risk-accounts.png" alt="Risk Accounts" width="420" /></td>
+  </tr>
+</table>
 
-![Login Language Options](docs/media/screenshots/01-login-language-options.png)
-![OMS Commands](docs/media/screenshots/02-oms-commands.png)
-![OMS Positions](docs/media/screenshots/03-oms-positions.png)
-![OMS Symbol List](docs/media/screenshots/04-oms-symbol-list.png)
-![System CCXT Orders](docs/media/screenshots/05-system-ccxt-orders.png)
-![System CCXT Trades](docs/media/screenshots/06-system-ccxt-trades.png)
-![Admin Accounts](docs/media/screenshots/07-admin-accounts.png)
-![Admin API Keys](docs/media/screenshots/08-admin-api-keys.png)
-![Admin System Status](docs/media/screenshots/09-admin-system-status.png)
-![Risk Accounts](docs/media/screenshots/10-risk-accounts.png)
-
-Generate or refresh screenshots:
-
-```bash
-# install front-end deps
-npm --prefix apps/front-end install
-
-# one-time (python screenshot script)
-py -3.13 -m pip install playwright
-py -3.13 -m playwright install chromium
-
-# run front-end (example)
-npm --prefix apps/front-end run dev
-
-# in another shell, generate screenshots
-py -3.13 scripts/capture_front_screenshots.py \
-  --front-url http://127.0.0.1:5173 \
-  --api-url http://127.0.0.1:8000 \
-  --api-key <YOUR_API_KEY>
-```
+Screenshot generation guide: `docs/ops/front-end-screenshots.md`.
 
 ## Documentation Index
 
@@ -89,6 +81,7 @@ py -3.13 scripts/capture_front_screenshots.py \
 - Security model: `docs/security/authentication.md`
 - Operations: `docs/ops/deployment-single-host.md`
 - Simple Front: `docs/ops/front-end.md`
+- Front-end screenshots: `docs/ops/front-end-screenshots.md`
 - Roadmap: `docs/roadmap/mvp-scope.md`
 - Testnet bootstrap: `test/testnet/README.md`
   - Includes `run.py` (bootstrap) and `scenarios.py` (hedge/netting + multi-strategy live validation)
