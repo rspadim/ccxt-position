@@ -252,3 +252,68 @@ curl "$BASE_URL/oms/positions/open?account_ids=$ACCOUNT_ID&limit=200" \
   -H "x-api-key: $API_KEY"
 ```
 
+## CCXT-like Driver Examples (OMS-first)
+
+Python wrapper lives in `ccxt_driver/` and exposes CCXT-style methods mapped to `/oms` first.
+
+```python
+from ccxt_driver import OmsCcxtExchange
+
+exchange = OmsCcxtExchange(
+    api_key="YOUR_INTERNAL_API_KEY",
+    account_id=1,
+    strategy_id=1001,
+    base_url="http://127.0.0.1:8000",
+)
+```
+
+1. Send market order:
+
+```python
+order = exchange.create_order("BTC/USDT", "market", "buy", "0.001")
+print(order)
+```
+
+2. Change order (price/qty):
+
+```python
+changed = exchange.edit_order(order["id"], "BTC/USDT", "limit", "buy", "0.001", "65000")
+print(changed)
+```
+
+3. Cancel order:
+
+```python
+canceled = exchange.cancel_order(order["id"], "BTC/USDT")
+print(canceled)
+```
+
+4. Read open orders:
+
+```python
+open_orders = exchange.fetch_open_orders("BTC/USDT")
+print(len(open_orders))
+```
+
+5. Read open positions:
+
+```python
+open_positions = exchange.fetch_positions(["BTC/USDT"])
+print(len(open_positions))
+```
+
+6. Market-data fallback (proxied to `/ccxt/{account_id}/{func}`):
+
+```python
+ticker = exchange.fetch_ticker("BTC/USDT")
+order_book = exchange.fetch_order_book("BTC/USDT", 20)
+print(ticker["symbol"], len(order_book.get("bids", [])))
+```
+
+More details and runnable examples:
+
+- `ccxt_driver/README.md`
+- `ccxt_driver/examples/basic_usage.py`
+- `ccxt_driver/examples/order_flow_oms_first.py`
+- `ccxt_driver/examples/marketdata_fallback.py`
+
