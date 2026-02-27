@@ -342,7 +342,9 @@ async def _oms_query_multi_account(
     date_from: str | None = None,
     date_to: str | None = None,
     open_limit: int | None = None,
-) -> list[dict[str, Any]]:
+    page: int | None = None,
+    page_size: int | None = None,
+) -> Any:
     targets = _normalize_account_targets(account_ids=account_ids)
     if not targets:
         raise HTTPException(status_code=422, detail={"code": "validation_error", "message": "account_ids is required"})
@@ -360,15 +362,13 @@ async def _oms_query_multi_account(
             "date_from": date_from,
             "date_to": date_to,
             "open_limit": open_limit,
+            "page": page,
+            "page_size": page_size,
         },
     )
     if not dispatched.get("ok"):
         raise HTTPException(status_code=400, detail=dispatched.get("error") or {"code": "dispatcher_error"})
-    rows = dispatched.get("result", [])
-    if not isinstance(rows, list):
-        return []
-    rows.sort(key=lambda row: int(row.get("id", 0) or 0))
-    return rows
+    return dispatched.get("result", [])
 
 
 async def _ccxt_raw_query_multi_account(
@@ -750,13 +750,14 @@ async def get_position_orders_open(
     limit: int = 500,
     x_api_key: str = Header(default=""),
 ) -> PositionOrdersResponse:
-    rows = await _oms_query_multi_account(
+    result = await _oms_query_multi_account(
         x_api_key=x_api_key,
         query="orders_open",
         account_ids=account_ids,
         strategy_id=strategy_id,
         open_limit=max(1, min(5000, int(limit or 500))),
     )
+    rows = result if isinstance(result, list) else []
     return PositionOrdersResponse(items=rows)
 
 
@@ -782,14 +783,28 @@ async def get_position_orders_history(
             status_code=422,
             detail={"code": "validation_error", "message": "start_date must be <= end_date"},
         )
-    rows = await _oms_query_multi_account(
+    result = await _oms_query_multi_account(
         x_api_key=x_api_key,
         query="orders_history",
         account_ids=account_ids,
         strategy_id=strategy_id,
         date_from=date_from,
         date_to=date_to,
+        page=page,
+        page_size=page_size,
     )
+    if isinstance(result, dict):
+        items = result.get("items", [])
+        total = int(result.get("total", 0) or 0)
+        out_page = int(result.get("page", page) or page)
+        out_page_size = int(result.get("page_size", page_size) or page_size)
+        return PositionOrdersResponse(
+            items=items if isinstance(items, list) else [],
+            total=total,
+            page=out_page,
+            page_size=out_page_size,
+        )
+    rows = result if isinstance(result, list) else []
     paged, total = _paginate_items(rows, page=page, page_size=page_size)
     return PositionOrdersResponse(items=paged, total=total, page=page, page_size=page_size)
 
@@ -816,14 +831,28 @@ async def get_position_deals(
             status_code=422,
             detail={"code": "validation_error", "message": "start_date must be <= end_date"},
         )
-    rows = await _oms_query_multi_account(
+    result = await _oms_query_multi_account(
         x_api_key=x_api_key,
         query="deals",
         account_ids=account_ids,
         strategy_id=strategy_id,
         date_from=date_from,
         date_to=date_to,
+        page=page,
+        page_size=page_size,
     )
+    if isinstance(result, dict):
+        items = result.get("items", [])
+        total = int(result.get("total", 0) or 0)
+        out_page = int(result.get("page", page) or page)
+        out_page_size = int(result.get("page_size", page_size) or page_size)
+        return PositionDealsResponse(
+            items=items if isinstance(items, list) else [],
+            total=total,
+            page=out_page,
+            page_size=out_page_size,
+        )
+    rows = result if isinstance(result, list) else []
     paged, total = _paginate_items(rows, page=page, page_size=page_size)
     return PositionDealsResponse(items=paged, total=total, page=page, page_size=page_size)
 
@@ -835,13 +864,14 @@ async def get_position_positions_open(
     limit: int = 500,
     x_api_key: str = Header(default=""),
 ) -> PositionsResponse:
-    rows = await _oms_query_multi_account(
+    result = await _oms_query_multi_account(
         x_api_key=x_api_key,
         query="positions_open",
         account_ids=account_ids,
         strategy_id=strategy_id,
         open_limit=max(1, min(5000, int(limit or 500))),
     )
+    rows = result if isinstance(result, list) else []
     return PositionsResponse(items=rows)
 
 
@@ -867,14 +897,28 @@ async def get_position_positions_history(
             status_code=422,
             detail={"code": "validation_error", "message": "start_date must be <= end_date"},
         )
-    rows = await _oms_query_multi_account(
+    result = await _oms_query_multi_account(
         x_api_key=x_api_key,
         query="positions_history",
         account_ids=account_ids,
         strategy_id=strategy_id,
         date_from=date_from,
         date_to=date_to,
+        page=page,
+        page_size=page_size,
     )
+    if isinstance(result, dict):
+        items = result.get("items", [])
+        total = int(result.get("total", 0) or 0)
+        out_page = int(result.get("page", page) or page)
+        out_page_size = int(result.get("page_size", page_size) or page_size)
+        return PositionsResponse(
+            items=items if isinstance(items, list) else [],
+            total=total,
+            page=out_page,
+            page_size=out_page_size,
+        )
+    rows = result if isinstance(result, list) else []
     paged, total = _paginate_items(rows, page=page, page_size=page_size)
     return PositionsResponse(items=paged, total=total, page=page, page_size=page_size)
 

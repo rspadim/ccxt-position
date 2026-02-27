@@ -1279,6 +1279,8 @@ class Dispatcher:
             date_from_raw = msg.get("date_from")
             date_to_raw = msg.get("date_to")
             open_limit_raw = msg.get("open_limit")
+            page_raw = msg.get("page")
+            page_size_raw = msg.get("page_size")
             date_from = None if date_from_raw in {None, ""} else str(date_from_raw).strip()
             date_to = None if date_to_raw in {None, ""} else str(date_to_raw).strip()
             if (date_from and not date_to) or (date_to and not date_from):
@@ -1294,6 +1296,11 @@ class Dispatcher:
                 open_limit = int(open_limit_raw or 500)
             except Exception:
                 return {"ok": False, "error": {"code": "validation_error", "message": "open_limit must be integer"}}
+            try:
+                page = max(1, int(page_raw or 1))
+                page_size = max(1, min(500, int(page_size_raw or 100)))
+            except Exception:
+                return {"ok": False, "error": {"code": "validation_error", "message": "page/page_size must be integer"}}
             account_ids: list[int] = []
             seen_ids: set[int] = set()
             if isinstance(raw_account_ids, list):
@@ -1350,19 +1357,29 @@ class Dispatcher:
                     rows = await self.repo.list_orders_multi(
                         conn, account_ids=account_ids, open_only=True, strategy_id=strategy_id, open_limit=open_limit
                     )
+                    result: Any = rows
                 elif query == "orders_history":
-                    rows = await self.repo.list_orders_multi(
+                    rows, total = await self.repo.list_orders_multi_paged(
                         conn,
                         account_ids=account_ids,
-                        open_only=False,
                         strategy_id=strategy_id,
                         date_from=date_from,
                         date_to=date_to,
+                        page=page,
+                        page_size=page_size,
                     )
+                    result = {"items": rows, "total": int(total), "page": int(page), "page_size": int(page_size)}
                 elif query == "deals":
-                    rows = await self.repo.list_deals_multi(
-                        conn, account_ids=account_ids, strategy_id=strategy_id, date_from=date_from, date_to=date_to
+                    rows, total = await self.repo.list_deals_multi_paged(
+                        conn,
+                        account_ids=account_ids,
+                        strategy_id=strategy_id,
+                        date_from=date_from,
+                        date_to=date_to,
+                        page=page,
+                        page_size=page_size,
                     )
+                    result = {"items": rows, "total": int(total), "page": int(page), "page_size": int(page_size)}
                 elif query == "positions_open":
                     rows = await self.repo.list_positions_multi(
                         conn,
@@ -1371,20 +1388,23 @@ class Dispatcher:
                         strategy_id=strategy_id,
                         open_limit=open_limit,
                     )
+                    result = rows
                 elif query == "positions_history":
-                    rows = await self.repo.list_positions_multi(
+                    rows, total = await self.repo.list_positions_multi_paged(
                         conn,
                         account_ids=account_ids,
-                        open_only=False,
                         strategy_id=strategy_id,
                         date_from=date_from,
                         date_to=date_to,
+                        page=page,
+                        page_size=page_size,
                     )
+                    result = {"items": rows, "total": int(total), "page": int(page), "page_size": int(page_size)}
                 else:
                     await conn.commit()
                     return {"ok": False, "error": {"code": "unsupported_query"}}
                 await conn.commit()
-            return {"ok": True, "result": rows}
+            return {"ok": True, "result": result}
 
         if op == "ccxt_raw_query":
             auth = await self._auth_from_payload(msg)

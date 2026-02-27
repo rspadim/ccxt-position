@@ -2842,7 +2842,7 @@ class MySQLCommandRepository:
             params_list.append(str(date_to))
         if open_only:
             per_account_limit = max(1, min(5000, int(open_limit or 500)))
-            params_list.append(per_account_limit * len(normalized_ids))
+            params_list.append(per_account_limit)
         async with conn.cursor() as cur:
             await cur.execute(
                 f"""
@@ -2851,7 +2851,7 @@ class MySQLCommandRepository:
                        created_at, updated_at, closed_at, command_id,
                        previous_position_id, edit_replace_state, edit_replace_at,
                        edit_replace_orphan_order_id, edit_replace_origin_order_id
-                FROM oms_orders
+                FROM oms_orders USE INDEX (idx_oms_orders_account_status_id)
                 WHERE account_id IN ({placeholders}) {status_filter} {strategy_filter} {date_filter}
                 ORDER BY id ASC
                 {limit_clause}
@@ -2863,36 +2863,121 @@ class MySQLCommandRepository:
         for r in rows:
             out.append(
                 {
-                    "id": int(r[0]),
-                    "account_id": int(r[1]),
+                    "id": r[0],
+                    "account_id": r[1],
                     "symbol": r[2],
                     "side": r[3],
                     "order_type": r[4],
                     "status": r[5],
-                    "strategy_id": int(r[6]),
-                    "position_id": int(r[7]),
+                    "strategy_id": r[6],
+                    "position_id": r[7],
                     "reason": r[8],
                     "comment": r[9],
                     "client_order_id": r[10],
                     "exchange_order_id": r[11],
-                    "qty": str(r[12]),
-                    "price": None if r[13] is None else str(r[13]),
-                    "stop_loss": None if r[14] is None else str(r[14]),
-                    "stop_gain": None if r[15] is None else str(r[15]),
-                    "filled_qty": str(r[16]),
-                    "avg_fill_price": None if r[17] is None else str(r[17]),
-                    "created_at": str(r[18]),
-                    "updated_at": str(r[19]),
-                    "closed_at": None if r[20] is None else str(r[20]),
-                    "command_id": None if r[21] is None else int(r[21]),
-                    "previous_position_id": None if r[22] is None else int(r[22]),
+                    "qty": r[12],
+                    "price": r[13],
+                    "stop_loss": r[14],
+                    "stop_gain": r[15],
+                    "filled_qty": r[16],
+                    "avg_fill_price": r[17],
+                    "created_at": r[18],
+                    "updated_at": r[19],
+                    "closed_at": r[20],
+                    "command_id": r[21],
+                    "previous_position_id": r[22],
                     "edit_replace_state": None if r[23] is None else str(r[23]),
-                    "edit_replace_at": None if r[24] is None else str(r[24]),
-                    "edit_replace_orphan_order_id": None if r[25] is None else int(r[25]),
-                    "edit_replace_origin_order_id": None if r[26] is None else int(r[26]),
+                    "edit_replace_at": r[24],
+                    "edit_replace_orphan_order_id": r[25],
+                    "edit_replace_origin_order_id": r[26],
                 }
             )
         return out
+
+    async def list_orders_multi_paged(
+        self,
+        conn: Any,
+        account_ids: list[int],
+        strategy_id: int | None = None,
+        date_from: str | None = None,
+        date_to: str | None = None,
+        page: int = 1,
+        page_size: int = 100,
+    ) -> tuple[list[dict[str, Any]], int]:
+        normalized_ids = sorted({int(x) for x in account_ids if int(x) > 0})
+        if not normalized_ids:
+            return [], 0
+        placeholders = ",".join(["%s"] * len(normalized_ids))
+        strategy_filter = "AND strategy_id = %s" if strategy_id is not None else ""
+        date_filter = ""
+        params_list: list[Any] = [*normalized_ids]
+        if strategy_id is not None:
+            params_list.append(int(strategy_id))
+        if date_from and date_to:
+            date_filter = "AND updated_at >= %s AND updated_at < DATE_ADD(%s, INTERVAL 1 DAY)"
+            params_list.append(str(date_from))
+            params_list.append(str(date_to))
+        safe_page = max(1, int(page or 1))
+        safe_page_size = max(1, min(500, int(page_size or 100)))
+        offset = (safe_page - 1) * safe_page_size
+        count_sql = f"""
+            SELECT COUNT(1)
+            FROM oms_orders USE INDEX (idx_oms_orders_account_status_id)
+            WHERE account_id IN ({placeholders}) {strategy_filter} {date_filter}
+        """
+        data_sql = f"""
+            SELECT id, account_id, symbol, side, order_type, status, strategy_id, position_id, reason,
+                   comment, client_order_id, exchange_order_id, qty, price, stop_loss, stop_gain, filled_qty, avg_fill_price,
+                   created_at, updated_at, closed_at, command_id,
+                   previous_position_id, edit_replace_state, edit_replace_at,
+                   edit_replace_orphan_order_id, edit_replace_origin_order_id
+            FROM oms_orders USE INDEX (idx_oms_orders_account_status_id)
+            WHERE account_id IN ({placeholders}) {strategy_filter} {date_filter}
+            ORDER BY id ASC
+            LIMIT %s OFFSET %s
+        """
+        total = 0
+        async with conn.cursor() as cur:
+            await cur.execute(count_sql, tuple(params_list))
+            row = await cur.fetchone()
+            total = int((row[0] if row else 0) or 0)
+            await cur.execute(data_sql, tuple([*params_list, safe_page_size, offset]))
+            rows = await cur.fetchall()
+        out: list[dict[str, Any]] = []
+        for r in rows:
+            out.append(
+                {
+                    "id": r[0],
+                    "account_id": r[1],
+                    "symbol": r[2],
+                    "side": r[3],
+                    "order_type": r[4],
+                    "status": r[5],
+                    "strategy_id": r[6],
+                    "position_id": r[7],
+                    "reason": r[8],
+                    "comment": r[9],
+                    "client_order_id": r[10],
+                    "exchange_order_id": r[11],
+                    "qty": r[12],
+                    "price": r[13],
+                    "stop_loss": r[14],
+                    "stop_gain": r[15],
+                    "filled_qty": r[16],
+                    "avg_fill_price": r[17],
+                    "created_at": r[18],
+                    "updated_at": r[19],
+                    "closed_at": r[20],
+                    "command_id": r[21],
+                    "previous_position_id": r[22],
+                    "edit_replace_state": None if r[23] is None else str(r[23]),
+                    "edit_replace_at": r[24],
+                    "edit_replace_orphan_order_id": r[25],
+                    "edit_replace_origin_order_id": r[26],
+                }
+            )
+        return out, total
+
 
     async def list_deals(
         self,
@@ -2979,7 +3064,7 @@ class MySQLCommandRepository:
                 SELECT id, account_id, order_id, position_id, symbol, side, qty, price, fee, fee_currency,
                        pnl, strategy_id, reason, comment, reconciled, exchange_trade_id, created_at, executed_at,
                        previous_position_id
-                FROM oms_deals
+                FROM oms_deals USE INDEX (idx_oms_deals_account_executed_id)
                 WHERE account_id IN ({placeholders}) {strategy_filter} {date_filter}
                 ORDER BY id ASC
                 """,
@@ -2990,28 +3075,103 @@ class MySQLCommandRepository:
         for r in rows:
             out.append(
                 {
-                    "id": int(r[0]),
-                    "account_id": int(r[1]),
-                    "order_id": None if r[2] is None else int(r[2]),
-                    "position_id": int(r[3]),
+                    "id": r[0],
+                    "account_id": r[1],
+                    "order_id": r[2],
+                    "position_id": r[3],
                     "symbol": r[4],
                     "side": r[5],
-                    "qty": str(r[6]),
-                    "price": str(r[7]),
-                    "fee": None if r[8] is None else str(r[8]),
+                    "qty": r[6],
+                    "price": r[7],
+                    "fee": r[8],
                     "fee_currency": r[9],
-                    "pnl": None if r[10] is None else str(r[10]),
-                    "strategy_id": int(r[11]),
+                    "pnl": r[10],
+                    "strategy_id": r[11],
                     "reason": r[12],
                     "comment": r[13],
                     "reconciled": bool(r[14]),
                     "exchange_trade_id": r[15],
-                    "created_at": str(r[16]),
-                    "executed_at": str(r[17]),
-                    "previous_position_id": None if r[18] is None else int(r[18]),
+                    "created_at": r[16],
+                    "executed_at": r[17],
+                    "previous_position_id": r[18],
                 }
             )
         return out
+
+    async def list_deals_multi_paged(
+        self,
+        conn: Any,
+        account_ids: list[int],
+        strategy_id: int | None = None,
+        date_from: str | None = None,
+        date_to: str | None = None,
+        page: int = 1,
+        page_size: int = 100,
+    ) -> tuple[list[dict[str, Any]], int]:
+        normalized_ids = sorted({int(x) for x in account_ids if int(x) > 0})
+        if not normalized_ids:
+            return [], 0
+        placeholders = ",".join(["%s"] * len(normalized_ids))
+        strategy_filter = "AND strategy_id = %s" if strategy_id is not None else ""
+        date_filter = ""
+        params_list: list[Any] = [*normalized_ids]
+        if strategy_id is not None:
+            params_list.append(int(strategy_id))
+        if date_from and date_to:
+            date_filter = "AND executed_at >= %s AND executed_at < DATE_ADD(%s, INTERVAL 1 DAY)"
+            params_list.append(str(date_from))
+            params_list.append(str(date_to))
+        safe_page = max(1, int(page or 1))
+        safe_page_size = max(1, min(500, int(page_size or 100)))
+        offset = (safe_page - 1) * safe_page_size
+        count_sql = f"""
+            SELECT COUNT(1)
+            FROM oms_deals USE INDEX (idx_oms_deals_account_executed_id)
+            WHERE account_id IN ({placeholders}) {strategy_filter} {date_filter}
+        """
+        data_sql = f"""
+            SELECT id, account_id, order_id, position_id, symbol, side, qty, price, fee, fee_currency,
+                   pnl, strategy_id, reason, comment, reconciled, exchange_trade_id, created_at, executed_at,
+                   previous_position_id
+            FROM oms_deals USE INDEX (idx_oms_deals_account_executed_id)
+            WHERE account_id IN ({placeholders}) {strategy_filter} {date_filter}
+            ORDER BY id ASC
+            LIMIT %s OFFSET %s
+        """
+        total = 0
+        async with conn.cursor() as cur:
+            await cur.execute(count_sql, tuple(params_list))
+            row = await cur.fetchone()
+            total = int((row[0] if row else 0) or 0)
+            await cur.execute(data_sql, tuple([*params_list, safe_page_size, offset]))
+            rows = await cur.fetchall()
+        out: list[dict[str, Any]] = []
+        for r in rows:
+            out.append(
+                {
+                    "id": r[0],
+                    "account_id": r[1],
+                    "order_id": r[2],
+                    "position_id": r[3],
+                    "symbol": r[4],
+                    "side": r[5],
+                    "qty": r[6],
+                    "price": r[7],
+                    "fee": r[8],
+                    "fee_currency": r[9],
+                    "pnl": r[10],
+                    "strategy_id": r[11],
+                    "reason": r[12],
+                    "comment": r[13],
+                    "reconciled": bool(r[14]),
+                    "exchange_trade_id": r[15],
+                    "created_at": r[16],
+                    "executed_at": r[17],
+                    "previous_position_id": r[18],
+                }
+            )
+        return out, total
+
 
     async def list_positions(
         self,
@@ -3099,12 +3259,12 @@ class MySQLCommandRepository:
             params_list.append(str(date_to))
         if open_only:
             per_account_limit = max(1, min(5000, int(open_limit or 500)))
-            params_list.append(per_account_limit * len(normalized_ids))
+            params_list.append(per_account_limit)
         async with conn.cursor() as cur:
             await cur.execute(
                 f"""
                 SELECT id, account_id, symbol, strategy_id, side, qty, avg_price, stop_loss, stop_gain, state, reason, comment, opened_at, updated_at, closed_at
-                FROM oms_positions
+                FROM oms_positions USE INDEX (idx_oms_positions_account_state_id)
                 WHERE account_id IN ({placeholders}) {state_filter} {strategy_filter} {date_filter}
                 ORDER BY id ASC
                 {limit_clause}
@@ -3116,24 +3276,93 @@ class MySQLCommandRepository:
         for r in rows:
             out.append(
                 {
-                    "id": int(r[0]),
-                    "account_id": int(r[1]),
+                    "id": r[0],
+                    "account_id": r[1],
                     "symbol": r[2],
-                    "strategy_id": int(r[3]),
+                    "strategy_id": r[3],
                     "side": r[4],
-                    "qty": str(r[5]),
-                    "avg_price": str(r[6]),
-                    "stop_loss": None if r[7] is None else str(r[7]),
-                    "stop_gain": None if r[8] is None else str(r[8]),
+                    "qty": r[5],
+                    "avg_price": r[6],
+                    "stop_loss": r[7],
+                    "stop_gain": r[8],
                     "state": r[9],
                     "reason": r[10],
                     "comment": r[11],
-                    "opened_at": str(r[12]),
-                    "updated_at": str(r[13]),
-                    "closed_at": None if r[14] is None else str(r[14]),
+                    "opened_at": r[12],
+                    "updated_at": r[13],
+                    "closed_at": r[14],
                 }
             )
         return out
+
+    async def list_positions_multi_paged(
+        self,
+        conn: Any,
+        account_ids: list[int],
+        strategy_id: int | None = None,
+        date_from: str | None = None,
+        date_to: str | None = None,
+        page: int = 1,
+        page_size: int = 100,
+    ) -> tuple[list[dict[str, Any]], int]:
+        normalized_ids = sorted({int(x) for x in account_ids if int(x) > 0})
+        if not normalized_ids:
+            return [], 0
+        placeholders = ",".join(["%s"] * len(normalized_ids))
+        strategy_filter = "AND strategy_id = %s" if strategy_id is not None else ""
+        date_filter = ""
+        params_list: list[Any] = [*normalized_ids]
+        if strategy_id is not None:
+            params_list.append(int(strategy_id))
+        if date_from and date_to:
+            date_filter = "AND updated_at >= %s AND updated_at < DATE_ADD(%s, INTERVAL 1 DAY)"
+            params_list.append(str(date_from))
+            params_list.append(str(date_to))
+        safe_page = max(1, int(page or 1))
+        safe_page_size = max(1, min(500, int(page_size or 100)))
+        offset = (safe_page - 1) * safe_page_size
+        count_sql = f"""
+            SELECT COUNT(1)
+            FROM oms_positions USE INDEX (idx_oms_positions_account_state_id)
+            WHERE account_id IN ({placeholders}) {strategy_filter} {date_filter}
+        """
+        data_sql = f"""
+            SELECT id, account_id, symbol, strategy_id, side, qty, avg_price, stop_loss, stop_gain, state, reason, comment, opened_at, updated_at, closed_at
+            FROM oms_positions USE INDEX (idx_oms_positions_account_state_id)
+            WHERE account_id IN ({placeholders}) {strategy_filter} {date_filter}
+            ORDER BY id ASC
+            LIMIT %s OFFSET %s
+        """
+        total = 0
+        async with conn.cursor() as cur:
+            await cur.execute(count_sql, tuple(params_list))
+            row = await cur.fetchone()
+            total = int((row[0] if row else 0) or 0)
+            await cur.execute(data_sql, tuple([*params_list, safe_page_size, offset]))
+            rows = await cur.fetchall()
+        out: list[dict[str, Any]] = []
+        for r in rows:
+            out.append(
+                {
+                    "id": r[0],
+                    "account_id": r[1],
+                    "symbol": r[2],
+                    "strategy_id": r[3],
+                    "side": r[4],
+                    "qty": r[5],
+                    "avg_price": r[6],
+                    "stop_loss": r[7],
+                    "stop_gain": r[8],
+                    "state": r[9],
+                    "reason": r[10],
+                    "comment": r[11],
+                    "opened_at": r[12],
+                    "updated_at": r[13],
+                    "closed_at": r[14],
+                }
+            )
+        return out, total
+
 
     async def list_recent_symbols_for_account(
         self, conn: Any, account_id: int, limit: int = 20
