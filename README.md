@@ -161,3 +161,94 @@ curl -X POST "http://127.0.0.1:8000/ccxt/core/<ACCOUNT_ID>/create_order" \
   -d "{\"symbol\":\"BTC/USDT\",\"side\":\"buy\",\"order_type\":\"limit\",\"amount\":\"0.001\",\"price\":\"10000\",\"params\":{}}"
 ```
 
+## OMS Examples (Recommended)
+
+Use `/oms` for trading flows tied to OMS orders/deals/positions.
+
+```bash
+BASE_URL="http://127.0.0.1:8000"
+API_KEY="<INTERNAL_API_KEY_PLAIN>"
+ACCOUNT_ID="<ACCOUNT_ID>"
+```
+
+1. Send market order (`send_order`):
+
+```bash
+curl -X POST "$BASE_URL/oms/commands" \
+  -H "x-api-key: $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"account_id\": $ACCOUNT_ID,
+    \"command\": \"send_order\",
+    \"payload\": {
+      \"symbol\": \"BTC/USDT\",
+      \"side\": \"buy\",
+      \"order_type\": \"market\",
+      \"qty\": \"0.001\",
+      \"strategy_id\": 1
+    }
+  }"
+```
+
+2. Change open order (`change_order`, replace `<ORDER_ID>`):
+
+```bash
+curl -X POST "$BASE_URL/oms/commands" \
+  -H "x-api-key: $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"account_id\": $ACCOUNT_ID,
+    \"command\": \"change_order\",
+    \"payload\": {
+      \"order_id\": <ORDER_ID>,
+      \"new_price\": \"65000.00\"
+    }
+  }"
+```
+
+3. Cancel order (`cancel_order`, replace `<ORDER_ID>`):
+
+```bash
+curl -X POST "$BASE_URL/oms/commands" \
+  -H "x-api-key: $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"account_id\": $ACCOUNT_ID,
+    \"command\": \"cancel_order\",
+    \"payload\": {
+      \"order_id\": <ORDER_ID>
+    }
+  }"
+```
+
+4. Close position (`close_position`, replace `<POSITION_ID>`):
+
+```bash
+curl -X POST "$BASE_URL/oms/commands" \
+  -H "x-api-key: $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"account_id\": $ACCOUNT_ID,
+    \"command\": \"close_position\",
+    \"payload\": {
+      \"position_id\": <POSITION_ID>,
+      \"order_type\": \"market\",
+      \"strategy_id\": 1
+    }
+  }"
+```
+
+5. Read open orders:
+
+```bash
+curl "$BASE_URL/oms/orders/open?account_ids=$ACCOUNT_ID&limit=200" \
+  -H "x-api-key: $API_KEY"
+```
+
+6. Read open positions:
+
+```bash
+curl "$BASE_URL/oms/positions/open?account_ids=$ACCOUNT_ID&limit=200" \
+  -H "x-api-key: $API_KEY"
+```
+
